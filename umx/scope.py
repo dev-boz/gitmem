@@ -106,9 +106,9 @@ def resolve_scopes(
         always_loaded=True,
     ))
 
-    # 2. Tool-specific
+    # 2. Tool-specific (per-tool file: ~/.umx/tools/<tool>.md)
     if tool:
-        tool_dir = user_dir / "tools"
+        tool_dir = user_dir / "tools" / tool
         layers.append(ScopeLayer(
             scope=Scope.TOOL,
             path=tool_dir,
@@ -154,13 +154,19 @@ def resolve_scopes(
                     always_loaded=False,
                 ))
 
-    # 6. File scope
+    # 6. File scope — points to the specific file's memory file
     if target_file and project_root:
         file_path = target_file.resolve()
-        parent_umx = file_path.parent / ".umx" / "files"
+        # File memory lives at <nearest .umx>/files/<filename>.md
+        # Walk up to find nearest .umx/ dir
+        file_umx_dir = file_path.parent / ".umx"
+        if not file_umx_dir.exists():
+            # Fall back to project-level .umx/files/
+            file_umx_dir = project_root / ".umx"
+        file_mem_path = file_umx_dir / "files" / f"{file_path.name}.md"
         layers.append(ScopeLayer(
             scope=Scope.FILE,
-            path=parent_umx,
+            path=file_mem_path,
             always_loaded=False,
         ))
 

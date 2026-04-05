@@ -87,7 +87,7 @@ def parse_fact_line(line: str, topic: str, scope: Scope) -> Fact | None:
             except json.JSONDecodeError:
                 pass
 
-        return Fact(
+        fact = Fact(
             id=meta.get("id", Fact.generate_id()),
             text=text,
             scope=scope,
@@ -110,6 +110,18 @@ def parse_fact_line(line: str, topic: str, scope: Scope) -> Fact | None:
                 else datetime.now(timezone.utc)
             ),
         )
+
+        # Track stored text hash for edit detection
+        stored_hash = meta.get("text_hash")
+        if stored_hash:
+            current_hash = _text_hash(text)
+            if current_hash != stored_hash:
+                # Text was edited by user → promote to ground truth
+                fact.encoding_strength = 5
+                fact.confidence = 1.0
+                fact.memory_type = MemoryType.EXPLICIT_SEMANTIC
+
+        return fact
 
     # Bare line (no strength prefix): user-added, promote to S:5
     bare = line.lstrip("- ").strip()
@@ -142,6 +154,7 @@ def format_fact_line(fact: Fact) -> str:
         "id": fact.id,
         "conf": fact.confidence,
         "corroborated_by": fact.corroborated_by,
+        "text_hash": _text_hash(fact.text),
     }
     if fact.tags:
         meta["tags"] = fact.tags
@@ -157,12 +170,23 @@ def format_fact_line(fact: Fact) -> str:
     return f"- [S:{fact.encoding_strength}] {fact.text} <!-- umx: {meta_str} -->"
 
 
+def _text_hash(text: str) -> str:
+    """Compute a short hash of fact text for edit detection."""
+    import hashlib
+    return hashlib.sha256(text.encode()).hexdigest()[:12]
+
+
 def load_topic_facts(
     topic_path: Path,
     topic: str,
     scope: Scope,
 ) -> list[Fact]:
-    """Load all facts from a topic markdown file."""
+    """Load all facts from a topic markdown file.
+
+    Edit detection happens in parse_fact_line: if a fact with a known id
+    has different text than what was stored (via text_hash), it is promoted
+    to S:5 (user edited = ground truth).
+    """
     if not topic_path.exists():
         return []
 
@@ -174,6 +198,7 @@ def load_topic_facts(
             fact = parse_fact_line(stripped, topic=topic, scope=scope)
             if fact:
                 facts.append(fact)
+
     return facts
 
 
@@ -205,16 +230,25 @@ def derive_json(topic_path: Path, facts: list[Fact]) -> None:
 
 
 def load_all_facts(umx_dir: Path, scope: Scope) -> list[Fact]:
-    """Load all facts from all topic files in a .umx/ directory."""
-    topics_dir = umx_dir / "topics"
-    if not topics_dir.exists():
-        return []
-
+    """Load all facts from all topic files and file-scope files in a .umx/ directory."""
     all_facts: list[Fact] = []
-    for md_file in sorted(topics_dir.glob("*.md")):
-        topic = md_file.stem
-        facts = load_topic_facts(md_file, topic=topic, scope=scope)
-        all_facts.extend(facts)
+
+    # Load from topics/
+    topics_dir = umx_dir / "topics"
+    if topics_dir.exists():
+        for md_file in sorted(topics_dir.glob("*.md")):
+            topic = md_file.stem
+            facts = load_topic_facts(md_file, topic=topic, scope=scope)
+            all_facts.extend(facts)
+
+    # Load from files/ (file-scope memory)
+    files_dir = umx_dir / "files"
+    if files_dir.exists():
+        for md_file in sorted(files_dir.glob("*.md")):
+            topic = md_file.stem
+            facts = load_topic_facts(md_file, topic=topic, scope=Scope.FILE)
+            all_facts.extend(facts)
+
     return all_facts
 
 

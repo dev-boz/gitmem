@@ -1,6 +1,8 @@
 """Claude Code native memory adapter.
 
 Reads from ~/.claude/projects/<path>/ — tool native memory at S:4.
+Only reads from directories that match the current project_root to avoid
+cross-project fact leakage.
 """
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ class ClaudeCodeAdapter:
         """Read facts from Claude Code's native memory.
 
         Claude Code stores project memory in ~/.claude/projects/<hash>/
+        where <hash> is derived from the project path. Only directories
+        whose name matches the project path are read.
         """
         claude_dir = Path.home() / ".claude"
         if not claude_dir.exists():
@@ -31,17 +35,48 @@ class ClaudeCodeAdapter:
         if not projects_dir.exists():
             return []
 
-        # Walk project directories looking for memory files
+        resolved_root = project_root.resolve()
+
         for project_dir in projects_dir.iterdir():
             if not project_dir.is_dir():
                 continue
-            facts.extend(self._read_project_dir(project_dir, project_root))
+            if not self._matches_project(project_dir, resolved_root):
+                continue
+            facts.extend(self._read_project_dir(project_dir))
 
         return facts
 
-    def _read_project_dir(
-        self, project_dir: Path, project_root: Path
-    ) -> list[Fact]:
+    @staticmethod
+    def _matches_project(claude_project_dir: Path, project_root: Path) -> bool:
+        """Check if a Claude project directory belongs to the current project.
+
+        Claude Code names project directories using the project path with
+        slashes replaced (e.g. "home-user-myproject" for /home/user/myproject).
+        We match the directory name against the project root path.
+        """
+        dir_name = claude_project_dir.name
+
+        # Strategy 1: directory name is the project path with / → -
+        normalised = str(project_root).strip("/").replace("/", "-")
+        if dir_name == normalised:
+            return True
+
+        # Strategy 2: directory name contains the project folder name
+        if project_root.name and project_root.name in dir_name:
+            # Check for a metadata file that records the source path
+            for meta_file in ("project.json", ".project"):
+                meta_path = claude_project_dir / meta_file
+                if meta_path.exists():
+                    try:
+                        content = meta_path.read_text()
+                        if str(project_root) in content:
+                            return True
+                    except OSError:
+                        pass
+
+        return False
+
+    def _read_project_dir(self, project_dir: Path) -> list[Fact]:
         """Read memory from a single Claude Code project directory."""
         facts: list[Fact] = []
         now = datetime.now(timezone.utc)
@@ -72,6 +107,8 @@ class ClaudeCodeAdapter:
 
         # Look for JSON memory files
         for json_file in project_dir.glob("*.json"):
+            if json_file.name in ("project.json", ".project"):
+                continue  # skip metadata
             try:
                 data = json.loads(json_file.read_text())
             except (OSError, json.JSONDecodeError):

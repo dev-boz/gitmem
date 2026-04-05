@@ -92,6 +92,7 @@ def dream(cwd: str, force: bool) -> None:
     """Run the dream pipeline (Orient → Gather → Consolidate → Prune)."""
     from umx.dream.pipeline import DreamPipeline
     from umx.memory import load_config
+    from umx.models import DreamStatus
 
     project_root = Path(cwd).resolve()
     umx_dir = project_root / ".umx"
@@ -104,12 +105,15 @@ def dream(cwd: str, force: bool) -> None:
     pipeline = DreamPipeline(project_root, config=config, force=force)
     status = pipeline.run()
 
-    click.echo(f"Dream complete: {status.value}")
-    click.echo(f"  New facts:     {len(pipeline.new_facts)}")
-    click.echo(f"  Removed facts: {len(pipeline.removed_facts)}")
-    click.echo(f"  Conflicts:     {len(pipeline.conflicts)}")
-    if pipeline.skipped_sources:
-        click.echo(f"  Skipped:       {', '.join(pipeline.skipped_sources)}")
+    if status == DreamStatus.SKIPPED:
+        click.echo("Dream skipped: trigger conditions not met (use --force to override)")
+    else:
+        click.echo(f"Dream complete: {status.value}")
+        click.echo(f"  New facts:     {len(pipeline.new_facts)}")
+        click.echo(f"  Removed facts: {len(pipeline.removed_facts)}")
+        click.echo(f"  Conflicts:     {len(pipeline.conflicts)}")
+        if pipeline.skipped_sources:
+            click.echo(f"  Skipped:       {', '.join(pipeline.skipped_sources)}")
 
 
 @main.command()
@@ -293,19 +297,26 @@ def promote(cwd: str, fact_id: str, target: str) -> None:
         click.echo(f"Unknown scope: {target}", err=True)
         sys.exit(1)
 
-    # Find the fact
+    # Find the fact and track which directory it lives in
     umx_dir = cwd_path / ".umx"
-    fact = find_fact_by_id(umx_dir, fact_id, Scope.PROJECT_TEAM)
-    if not fact:
-        local_dir = umx_dir / "local"
-        fact = find_fact_by_id(local_dir, fact_id, Scope.PROJECT_LOCAL)
+    local_dir = umx_dir / "local"
+    source_dir: Path | None = None
 
-    if not fact:
+    fact = find_fact_by_id(umx_dir, fact_id, Scope.PROJECT_TEAM)
+    if fact:
+        source_dir = umx_dir
+    else:
+        fact = find_fact_by_id(local_dir, fact_id, Scope.PROJECT_LOCAL)
+        if fact:
+            source_dir = local_dir
+
+    if not fact or not source_dir:
         click.echo(f"Fact not found: {fact_id}", err=True)
         sys.exit(1)
 
     old_scope = fact.scope
-    remove_fact(umx_dir, fact_id, fact.topic, old_scope)
+    # Remove from the correct source directory
+    remove_fact(source_dir, fact_id, fact.topic, old_scope)
     fact.scope = target_scope
 
     # Determine target directory
@@ -313,7 +324,7 @@ def promote(cwd: str, fact_id: str, target: str) -> None:
         from umx.scope import user_scope_dir
         target_dir = user_scope_dir()
     elif target_scope == Scope.PROJECT_LOCAL:
-        target_dir = umx_dir / "local"
+        target_dir = local_dir
     else:
         target_dir = umx_dir
 

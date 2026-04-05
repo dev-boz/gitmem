@@ -108,8 +108,9 @@ class TestShouldDream:
         now = datetime.now(timezone.utc)
         (umx_dir / "MEMORY.md").write_text(
             f"last_dream: {now.isoformat()}\n"
-            f"session_count: 6\n"
         )
+        # Write session count to durable file (not MEMORY.md)
+        (umx_dir / ".session_count").write_text("6")
         assert should_dream(umx_dir, session_threshold=5)
 
 

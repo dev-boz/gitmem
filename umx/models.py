@@ -63,6 +63,7 @@ class DreamStatus(str, Enum):
     FULL = "full"
     PARTIAL = "partial"
     NATIVE_ONLY = "native_only"
+    SKIPPED = "skipped"
     FAILED = "failed"
 
 

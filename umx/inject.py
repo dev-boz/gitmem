@@ -16,7 +16,7 @@ from umx.scope import (
     active_layers,
     resolve_scopes,
 )
-from umx.strength import relevance_score
+from umx.strength import composite_score, relevance_score
 
 
 def collect_facts_for_injection(
@@ -56,7 +56,7 @@ def collect_facts_for_injection(
     elif cwd != cwd.parent:
         target_scope = Scope.FOLDER
 
-    # Score and sort by relevance
+    # Score by composite relevance: combined relevance + composite signals
     scored = [
         (
             fact,
@@ -66,12 +66,14 @@ def collect_facts_for_injection(
                 keywords=keywords,
                 config=config,
             ),
+            composite_score(fact, config=config),
         )
         for fact in all_facts
     ]
-    scored.sort(key=lambda x: -x[1])
+    # Sort by relevance first, then composite_score as tiebreaker
+    scored.sort(key=lambda x: (-x[1], -x[2]))
 
-    return [fact for fact, _ in scored]
+    return [fact for fact, _, _ in scored]
 
 
 def build_injection_block(

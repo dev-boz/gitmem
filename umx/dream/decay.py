@@ -71,7 +71,7 @@ def apply_time_decay(
             and not fact.corroborated_by
             and rec < 0.3
         ):
-            fact.encoding_strength = max(0, fact.encoding_strength - 1)
+            fact.encoding_strength = max(1, fact.encoding_strength - 1)
 
         result.append(fact)
 

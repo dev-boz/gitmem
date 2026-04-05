@@ -84,6 +84,9 @@ def relevance_score(
     + (p_k × keyword_overlap)
     + (p_r × recent_retrieval)
     + (p_e × encoding_strength)
+
+    Scope proximity is boosted when fact scope matches or is close
+    to the target scope in the hierarchy.
     """
     if config is None:
         config = UmxConfig()
@@ -92,8 +95,13 @@ def relevance_score(
     if session_fact_ids is None:
         session_fact_ids = set()
 
-    # Scope proximity
-    scope_prox = SCOPE_PROXIMITY.get(fact.scope, 0.5)
+    # Scope proximity — closer to target scope gets higher score
+    fact_prox = SCOPE_PROXIMITY.get(fact.scope, 0.5)
+    target_prox = SCOPE_PROXIMITY.get(target_scope, 0.5)
+    # The closer the fact's scope is to the target, the higher the proximity.
+    # Exact match → 1.0; max distance → base proximity value.
+    distance = abs(fact_prox - target_prox)
+    scope_prox = max(0.0, 1.0 - distance)
 
     # Keyword overlap: fraction of keywords that appear in fact text or tags
     kw_score = 0.0

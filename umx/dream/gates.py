@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+_SESSION_COUNT_FILE = ".session_count"
 
 
 class DreamLock:
@@ -25,12 +27,19 @@ class DreamLock:
         # Check for stale locks (> 1 hour)
         try:
             data = json.loads(self.lock_path.read_text())
-            locked_at = datetime.fromisoformat(data.get("locked_at", ""))
+            locked_at_raw = data.get("locked_at", "")
+            if not locked_at_raw:
+                self.release()
+                return False
+            locked_at = datetime.fromisoformat(locked_at_raw)
+            # Ensure timezone-aware comparison
+            if locked_at.tzinfo is None:
+                locked_at = locked_at.replace(tzinfo=timezone.utc)
             age = (datetime.now(timezone.utc) - locked_at).total_seconds()
             if age > 3600:
                 self.release()
                 return False
-        except (json.JSONDecodeError, ValueError, OSError):
+        except (json.JSONDecodeError, ValueError, TypeError, OSError):
             self.release()
             return False
         return True
@@ -55,11 +64,29 @@ class DreamLock:
             pass
 
 
+def _read_session_count(umx_dir: Path) -> int:
+    """Read session count from durable .session_count file."""
+    counter_path = umx_dir / _SESSION_COUNT_FILE
+    if counter_path.exists():
+        try:
+            return int(counter_path.read_text().strip())
+        except (ValueError, OSError):
+            pass
+    return 0
+
+
+def _write_session_count(umx_dir: Path, count: int) -> None:
+    """Write session count to durable .session_count file."""
+    counter_path = umx_dir / _SESSION_COUNT_FILE
+    counter_path.parent.mkdir(parents=True, exist_ok=True)
+    counter_path.write_text(str(count))
+
+
 def read_dream_state(umx_dir: Path) -> dict:
-    """Read dream state from MEMORY.md or dream.log."""
-    state = {
+    """Read dream state from MEMORY.md and .session_count."""
+    state: dict = {
         "last_dream": None,
-        "session_count": 0,
+        "session_count": _read_session_count(umx_dir),
     }
 
     memory_md = umx_dir / "MEMORY.md"
@@ -73,13 +100,6 @@ def read_dream_state(umx_dir: Path) -> dict:
                         state["last_dream"] = datetime.fromisoformat(val)
                     except ValueError:
                         pass
-            elif line.startswith("session_count:"):
-                try:
-                    state["session_count"] = int(
-                        line.split(":", 1)[1].strip()
-                    )
-                except ValueError:
-                    pass
 
     return state
 
@@ -127,12 +147,15 @@ def should_dream(
 
 
 def increment_session_count(umx_dir: Path) -> int:
-    """Increment the session count. Called at session end."""
-    state = read_dream_state(umx_dir)
-    state["session_count"] += 1
+    """Increment the session count. Called at session end.
 
-    # Update MEMORY.md if it exists, otherwise just track in a sidecar
-    counter_path = umx_dir / ".session_count"
-    counter_path.write_text(str(state["session_count"]))
+    Reads from and writes to the durable .session_count file.
+    """
+    count = _read_session_count(umx_dir) + 1
+    _write_session_count(umx_dir, count)
+    return count
 
-    return state["session_count"]
+
+def reset_session_count(umx_dir: Path) -> None:
+    """Reset session count to 0. Called after a successful dream."""
+    _write_session_count(umx_dir, 0)

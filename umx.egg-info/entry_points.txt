@@ -1,2 +1,0 @@
-[console_scripts]
-umx = umx.cli:main

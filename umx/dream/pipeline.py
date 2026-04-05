@@ -22,7 +22,7 @@ from pathlib import Path
 from umx.dream.conflict import detect_conflicts, write_conflicts_md
 from umx.dream.decay import apply_time_decay
 from umx.dream.extract import extract_facts_from_text
-from umx.dream.gates import DreamLock, should_dream
+from umx.dream.gates import DreamLock, reset_session_count, should_dream
 from umx.dream.gitignore import GitignoreFilter
 from umx.dream.notice import clear_notice, write_dream_log, write_notice
 from umx.dream.providers import LLMClient
@@ -78,7 +78,7 @@ class DreamPipeline:
             session_threshold=self.config.dream_session_threshold,
         ):
             logger.info("Dream trigger conditions not met")
-            return DreamStatus.FULL
+            return DreamStatus.SKIPPED
 
         if not self.lock.acquire():
             logger.warning("Could not acquire dream lock")
@@ -99,6 +99,9 @@ class DreamPipeline:
 
             # Write results
             self._write_results()
+
+            # Reset session count after successful dream
+            reset_session_count(self.umx_dir)
 
             return self.status
 
