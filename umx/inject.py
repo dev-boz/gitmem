@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from umx.budget import enforce_budget
-from umx.memory import load_all_facts, load_config
+from umx.memory import load_all_facts, load_config, load_topic_facts
 from umx.models import Fact, Scope, UmxConfig
 from umx.scope import (
     ScopeLayer,
@@ -48,7 +48,12 @@ def collect_facts_for_injection(
     for layer in active_layers(layers, include_lazy=target_file is not None):
         if not layer.path.exists():
             continue
-        facts = load_all_facts(layer.path, layer.scope)
+        if layer.scope == Scope.FILE:
+            # FILE layers point at a specific .md file, not a .umx/ directory
+            topic = layer.path.stem  # e.g. "main.py" from "main.py.md"
+            facts = load_topic_facts(layer.path, topic=topic, scope=Scope.FILE)
+        else:
+            facts = load_all_facts(layer.path, layer.scope)
         all_facts.extend(facts)
 
     # Determine target scope for relevance

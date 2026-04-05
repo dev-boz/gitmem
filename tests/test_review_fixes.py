@@ -630,3 +630,48 @@ class TestInjectionConfigSelection:
         # Should successfully load facts (config found at team level)
         facts = collect_facts_for_injection(project_root)
         assert any(f.id == "f_cfg_001" for f in facts)
+
+
+# ─── FILE layer direct loading ───────────────────────────────────
+
+
+class TestFileScopeDirectLoad:
+    """FILE scope layer must load facts from its specific .md file,
+    not try to call load_all_facts on a file path."""
+
+    def test_file_layer_loads_facts(self, tmp_path: Path, monkeypatch):
+        from umx.inject import collect_facts_for_injection
+        from umx.memory import save_topic_facts
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        umx_dir = project_root / ".umx"
+        umx_dir.mkdir()
+        (umx_dir / "topics").mkdir()
+        files_dir = umx_dir / "files"
+        files_dir.mkdir()
+
+        # Create a file-scope fact at .umx/files/app.py.md
+        fact = Fact(
+            id="f_file_direct",
+            text="app.py uses Flask blueprints",
+            scope=Scope.FILE,
+            topic="app.py",
+            encoding_strength=4,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
+            confidence=0.9,
+        )
+        save_topic_facts(files_dir / "app.py.md", "app.py", [fact])
+
+        # Create the target file
+        target = project_root / "app.py"
+        target.touch()
+
+        facts = collect_facts_for_injection(
+            project_root, target_file=target
+        )
+        file_facts = [f for f in facts if f.id == "f_file_direct"]
+        assert len(file_facts) >= 1
+        assert file_facts[0].scope == Scope.FILE
