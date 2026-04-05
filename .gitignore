@@ -36,3 +36,6 @@ Thumbs.db
 .umx/local/
 .umx/.session_count
 .umx/dream.lock
+.umx/dream.log
+.umx/NOTICE
+*.umx.json

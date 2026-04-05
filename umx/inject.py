@@ -31,12 +31,14 @@ def collect_facts_for_injection(
     Walks the scope hierarchy and collects facts from all active layers.
     """
     if config is None:
-        # Try to load from project config
+        # Try to load from project config — check PROJECT_TEAM first
         layers = resolve_scopes(cwd, tool=tool, target_file=target_file)
         for layer in layers:
-            if layer.scope in (Scope.PROJECT_TEAM, Scope.PROJECT_LOCAL):
-                config = load_config(layer.path)
-                break
+            if layer.scope == Scope.PROJECT_TEAM:
+                cfg_path = layer.path / "config.yaml"
+                if cfg_path.exists():
+                    config = load_config(layer.path)
+                    break
         if config is None:
             config = UmxConfig()
 

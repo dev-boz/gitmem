@@ -533,3 +533,100 @@ class TestEditDetection:
         unchanged = [f for f in facts if f.id == "f_noedit_001"]
         assert len(unchanged) == 1
         assert unchanged[0].encoding_strength == 2
+
+
+# ─── File scope nearest .umx walk-up ────────────────────────────
+
+
+class TestFileScopeWalkUp:
+    """File scope should walk up to find nearest .umx/ dir, not just parent."""
+
+    def test_finds_intermediate_umx(self, tmp_path: Path, monkeypatch):
+        from umx.scope import resolve_scopes
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        (project_root / ".umx").mkdir()
+
+        # Create intermediate .umx at src/
+        src_dir = project_root / "src"
+        src_dir.mkdir()
+        src_umx = src_dir / ".umx"
+        src_umx.mkdir()
+
+        # Target file is in src/utils/
+        utils_dir = src_dir / "utils"
+        utils_dir.mkdir()
+        target = utils_dir / "helpers.py"
+        target.touch()
+
+        layers = resolve_scopes(project_root, target_file=target)
+        file_layers = [l for l in layers if l.scope == Scope.FILE]
+        assert len(file_layers) == 1
+        # Should find src/.umx/ (nearest), not project/.umx/
+        assert "src/.umx/files/helpers.py.md" in str(file_layers[0].path)
+
+    def test_falls_back_to_project_root(self, tmp_path: Path, monkeypatch):
+        from umx.scope import resolve_scopes
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        (project_root / ".umx").mkdir()
+
+        # No intermediate .umx/ dirs
+        deep_dir = project_root / "a" / "b" / "c"
+        deep_dir.mkdir(parents=True)
+        target = deep_dir / "file.py"
+        target.touch()
+
+        layers = resolve_scopes(project_root, target_file=target)
+        file_layers = [l for l in layers if l.scope == Scope.FILE]
+        assert len(file_layers) == 1
+        assert str(project_root / ".umx" / "files" / "file.py.md") == str(file_layers[0].path)
+
+
+# ─── Injection config selection ──────────────────────────────────
+
+
+class TestInjectionConfigSelection:
+    """Config should be loaded from PROJECT_TEAM .umx/config.yaml, not local."""
+
+    def test_loads_team_config(self, tmp_path: Path, monkeypatch):
+        from umx.inject import collect_facts_for_injection
+        from umx.memory import add_fact, save_config
+        from umx.models import UmxConfig
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".git").mkdir()
+        umx_dir = project_root / ".umx"
+        umx_dir.mkdir()
+        (umx_dir / "topics").mkdir()
+        local_dir = umx_dir / "local"
+        local_dir.mkdir()
+        (local_dir / "topics").mkdir()
+
+        # Save a custom config to the team dir
+        custom_config = UmxConfig(decay_lambda=0.05)
+        save_config(umx_dir, custom_config)
+
+        # Add a fact
+        fact = Fact(
+            id="f_cfg_001",
+            text="Config test fact",
+            scope=Scope.PROJECT_TEAM,
+            topic="test",
+            encoding_strength=3,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
+            confidence=0.8,
+        )
+        add_fact(umx_dir, fact)
+
+        # Should successfully load facts (config found at team level)
+        facts = collect_facts_for_injection(project_root)
+        assert any(f.id == "f_cfg_001" for f in facts)

@@ -157,12 +157,20 @@ def resolve_scopes(
     # 6. File scope — points to the specific file's memory file
     if target_file and project_root:
         file_path = target_file.resolve()
-        # File memory lives at <nearest .umx>/files/<filename>.md
-        # Walk up to find nearest .umx/ dir
-        file_umx_dir = file_path.parent / ".umx"
-        if not file_umx_dir.exists():
-            # Fall back to project-level .umx/files/
-            file_umx_dir = project_root / ".umx"
+        # Walk up from the file's directory to find the nearest .umx/ dir
+        file_umx_dir: Path | None = None
+        search_dir = file_path.parent
+        while True:
+            candidate = search_dir / ".umx"
+            if candidate.exists() and candidate.is_dir():
+                file_umx_dir = candidate
+                break
+            if search_dir == project_root or search_dir == search_dir.parent:
+                # Fall back to project-level .umx/
+                file_umx_dir = project_root / ".umx"
+                break
+            search_dir = search_dir.parent
+
         file_mem_path = file_umx_dir / "files" / f"{file_path.name}.md"
         layers.append(ScopeLayer(
             scope=Scope.FILE,

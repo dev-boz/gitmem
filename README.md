@@ -19,7 +19,7 @@ pip install -e .
 umx init
 
 # Add a fact
-umx add "The API uses JWT auth with RS256" --topic auth --strength 4
+umx add --text "The API uses JWT auth with RS256" --topic auth
 
 # View memory
 umx view
@@ -61,8 +61,8 @@ umx dream --force
 - `umx view` — View current memory state
 - `umx status` — Show project memory status
 - `umx conflicts` — Show detected fact conflicts
-- `umx forget` — Remove a fact by ID
-- `umx promote` — Move a fact between scopes
+- `umx forget` — Remove a topic and all its facts
+- `umx promote` — Move a fact between scopes (by fact ID)
 - `umx add` — Add a new fact manually
 
 ## Specification
