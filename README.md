@@ -1,10 +1,16 @@
-# gitmem / umx
+# gitmem
 
 **Git-native shared memory for AI CLI agents.**
 
+A shared memory layer that runs on your filesystem and syncs through GitHub.
+Any tool that can read a file gets the same context. Facts are governed through pull requests so memory is auditable, correctable, and versioned like code.
+
+Your AI tools share a brain, and you can see exactly what's in it.
+
+
 `umx` (Universal Memory Exchange) gives AI coding agents — Claude Code, Codex, Copilot, Cursor, Aider — persistent, structured memory that survives across sessions. Memory is stored as git repos with markdown fact files, scored by encoding strength, and managed through a dream pipeline that extracts, consolidates, and prunes knowledge automatically.
 
-> **Alpha release** — the local-mode core is solid and dogfood-tested. Remote/hybrid GitHub integration is experimental.
+> **Alpha release** — the local-mode core is solid and dogfood-tested across Claude Code, Copilot CLI, Gemini CLI, and OpenCode. Remote/hybrid GitHub integration is experimental.
 
 ## Features
 
@@ -24,6 +30,7 @@
 | Local mode (init, dream, inject, search, view) | ✅ Solid |
 | Codex capture | ✅ Working |
 | Copilot CLI capture | ✅ Working |
+| Claude Code capture | 🔜 Next |
 | Session hooks & MCP server | ✅ Working |
 | Remote mode (PR governance) | 🧪 Experimental |
 | Hybrid mode (sessions push, facts via PR) | 🧪 Experimental |
@@ -111,6 +118,17 @@ umx sync --cwd /path/to/project
 | Sessions | local | local | push to main |
 | Governance | none | full L1/L2 | full L1/L2 |
 | Best for | solo/offline | team/audit | team/fast sessions |
+
+## Tested With
+
+The full capture → dream → search → inject loop has been dogfood-tested by:
+
+- **Copilot CLI** (Claude Opus 4.6) — captured 84 events, extracted 127 facts
+- **Claude Code** — captured 153 events, extracted 73 facts, 203 retained
+- **Gemini CLI** — captured 153 events, 207 facts retained
+- **OpenCode** — captured 153 events, 205 facts retained
+
+All four agents ran the complete pipeline without crashes and converged on the same quality feedback (extraction noise, topic assignment, injection relevance).
 
 ## Development
 
