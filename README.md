@@ -9,7 +9,7 @@
 ## Features
 
 - **Dream pipeline** — extract facts from sessions → consolidate → lint → prune → save
-- **Session capture** — hooks, MCP server, or `umx capture codex` for Codex rollouts
+- **Session capture** — `umx capture codex` / `umx capture copilot`, hooks, or MCP server
 - **Budget-aware injection** — pack the most relevant memory into a token budget
 - **FTS5 search** — full-text indexed fact search
 - **Git-native storage** — every fact is a markdown file with inline metadata in a git repo
@@ -23,6 +23,7 @@
 |---|---|
 | Local mode (init, dream, inject, search, view) | ✅ Solid |
 | Codex capture | ✅ Working |
+| Copilot CLI capture | ✅ Working |
 | Session hooks & MCP server | ✅ Working |
 | Remote mode (PR governance) | 🧪 Experimental |
 | Hybrid mode (sessions push, facts via PR) | 🧪 Experimental |
@@ -53,6 +54,9 @@ umx init-project --cwd /path/to/project
 
 # Capture a Codex session
 umx capture codex --cwd /path/to/project
+
+# Capture a Copilot CLI session
+umx capture copilot --cwd /path/to/project
 
 # Run the dream pipeline
 umx dream --cwd /path/to/project --force
@@ -115,7 +119,7 @@ umx sync --cwd /path/to/project
 pytest -q
 
 # Focused test suites
-pytest -q tests/test_codex_capture.py tests/test_golden_extraction.py
+pytest -q tests/test_codex_capture.py tests/test_copilot_capture.py tests/test_golden_extraction.py
 pytest -q tests/test_github_ops.py tests/test_governance.py
 ```
 
