@@ -21,8 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `init --mode remote|hybrid` creates repos on GitHub org
   - `dream` pushes branches and opens PRs in remote mode
   - L1/L2 governance with workflow templates
-- 211 tests (unit, integration, golden extraction)
+- 239 tests (unit, integration, golden extraction)
 - Spec document: gitmem-spec-v0_9.md
+
+### Changed
+- Remote/hybrid bootstrap now pushes the initial `main` branch for memory repos
+- Dream PR branches now exclude session-history diffs and carry the memory snapshot instead
+- Mutating CLI commands now commit their repository changes by default
 
 ### Architecture
 - Three modes: local (direct write), remote (all via PR), hybrid (mixed)

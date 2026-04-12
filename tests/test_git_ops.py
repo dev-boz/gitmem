@@ -29,6 +29,7 @@ def test_git_init_creates_repo(repo: Path) -> None:
     assert "local/" in content
     assert "__pycache__/" in content
     assert "meta/*.sqlite" in content
+    assert "!meta/tombstones.jsonl" in content
     assert ".umx.json" in content
     assert "meta/dream.lock" in content
 

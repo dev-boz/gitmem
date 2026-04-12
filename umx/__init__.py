@@ -1,4 +1,4 @@
-"""UMX local-mode core implementation."""
+"""gitmem's UMX reference implementation."""
 
 __all__ = ["__version__"]
 

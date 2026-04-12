@@ -72,9 +72,14 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
          (PRs, governance)
 ```
 
-Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in different GitHub orgs and never cross-pollinate — no `.umx/` directories cluttering your code history.
+Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in different GitHub orgs and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
+
+gitmem is the reference implementation of the **UMX specification**.
+The public project is `gitmem`; the Python package and CLI remain `umx`.
 
 ## Install
+
+The package/command name is currently `umx`:
 
 ```bash
 pip install git+https://github.com/dev-boz/gitmem.git
@@ -159,12 +164,13 @@ umx sync --cwd /path/to/project
 
 The full capture, dream, search, inject loop has been dogfood-tested with:
 
-- **Codex** (Claude Opus 4.6) — captured 84 events, extracted 127 facts
-- **Claude Code** — captured 153 events, extracted 73 facts, 203 retained
-- **Gemini CLI** — captured 153 events, 207 facts retained
-- **OpenCode** — captured 153 events, 205 facts retained
+- **Codex**
+- **Claude Code**
+- **Copilot CLI**
+- **Gemini CLI**
+- **OpenCode**
 
-All four agents ran the complete pipeline and converged on the same quality feedback.
+The local-mode loop is in daily use; remote and hybrid mode are included in alpha and now cover bootstrap, PR generation, and session sync.
 
 ## Roadmap
 

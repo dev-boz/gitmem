@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from umx.cli import main
+from umx.config import default_config
 from umx.conventions import ConventionSet
+from umx.dream.pipeline import DreamPipeline
 from umx.governance import (
     PRProposal,
     branch_name_for_dream,
@@ -55,6 +58,20 @@ def _make_fact(
         conflicts_with=conflicts_with or [],
         superseded_by=superseded_by,
         **kwargs,
+    )
+
+
+def _connect_origin(repo_dir: Path, remote_dir: Path) -> None:
+    subprocess.run(["git", "init", "--bare", str(remote_dir)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "remote", "add", "origin", str(remote_dir)],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "push", "-u", "origin", "main"],
+        capture_output=True,
+        check=True,
     )
 
 
@@ -244,5 +261,118 @@ def test_dream_hybrid_sessions_direct(project_dir: Path, project_repo: Path) -> 
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert data["status"] == "ok"
-    # Hybrid mode still writes facts (sessions go direct)
+    # Hybrid mode still completes and reports the retained snapshot.
     assert "facts retained" in data.get("message", "")
+
+
+def test_dream_remote_branch_excludes_session_history(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    from umx.inject import emit_gap_signal
+    from umx.sessions import write_session
+
+    remote = tmp_path / "remote.git"
+    _connect_origin(project_repo, remote)
+
+    write_session(
+        project_repo,
+        {"session_id": "2026-01-15-remote-session", "tool": "codex"},
+        [{"role": "assistant", "content": "remote-only session context"}],
+        auto_commit=True,
+    )
+    emit_gap_signal(
+        project_repo,
+        query="devenv postgres",
+        resolution_context="testing",
+        proposed_fact="remote branch keeps sessions out of PRs",
+        session="2026-01-15-remote-gap",
+    )
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert result.pr_proposal is not None
+
+    diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_repo),
+            "diff",
+            "--name-only",
+            f"origin/main...{result.pr_proposal.branch}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "sessions/" not in diff.stdout
+
+    status = subprocess.run(
+        ["git", "-C", str(project_repo), "status", "--short"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout.strip() == ""
+
+
+def test_dream_hybrid_pushes_sessions_but_not_facts_to_main(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.inject import emit_gap_signal
+    from umx.sessions import write_session
+
+    remote = tmp_path / "hybrid-remote.git"
+    _connect_origin(project_repo, remote)
+
+    write_session(
+        project_repo,
+        {"session_id": "2026-01-15-hybrid-session", "tool": "codex"},
+        [{"role": "assistant", "content": "hybrid session context"}],
+        auto_commit=True,
+    )
+    emit_gap_signal(
+        project_repo,
+        query="devenv redis",
+        resolution_context="testing",
+        proposed_fact="hybrid keeps facts off main",
+        session="2026-01-15-hybrid-gap",
+    )
+
+    monkeypatch.setattr("umx.github_ops.gh_available", lambda: True)
+    monkeypatch.setattr(DreamPipeline, "_push_and_open_pr", lambda self, proposal: None)
+
+    cfg = default_config()
+    cfg.dream.mode = "hybrid"
+    cfg.org = "memory-org"
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert result.pr_proposal is not None
+
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    names = tree.stdout.splitlines()
+    assert any(name.startswith("sessions/") for name in names)
+    assert not any(name.startswith("facts/topics/devenv.md") for name in names)
+
+    status = subprocess.run(
+        ["git", "-C", str(project_repo), "status", "--short"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout.strip() == ""

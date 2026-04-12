@@ -38,6 +38,19 @@ def _cfg():
     return load_config(config_path())
 
 
+def _commit_repo(repo: Path, message: str) -> bool:
+    from umx.git_ops import git_add_and_commit
+
+    return git_add_and_commit(repo, message=message)
+
+
+def _bootstrap_remote_repo(repo: Path, message: str) -> None:
+    from umx.git_ops import git_push
+
+    _commit_repo(repo, message)
+    git_push(repo, branch="main", set_upstream=True)
+
+
 @click.group()
 def main() -> None:
     """UMX CLI."""
@@ -76,6 +89,7 @@ def init_cmd(org: str | None, init_mode: str) -> None:
         else:
             url = ensure_repo(org, "umx-user", private=True)
             set_remote(home / "user", url)
+            _bootstrap_remote_repo(home / "user", "umx: bootstrap remote user memory")
             click.echo(f"remote: {url}")
 
     click.echo(str(home))
@@ -101,6 +115,7 @@ def init_project_cmd(cwd: Path, slug: str | None) -> None:
             set_remote(repo, url)
             if cfg.dream.mode == "remote":
                 deploy_workflows(repo)
+            _bootstrap_remote_repo(repo, "umx: bootstrap remote project memory")
             click.echo(f"remote: {url}")
 
     click.echo(str(repo))
@@ -306,10 +321,14 @@ def forget_cmd(cwd: Path, fact_id: str | None, topic: str | None) -> None:
     repo = project_memory_dir(cwd)
     if fact_id:
         removed = forget_fact(repo, fact_id)
+        if removed:
+            _commit_repo(repo, f"umx: forget {removed.fact_id}")
         click.echo(removed.fact_id if removed else "")
         return
     if topic:
         removed = forget_topic(repo, topic)
+        if removed:
+            _commit_repo(repo, f"umx: forget topic {topic}")
         click.echo(str(len(removed)))
         return
     raise click.UsageError("pass --fact or --topic")
@@ -331,6 +350,7 @@ def promote_cmd(cwd: Path, fact_id: str, destination: str) -> None:
         from umx.memory import add_fact
 
         add_fact(target_repo, fact.clone(scope=Scope.USER, file_path=add_path, repo=target_repo.name))
+        _commit_repo(repo, f"umx: promote {fact.fact_id} to user")
         click.echo(f"{fact.fact_id} -> user")
         return
     raise click.ClickException(f"unsupported destination: {destination}")
@@ -350,6 +370,7 @@ def confirm_cmd(cwd: Path, fact_id: str) -> None:
         consolidation_status=ConsolidationStatus.STABLE,
     )
     replace_fact(repo, updated)
+    _commit_repo(repo, f"umx: confirm {updated.fact_id}")
     click.echo(updated.fact_id)
 
 
@@ -388,6 +409,8 @@ def merge_cmd(cwd: Path, dry_run: bool) -> None:
 
     repo = project_memory_dir(cwd)
     results = merge_all(repo, _cfg(), dry_run=dry_run)
+    if not dry_run and results:
+        _commit_repo(repo, "umx: merge conflicts")
     click.echo(json.dumps(results, sort_keys=True))
 
 
@@ -467,8 +490,7 @@ def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
     cfg.dream.mode = new_mode
     save_config(config_path(), cfg)
 
-    from umx.git_ops import git_push
-    git_push(repo, branch="main", set_upstream=True)
+    _bootstrap_remote_repo(repo, "umx: bootstrap remote project memory")
 
     click.echo(f"mode: {new_mode}")
     click.echo(f"remote: {url}")
@@ -493,6 +515,8 @@ def purge_cmd(cwd: Path, session_id: str, dry_run: bool) -> None:
         click.echo(json.dumps({"dry_run": True, "facts_would_remove": count}, sort_keys=True))
     else:
         result = purge_session(repo, session_id)
+        if result["session_removed"] or result["facts_removed"]:
+            _commit_repo(repo, f"umx: purge session {session_id}")
         click.echo(json.dumps(result, sort_keys=True))
 
 
@@ -511,7 +535,10 @@ def archive_sessions_cmd(cwd: Path) -> None:
     from umx.sessions import archive_sessions
 
     repo = project_memory_dir(cwd)
-    click.echo(json.dumps(archive_sessions(repo, config=_cfg()), sort_keys=True))
+    result = archive_sessions(repo, config=_cfg())
+    if result["archived_sessions"]:
+        _commit_repo(repo, "umx: archive sessions")
+    click.echo(json.dumps(result, sort_keys=True))
 
 
 @main.command("init-actions")
@@ -533,6 +560,7 @@ def migrate_scope_cmd(cwd: Path, old_path: str, new_path: str) -> None:
     new = repo / new_path
     new.parent.mkdir(parents=True, exist_ok=True)
     old.rename(new)
+    _commit_repo(repo, f"umx: migrate scope {old_path} -> {new_path}")
     click.echo(str(new))
 
 
@@ -594,6 +622,8 @@ def bridge_import_cmd(cwd: Path, targets: tuple[str], topic: str, dry_run: bool)
     if not dry_run:
         for fact in imported:
             add_fact(repo, fact, auto_commit=False)
+        if imported:
+            _commit_repo(repo, f"umx: import bridge facts to {topic}")
     click.echo(json.dumps({"dry_run": dry_run, "imported": len(imported)}, sort_keys=True))
 
 
@@ -669,6 +699,8 @@ def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
     else:
         for fact in facts:
             add_fact(repo, fact, auto_commit=False)
+        if facts:
+            _commit_repo(repo, f"umx: import {adapter} memory")
         click.echo(json.dumps({"imported": len(facts)}, sort_keys=True))
 
 

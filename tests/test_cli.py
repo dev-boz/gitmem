@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import Mock, patch
 
 from click.testing import CliRunner
 
 from umx.config import default_config, save_config
 from umx.cli import main
-from umx.scope import config_path
+from umx.scope import config_path, project_memory_dir
 
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
@@ -123,3 +124,47 @@ def test_cli_status_remains_json_when_hot_tier_warns(project_dir, project_repo, 
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["metrics"]["hot_tier_utilisation"]["status"] == "warn"
+
+
+def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "remote"
+    save_config(config_path(), cfg)
+
+    remote = tmp_path / "memory.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ):
+        result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "demo"])
+
+    assert result.exit_code == 0, result.output
+
+    repo = project_memory_dir(project_dir)
+    verify = subprocess.run(
+        ["git", "--git-dir", str(remote), "rev-parse", "--verify", "main"],
+        capture_output=True,
+        text=True,
+    )
+    assert verify.returncode == 0
+
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+
+    log = subprocess.run(
+        ["git", "-C", str(repo), "log", "--oneline"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "bootstrap remote project memory" in log.stdout

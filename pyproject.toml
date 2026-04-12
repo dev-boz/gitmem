@@ -5,9 +5,9 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "umx"
 version = "0.9.1"
-description = "Universal Memory Exchange - git-native shared memory for CLI agents"
+description = "gitmem: the reference implementation of the UMX specification for git-native agent memory"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.11"
 authors = [{ name = "umx contributors" }]
 keywords = ["ai", "memory", "cli", "agents", "gitmem"]

@@ -17,7 +17,17 @@ from umx.dream.gitignore import load_gitignore, route_facts
 from umx.dream.lint import generate_lint_findings, write_lint_report
 from umx.dream.notice import append_notice
 from umx.dream.providers import available_provider_notice
-from umx.git_ops import git_add_and_commit, git_create_branch, git_checkout, git_current_branch
+from umx.git_ops import (
+    changed_paths,
+    diff_paths_against_ref,
+    git_add_and_commit,
+    git_checkout,
+    git_create_branch,
+    git_current_branch,
+    git_path_exists_at_ref,
+    git_ref_exists,
+    git_restore_path,
+)
 from umx.governance import PRProposal, generate_l1_pr
 from umx.manifest import rebuild_manifest
 from umx.memory import (
@@ -234,13 +244,14 @@ class DreamPipeline:
                 continue
             active.append(fact)
         stabilized = stabilize_facts(active, self.new_fact_ids, now)
-        save_repository_facts(self.repo_dir, stabilized)
+        save_repository_facts(self.repo_dir, stabilized, auto_commit=False)
         write_memory_md(
             self.repo_dir,
             [fact for fact in stabilized if fact.superseded_by is None],
             last_dream=now.isoformat().replace("+00:00", "Z"),
             session_count=int(read_dream_state(self.repo_dir).get("session_count", 0)),
             config=self.config,
+            auto_commit=False,
         )
         rebuild_manifest(self.repo_dir, stabilized, now)
         rebuild_index(self.repo_dir)
@@ -248,30 +259,35 @@ class DreamPipeline:
         self._demoted_count = demoted_count
         return stabilized, pruned
 
-    def _commit_to_branch(self, facts: list[Fact], branch_name: str) -> bool:
-        """Save facts to a feature branch instead of main."""
+    def _branch_changes(self) -> list[Path]:
+        """Tracked changes that should be captured in a PR branch."""
+        tracked: list[Path] = []
+        for path in changed_paths(self.repo_dir):
+            relative = path.relative_to(self.repo_dir).as_posix()
+            if relative.startswith("sessions/"):
+                continue
+            tracked.append(path)
+        return tracked
+
+    def _strip_session_changes_from_branch(self, base_ref: str = "origin/main") -> None:
+        """Keep session history out of dream PR branches."""
+        if not git_ref_exists(self.repo_dir, base_ref):
+            return
+        for path in diff_paths_against_ref(self.repo_dir, base_ref, pathspec="sessions"):
+            relative = path.relative_to(self.repo_dir).as_posix()
+            if git_path_exists_at_ref(self.repo_dir, base_ref, relative):
+                git_restore_path(self.repo_dir, base_ref, relative)
+            else:
+                path.unlink(missing_ok=True)
+
+    def _commit_to_branch(self, branch_name: str, message: str) -> bool:
+        """Commit the current memory snapshot to a feature branch."""
         original_branch = git_current_branch(self.repo_dir)
         if not git_create_branch(self.repo_dir, branch_name):
             return False
         try:
-            save_repository_facts(self.repo_dir, facts, auto_commit=False)
-            committed = git_add_and_commit(
-                self.repo_dir,
-                message=f"dream(l1): extract {len(facts)} facts",
-            )
-            if not committed:
-                import subprocess
-                subprocess.run(
-                    ["git", "checkout", "--", "."],
-                    cwd=self.repo_dir, capture_output=True,
-                )
-        except Exception:
-            import subprocess
-            subprocess.run(
-                ["git", "checkout", "--", "."],
-                cwd=self.repo_dir, capture_output=True,
-            )
-            committed = False
+            self._strip_session_changes_from_branch()
+            committed = git_add_and_commit(self.repo_dir, message=message)
         finally:
             if original_branch:
                 git_checkout(self.repo_dir, original_branch)
@@ -306,10 +322,13 @@ class DreamPipeline:
     def _push_sessions_to_main(self) -> bool:
         """Push main branch for session sync (hybrid/remote mode)."""
         from umx.git_ops import git_add_and_commit
-        git_add_and_commit(
-            self.repo_dir,
-            message="umx: sync sessions",
-        )
+        session_paths = changed_paths(self.repo_dir, prefix="sessions/")
+        if session_paths:
+            git_add_and_commit(
+                self.repo_dir,
+                paths=session_paths,
+                message="umx: sync sessions",
+            )
         if not self.config.org:
             return False
         from umx.github_ops import gh_available, push_main
@@ -337,15 +356,23 @@ class DreamPipeline:
             pr_proposal = None
 
             if mode == "remote":
-                # Remote: commit to branch, push, open PR — never write to main
-                new_facts = [f for f in consolidated if f.fact_id in self.new_fact_ids]
+                # Remote: compute the full snapshot locally, then commit it on a PR branch.
+                final_facts, pruned = self.prune(consolidated, now)
+                new_facts = [f for f in final_facts if f.fact_id in self.new_fact_ids]
+                branch_changes = self._branch_changes()
                 pr_number = None
-                if new_facts:
-                    pr_proposal = self._generate_pr(new_facts, self._gathered_session_ids)
-                    if self._commit_to_branch(consolidated, pr_proposal.branch):
+                if branch_changes:
+                    proposal_facts = new_facts or final_facts
+                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    if self._commit_to_branch(pr_proposal.branch, message="dream(l1): update memory snapshot"):
                         pr_number = self._push_and_open_pr(pr_proposal)
+                if self._gathered_session_ids:
+                    mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
-                msg = f"{len(consolidated)} facts on branch"
+                demoted = getattr(self, "_demoted_count", 0)
+                msg = f"{len(final_facts)} facts retained"
+                if demoted:
+                    msg += f", {demoted} demoted"
                 if pr_proposal:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
@@ -353,7 +380,7 @@ class DreamPipeline:
                 return DreamResult(
                     status="ok",
                     added=len(self.new_fact_ids),
-                    pruned=0,
+                    pruned=pruned,
                     findings=findings,
                     message=msg,
                     pr_proposal=pr_proposal,
@@ -361,12 +388,14 @@ class DreamPipeline:
 
             if mode == "hybrid":
                 # Hybrid: sessions push to main (append-only), fact changes go through PRs
-                new_facts = [f for f in consolidated if f.fact_id in self.new_fact_ids]
                 final_facts, pruned = self.prune(consolidated, now)
+                new_facts = [f for f in final_facts if f.fact_id in self.new_fact_ids]
+                branch_changes = self._branch_changes()
                 pr_number = None
-                if new_facts:
-                    pr_proposal = self._generate_pr(new_facts, self._gathered_session_ids)
-                    if self._commit_to_branch(new_facts, pr_proposal.branch):
+                if branch_changes:
+                    proposal_facts = new_facts or final_facts
+                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    if self._commit_to_branch(pr_proposal.branch, message="dream(l1): update memory snapshot"):
                         pr_number = self._push_and_open_pr(pr_proposal)
                 # Push sessions to main
                 self._push_sessions_to_main()
@@ -394,6 +423,7 @@ class DreamPipeline:
             final_facts, pruned = self.prune(consolidated, now)
             if self._gathered_session_ids:
                 mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
+            git_add_and_commit(self.repo_dir, message="umx: dream cycle")
             mark_dream_complete(self.repo_dir, now)
             demoted = getattr(self, "_demoted_count", 0)
             msg = f"{len(final_facts)} facts retained"
