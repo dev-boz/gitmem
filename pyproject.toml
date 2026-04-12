@@ -25,6 +25,11 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/dev-boz/gitmem"
+Repository = "https://github.com/dev-boz/gitmem"
+Changelog = "https://github.com/dev-boz/gitmem/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

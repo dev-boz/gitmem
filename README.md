@@ -1,76 +1,73 @@
-# umx
+# gitmem / umx
 
-Local-first implementation of the `gitmem` / `umx` v0.9 spec.
+**Git-native shared memory for AI CLI agents.**
 
-## Release Scope
+`umx` (Universal Memory Exchange) gives AI coding agents — Claude Code, Codex, Copilot, Cursor, Aider — persistent, structured memory that survives across sessions. Memory is stored as git repos with markdown fact files, scored by encoding strength, and managed through a dream pipeline that extracts, consolidates, and prunes knowledge automatically.
 
-This is being prepared as a local-first alpha release with experimental remote/hybrid support.
+> **Alpha release** — the local-mode core is solid and dogfood-tested. Remote/hybrid GitHub integration is experimental.
 
-What the alpha is for:
+## Features
 
-- real-project local dogfooding
-- local session capture, including `umx capture codex`
-- local `inject -> dream -> search -> view`
+- **Dream pipeline** — extract facts from sessions → consolidate → lint → prune → save
+- **Session capture** — hooks, MCP server, or `umx capture codex` for Codex rollouts
+- **Budget-aware injection** — pack the most relevant memory into a token budget
+- **FTS5 search** — full-text indexed fact search
+- **Git-native storage** — every fact is a markdown file with inline metadata in a git repo
+- **Scope hierarchy** — user → tool → project → folder → file
+- **Encoding strength 1–5** — ground truth to ambient signals
+- **GitHub integration** (experimental) — remote/hybrid modes with PR-based governance
 
-What is experimental (new):
+## Status
 
-- `remote` mode — dream commits to a branch, pushes, and opens a PR on GitHub for governance review
-- `hybrid` mode — sessions push directly to main, fact changes go through PRs
-- `umx setup-remote` — connect an existing local project to a GitHub memory org
+| Feature | Status |
+|---|---|
+| Local mode (init, dream, inject, search, view) | ✅ Solid |
+| Codex capture | ✅ Working |
+| Session hooks & MCP server | ✅ Working |
+| Remote mode (PR governance) | 🧪 Experimental |
+| Hybrid mode (sessions push, facts via PR) | 🧪 Experimental |
+| Extraction quality on real transcripts | ⚠️ Rough edges |
 
-What is explicitly rough:
-
-- live extraction on real Codex transcripts still keeps some low-value procedural and doc-derived facts
-- document-derived facts are intentionally demoted to `external_doc`, `fragile`
-- L2 review workflow runs in CI but does not yet auto-merge or auto-close PRs
-- GitHub Actions workflows are deployed but not yet tested in CI
-
-This repo currently focuses on the local-mode core:
-
-- markdown fact storage with inline metadata
-- separate `$UMX_HOME` memory repos
-- session capture and redaction
-- search/indexing and usage telemetry
-- injection and budget packing
-- a local dream pipeline with consolidation, lint, prune, manifest rebuild, tombstones, and supersession history
-
-## Local Dogfood Quickstart
-
-Install editable and initialize a local memory home:
+## Install
 
 ```bash
-pip install -e .
-umx init --org memory-org
+pip install git+https://github.com/dev-boz/gitmem.git
 ```
 
-If you are actively developing from the checkout and do not want to rely on an installed binary, use the repo-local entry point:
+Or for development:
 
 ```bash
-PYTHONPATH=$PWD python3 -m umx.cli --help
+git clone https://github.com/dev-boz/gitmem.git
+cd gitmem
+pip install -e ".[dev]"
 ```
 
-A clean `pip install -e .` in a fresh virtualenv was also verified. Avoid `--system-site-packages` if you have an older global `umx` installed, because it can mask the checkout during verification.
-
-Initialize one project:
+## Quick Start
 
 ```bash
+# Initialize memory home
+umx init
+
+# Initialize a project
 umx init-project --cwd /path/to/project
-umx status --cwd /path/to/project
-```
 
-Run the basic local loop:
-
-```bash
-umx inject --cwd /path/to/project --prompt "postgres deploy flow"
+# Capture a Codex session
 umx capture codex --cwd /path/to/project
-umx search --cwd /path/to/project postgres
+
+# Run the dream pipeline
 umx dream --cwd /path/to/project --force
+
+# Search memory
+umx search --cwd /path/to/project postgres
+
+# Inject memory into a prompt
+umx inject --cwd /path/to/project --prompt "postgres deploy flow"
+
+# View facts
 umx view --cwd /path/to/project --list
 ```
 
-If you are dogfooding from Codex, `umx capture codex` imports the latest rollout from `~/.codex/sessions` by default. You can also point it at a specific rollout file with `--file /path/to/rollout.jsonl`.
-
-## Remote/Hybrid Quickstart
+## Remote/Hybrid Mode (Experimental)
 
 Requires `gh` CLI installed and authenticated (`gh auth login`).
 
@@ -111,23 +108,21 @@ umx sync --cwd /path/to/project
 | Governance | none | full L1/L2 | full L1/L2 |
 | Best for | solo/offline | team/audit | team/fast sessions |
 
-## Dogfooding Checklist
-
-Use this as the minimum manual readiness pass for a real repo:
-
-1. `umx init` and `umx init-project` succeed with no patching.
-2. `umx inject` returns a usable memory block for a real prompt.
-3. A real session is written through hooks, MCP, or `umx capture codex` and shows up in `umx search --raw`.
-4. `umx dream --force` extracts at least one expected fact.
-5. `umx search` finds the new fact from the index.
-6. `umx view --list` renders the retained fact set without starting the web UI.
-
-## Useful Test Targets
-
-For the current dogfooding slice, the highest-signal checks are:
+## Development
 
 ```bash
-pytest -q tests/test_codex_capture.py tests/test_golden_extraction.py tests/test_dogfood_readiness.py
-pytest -q tests/test_github_ops.py tests/test_governance.py
+# Run all tests
 pytest -q
+
+# Focused test suites
+pytest -q tests/test_codex_capture.py tests/test_golden_extraction.py
+pytest -q tests/test_github_ops.py tests/test_governance.py
 ```
+
+## Spec
+
+See [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md) for the full specification.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
