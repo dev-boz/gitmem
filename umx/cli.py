@@ -737,6 +737,60 @@ def capture_codex_cmd(
     click.echo(json.dumps(capture_codex_rollout(cwd, target, config=_cfg()), sort_keys=True))
 
 
+@capture_group.command("copilot")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--file",
+    "session_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Specific Copilot events.jsonl file to import.",
+)
+@click.option(
+    "--source-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Copilot session-state directory. Defaults to ~/.copilot/session-state/.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def capture_copilot_cmd(
+    cwd: Path,
+    session_file: Path | None,
+    source_root: Path | None,
+    dry_run: bool,
+) -> None:
+    from umx.copilot_capture import (
+        capture_copilot_session,
+        latest_copilot_session_path,
+        parse_copilot_session,
+    )
+
+    target = session_file or latest_copilot_session_path(source_root)
+    if target is None:
+        raise click.ClickException("No Copilot session logs found.")
+    if not target.exists():
+        raise click.ClickException(f"Copilot session file not found: {target}")
+
+    if dry_run:
+        transcript = parse_copilot_session(target)
+        click.echo(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "source_file": str(target),
+                    "tool": "copilot",
+                    "umx_session_id": transcript.umx_session_id,
+                    "events_imported": len(transcript.events),
+                    "model": transcript.model,
+                },
+                sort_keys=True,
+            )
+        )
+        return
+
+    click.echo(json.dumps(capture_copilot_session(cwd, target, config=_cfg()), sort_keys=True))
+
+
 @main.command("search")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--raw", is_flag=True, default=False, help="Search raw session files instead of the fact index.")
