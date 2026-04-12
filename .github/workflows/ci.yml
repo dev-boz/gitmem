@@ -14,8 +14,11 @@ jobs:
         python-version: ['3.11', '3.12', '3.13']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test"
       - run: pip install -e ".[dev]"
       - run: pytest -q
