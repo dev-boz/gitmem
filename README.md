@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="GITMEM.JPG" alt="gitmem header image" />
+</p>
+
 # gitmem
 
 **Git-native shared memory and MCP server for AI coding agents.**
