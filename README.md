@@ -1,9 +1,9 @@
 # gitmem
 
-**Git-native shared memory for AI coding agents.**
+**Git-native shared memory and MCP server for AI coding agents.**
 
 A shared memory layer that runs on your filesystem and syncs through GitHub.
-Any tool that can read a file gets the same context. Facts are governed through pull requests so memory is auditable, correctable, and versioned like code.
+Any tool that can read a file gets the same context. In remote mode, facts can be governed through pull requests so memory is auditable, correctable, and versioned like code.
 
 ---
 
@@ -11,11 +11,13 @@ Your AI tools don't talk to each other. A fact learned by Claude Code — *postg
 
 Worse: when tools *do* remember things, there's no audit trail. A cheap model extracts a fact wrong and it persists silently — no provenance, no correction mechanism, no way to see what your agent "knows" or challenge it.
 
-gitmem fixes both problems. Memory is stored as markdown files in git repos, synced through GitHub, and governed through pull requests. Any tool that can read a file gets the same context. Facts are versioned, auditable, and correctable — like code.
+gitmem fixes both problems. Memory is stored as markdown files in git repos, synced through GitHub, and optionally governed through pull requests. Any tool that can read a file gets the same context. Facts are versioned, auditable, and correctable — like code.
 
 **Your AI tools share a brain, and you can see exactly what's in it.**
 
-> **Alpha release** — the local-mode core is solid and dogfood-tested across Claude Code, Codex, Copilot CLI, Gemini CLI, and OpenCode. GitHub PR governance is experimental. Releasing now to get the idea out; expect rough edges.
+> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot transcript capture, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, and full Claude Code transcript/hook capture is still in active development.
+
+Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
 ## The idea
 
@@ -33,17 +35,17 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
 
 ## What sets it apart
 
-**GitHub as the source of truth.** Memory repos live in a private GitHub org you own. Facts arrive via PR. You review what your agents "learn" the same way you review code. Branch protection, audit logs, and Actions workflows come free.
+**GitHub as the source of truth.** In remote or hybrid mode, memory repos live in a private GitHub org you own. Facts arrive via PR. You review what your agents "learn" the same way you review code. Branch protection, audit logs, and Actions workflows come free.
 
 **Cognitive science, not vibes.** The memory model is grounded in established research — Tulving's episodic/semantic distinction, Anderson's activation strength, interference theory for contradiction handling, cue-dependent retrieval for injection. This isn't arbitrary; it's why the system handles conflict resolution, fact decay, and context-aware recall the way it does.
 
 **Encoding strength, not flat confidence.** Every fact carries a strength from 1-5 based on *how* it was learned, not just a model's self-assessed confidence score. A function signature parsed from an AST (S:4) outranks a pattern inferred from logs (S:2), which outranks a single unconfirmed mention (S:1). Ground-truth code *cannot* be overruled by LLM inference — it's a hard rule, not a scoring tiebreak.
 
-**Tool-agnostic by design.** gitmem is a filesystem convention and injection protocol, not a service. It doesn't wrap or replace your tools. Any CLI that can read a file and execute a hook can participate. The `umx` CLI handles the pipeline; your agents just read and write.
+**Tool-agnostic by design.** gitmem is a filesystem convention and injection protocol, not a service. It doesn't wrap or replace your tools. Any CLI that can read a file and execute a hook can participate. The `gitmem` / `umx` CLI handles the pipeline; your agents just read and write.
 
-**Zero infrastructure.** No cloud services, no API keys (beyond GitHub). Memory is markdown files in git repos. SQLite indexes are local build artifacts. Everything works offline in local mode.
+**Zero required infrastructure in local mode.** No hosted service. Memory is markdown files in git repos. SQLite indexes are local build artifacts. The current local alpha works without model API keys.
 
-**Dream pipeline.** After sessions end, a background pipeline extracts facts from transcripts, consolidates them against existing knowledge, detects contradictions, resolves conflicts by composite score, lints for drift, and prunes stale facts. In remote/hybrid mode, all of this goes through PRs — cheap models propose, SotA models review, nothing auto-commits to main.
+**Dream pipeline.** After sessions end, a background pipeline extracts facts from transcripts, consolidates them against existing knowledge, detects contradictions, resolves conflicts by composite score, lints for drift, and prunes stale facts. The local alpha runs this natively today; the remote/hybrid governance path is included but still experimental.
 
 ## How it works
 
@@ -56,7 +58,7 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
         |           |           |
         +-----------+-----------+
                     |
-              umx (capture)
+          gitmem / umx (capture)
                     |
         +-----------+-----------+
         |                       |
@@ -75,11 +77,13 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
 Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in different GitHub orgs and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
 
 gitmem is the reference implementation of the **UMX specification**.
-The public project is `gitmem`; the Python package and CLI remain `umx`.
+The repo is `gitmem`, the Python package name remains `umx`, and both `gitmem` and `umx` CLI commands work.
 
 ## Install
 
-The package/command name is currently `umx`:
+Requires **Python 3.11+**.
+
+Install from the `gitmem` repo. The package metadata is still `umx`, and the CLI exposes both `gitmem` and `umx`:
 
 ```bash
 pip install git+https://github.com/dev-boz/gitmem.git
@@ -97,27 +101,46 @@ pip install -e ".[dev]"
 
 ```bash
 # Initialize memory home
-umx init
+gitmem init
 
 # Initialize a project
-umx init-project --cwd /path/to/project
+gitmem init-project --cwd /path/to/project
 
 # Capture a session
-umx capture codex --cwd /path/to/project
-umx capture copilot --cwd /path/to/project
+gitmem capture codex --cwd /path/to/project
+gitmem capture copilot --cwd /path/to/project
 
 # Run the dream pipeline (extract, consolidate, lint, prune)
-umx dream --cwd /path/to/project --force
+gitmem dream --cwd /path/to/project --force
 
 # Search memory
-umx search --cwd /path/to/project postgres
+gitmem search --cwd /path/to/project postgres
 
 # Inject memory into a prompt
-umx inject --cwd /path/to/project --prompt "postgres deploy flow"
+gitmem inject --cwd /path/to/project --prompt "postgres deploy flow"
 
 # View facts
-umx view --cwd /path/to/project --list
+gitmem view --cwd /path/to/project --list
+
+# Start the MCP server
+gitmem mcp
 ```
+
+`umx` remains as a compatibility alias for existing setups.
+
+## How capture works
+
+- `gitmem capture codex` imports existing Codex rollout JSONL files from `~/.codex` or a file you pass explicitly.
+- `gitmem capture copilot` imports existing Copilot `events.jsonl` session logs from `~/.copilot/session-state/` or a file you pass explicitly.
+- Claude Code support in this alpha is via native memory import/read surfaces (`CLAUDE.md`, `~/.claude/projects/*/CLAUDE.md`), bridge files, and MCP. Full transcript/hook capture is still in progress.
+- The tool reads files and hook outputs you point it at. It is not doing network interception or replacing the underlying CLI.
+
+## Privacy and provider status
+
+- In `local` mode, sessions, facts, and SQLite indexes stay on your filesystem.
+- Session records are redacted before persistence, project-secret facts are excluded from injection, and facts tied to gitignored paths are routed to private scope.
+- `remote` / `hybrid` mode syncs the memory repo to GitHub; your project code stays in its own repo.
+- The local alpha does not require model API keys. The repo includes draft GitHub Actions templates that reference `GROQ_API_KEY` and `ANTHROPIC_API_KEY` for future provider-backed review; that path is still experimental.
 
 ## Remote mode (experimental)
 
@@ -125,15 +148,15 @@ Requires `gh` CLI installed and authenticated.
 
 ```bash
 # Bootstrap with GitHub org
-umx init --org your-github-org --mode remote
-umx init-project --cwd /path/to/project
+gitmem init --org your-github-org --mode remote
+gitmem init-project --cwd /path/to/project
 
 # Dream pipeline opens PRs instead of direct-writing
-umx dream --cwd /path/to/project --force
+gitmem dream --cwd /path/to/project --force
 # → PR: [dream/l1] ... (#42)
 
 # Sync sessions and facts
-umx sync --cwd /path/to/project
+gitmem sync --cwd /path/to/project
 ```
 
 ### Mode comparison
@@ -142,14 +165,15 @@ umx sync --cwd /path/to/project
 |---|---|---|---|
 | Facts | direct write | PR only | PR only |
 | Sessions | local | local | push to main |
-| Governance | none | full (L1/L2/L3) | full (L1/L2/L3) |
+| Governance | none | full (experimental) | full (experimental) |
 | Offline | yes | no | partial |
 | Best for | solo / offline | team / audit | team / fast capture |
 
 ## Features
 
-- **Dream pipeline** — Orient, Gather, Consolidate, Lint, Prune — runs on free LLM API quota
-- **Session capture** — `umx capture codex` / `umx capture copilot`, hooks, or MCP server
+- **Dream pipeline** — Orient, Gather, Consolidate, Lint, Prune — native/local in this alpha, governance path experimental
+- **Session capture** — `gitmem capture codex` / `gitmem capture copilot`, native memory import adapters, hooks, or MCP server
+- **MCP server** — `gitmem mcp` exposes read/write/search/dream/status tools over stdio
 - **Budget-aware injection** — greedy-packs the most relevant facts into a token budget
 - **Scope hierarchy** — user > tool > project > folder > file — facts injected at the most specific relevant level
 - **Encoding strength 1-5** — ground truth code (S:5) to incidental mention (S:1), with composite scoring for trust, relevance, and retention
@@ -160,35 +184,32 @@ umx sync --cwd /path/to/project
 - **Tombstones** — explicit forgetting mechanism that suppresses facts across future dream cycles
 - **Procedures** — reusable playbooks and action rules, matched and injected at pre-tool time
 
-## Tested with
+## Alpha coverage
 
-The full capture, dream, search, inject loop has been dogfood-tested with:
+- **First-class transcript capture:** Codex, Copilot CLI
+- **Native memory import adapters:** Claude Code, Copilot instructions, Aider
+- **Integration surfaces:** MCP server, shims, bridge files, search/inject/view
 
-- **Codex**
-- **Claude Code**
-- **Copilot CLI**
-- **Gemini CLI**
-- **OpenCode**
-
-The local-mode loop is in daily use; remote and hybrid mode are included in alpha and now cover bootstrap, PR generation, and session sync.
+The local-mode loop is in daily use. Remote and hybrid mode are included in alpha for bootstrap, PR scaffolding, and session sync, but that governance path is still the roughest part of the project.
 
 ## Roadmap
 
 gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-native AI memory — into the world. Here's where it's headed:
 
-### Now (alpha)
+### Working in this alpha
 - Local-mode dream pipeline (extract, consolidate, lint, prune)
-- Session capture for Codex and Copilot CLI
-- FTS5 search and budget-aware injection
-- Encoding strength and composite scoring
+- Codex and Copilot transcript capture
+- Native memory import adapters for Claude Code, Copilot instructions, and Aider
+- FTS5 search, budget-aware injection, viewer, shims, bridge files, and MCP server
+- Remote/hybrid bootstrap, PR scaffolding, and session sync (experimental)
 
 ### Next
-- **Claude Code capture** — session hooks and MCP server integration
-- **Read adapters** — generic CLI, hybrid gather across tools
-- **Injection layer** — full hook/shim/MCP integration, pre-tool guidance, attention refresh, procedure matching, subagent relay
+- **Claude Code transcript capture** — session hooks and deeper MCP integration
+- **Read adapters** — generic CLI and hybrid gather across tools
 - **Extraction quality** — better prompts, golden-test harness, benchmark framework
+- **Provider-backed review** — turn the draft remote/L1/L2 flow into a fully wired path
 
-### Then: GitHub governance (the big differentiator)
+### Then: GitHub governance hardening
 - **gitmem backend** — GitHub org bootstrap, push queue, PR pipeline
 - **L1/L2/L3 governance** — cheap models propose (L1), SotA models review (L2), humans confirm (L3)
 - **CONVENTIONS.md enforcement** — human-authored project schema drives extraction taxonomy
@@ -213,7 +234,7 @@ pytest -q
 
 # Focused test suites
 pytest -q tests/test_codex_capture.py tests/test_copilot_capture.py tests/test_golden_extraction.py
-pytest -q tests/test_github_ops.py tests/test_governance.py
+pytest -q tests/test_mcp_server.py tests/test_security.py tests/test_governance.py
 ```
 
 ## License
