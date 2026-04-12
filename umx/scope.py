@@ -1,260 +1,160 @@
-"""Scope hierarchy resolution.
-
-Memory is stored in .umx/ directories at each level of the filesystem.
-Resolution mirrors .gitignore and .editorconfig: walk up from CWD, most
-specific scope first.
-
-Resolution order:
-  ~/.umx/                        # 1. user-global
-  ~/.umx/tools/<tool>.md         # 2. tool-specific
-  <root>/.umx/local/             # 3. project-local (private, higher priority)
-  <root>/.umx/                   # 4. project-team (committed)
-  <dir>/.umx/                    # 5. folder (lazy)
-  <dir>/.umx/files/<file>.md     # 6. file (lazy)
-"""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import subprocess
 from pathlib import Path
-from typing import Iterator
-
-from umx.models import Scope
+from urllib.parse import quote
 
 
-@dataclass
-class ScopeLayer:
-    """A resolved scope layer with its path and type."""
-
-    scope: Scope
-    path: Path
-    always_loaded: bool
-
-    @property
-    def topics_dir(self) -> Path:
-        return self.path / "topics"
-
-    @property
-    def files_dir(self) -> Path:
-        return self.path / "files"
-
-    @property
-    def memory_md(self) -> Path:
-        return self.path / "MEMORY.md"
-
-    @property
-    def config_yaml(self) -> Path:
-        return self.path / "config.yaml"
+DEFAULT_UMX_HOME = "~/.umx"
 
 
-def user_scope_dir() -> Path:
-    """Return the user-global .umx directory (~/.umx/)."""
-    return Path.home() / ".umx"
+def get_umx_home() -> Path:
+    raw = os.environ.get("UMX_HOME", DEFAULT_UMX_HOME)
+    return Path(raw).expanduser()
 
 
-def find_project_root(cwd: Path) -> Path | None:
-    """Find the project root by walking up from cwd.
-
-    A project root is identified by the presence of .git/.
-    Falls back to .umx/ only at the filesystem root level (not in subdirs
-    that may have folder-level .umx/ directories).
-    """
-    current = cwd.resolve()
-
-    # First pass: look for .git (definitive project root)
-    for parent in [current, *current.parents]:
-        if (parent / ".git").exists():
-            return parent
-        if parent == parent.parent:
-            break
-
-    # Second pass: look for .umx without .git
-    for parent in [current, *current.parents]:
-        if (parent / ".umx").exists():
-            return parent
-        if parent == parent.parent:
-            break
-
-    return None
+def config_path() -> Path:
+    return get_umx_home() / "config.yaml"
 
 
-def resolve_scopes(
-    cwd: Path,
-    tool: str | None = None,
-    target_file: Path | None = None,
-) -> list[ScopeLayer]:
-    """Resolve the full scope hierarchy for a given CWD.
-
-    Returns layers in resolution order (most general → most specific).
-    The injection order is reversed: most specific first for override semantics.
-
-    Args:
-        cwd: Current working directory.
-        tool: Optional tool name for tool-specific scope.
-        target_file: Optional file path for file-level scope.
-
-    Returns:
-        List of ScopeLayer objects in resolution order (user → file).
-    """
-    layers: list[ScopeLayer] = []
-
-    # 1. User-global
-    user_dir = user_scope_dir()
-    layers.append(ScopeLayer(
-        scope=Scope.USER,
-        path=user_dir,
-        always_loaded=True,
-    ))
-
-    # 2. Tool-specific (per-tool file: ~/.umx/tools/<tool>.md)
-    if tool:
-        tool_dir = user_dir / "tools" / tool
-        layers.append(ScopeLayer(
-            scope=Scope.TOOL,
-            path=tool_dir,
-            always_loaded=True,
-        ))
-
-    # 3-4. Project scopes
-    project_root = find_project_root(cwd)
-    if project_root:
-        # 3. Project-local (private, higher priority for reading)
-        local_dir = project_root / ".umx" / "local"
-        layers.append(ScopeLayer(
-            scope=Scope.PROJECT_LOCAL,
-            path=local_dir,
-            always_loaded=True,
-        ))
-
-        # 4. Project-team (committed)
-        team_dir = project_root / ".umx"
-        layers.append(ScopeLayer(
-            scope=Scope.PROJECT_TEAM,
-            path=team_dir,
-            always_loaded=True,
-        ))
-
-    # 5. Folder scopes (walk from project root to cwd)
-    if project_root:
-        resolved_cwd = cwd.resolve()
-        try:
-            rel = resolved_cwd.relative_to(project_root)
-        except ValueError:
-            rel = Path()
-
-        # Walk each intermediate directory
-        current = project_root
-        for part in rel.parts:
-            current = current / part
-            folder_umx = current / ".umx"
-            if current != project_root:
-                layers.append(ScopeLayer(
-                    scope=Scope.FOLDER,
-                    path=folder_umx,
-                    always_loaded=False,
-                ))
-
-    # 6. File scope — points to the specific file's memory file
-    if target_file and project_root:
-        file_path = target_file.resolve()
-        # Walk up from the file's directory to find the nearest .umx/ dir
-        file_umx_dir: Path | None = None
-        search_dir = file_path.parent
-        while True:
-            candidate = search_dir / ".umx"
-            if candidate.exists() and candidate.is_dir():
-                file_umx_dir = candidate
-                break
-            if search_dir == project_root or search_dir == search_dir.parent:
-                # Fall back to project-level .umx/
-                file_umx_dir = project_root / ".umx"
-                break
-            search_dir = search_dir.parent
-
-        file_mem_path = file_umx_dir / "files" / f"{file_path.name}.md"
-        layers.append(ScopeLayer(
-            scope=Scope.FILE,
-            path=file_mem_path,
-            always_loaded=False,
-        ))
-
-    return layers
+def user_memory_dir() -> Path:
+    return get_umx_home() / "user"
 
 
-def active_layers(
-    layers: list[ScopeLayer],
-    include_lazy: bool = False,
-) -> list[ScopeLayer]:
-    """Filter to layers that should be loaded.
-
-    Args:
-        layers: Full scope hierarchy.
-        include_lazy: If True, include lazy-loaded layers too.
-
-    Returns:
-        Filtered list of active layers.
-    """
-    return [
-        layer for layer in layers
-        if layer.always_loaded or (include_lazy and layer.path.exists())
-    ]
+def normalize_repo_path(path: str | Path) -> str:
+    path_obj = Path(path)
+    parts = [part for part in path_obj.as_posix().split("/") if part and part != "."]
+    cleaned: list[str] = []
+    for part in parts:
+        if part == "..":
+            if cleaned:
+                cleaned.pop()
+            continue
+        cleaned.append(part)
+    return "/".join(cleaned)
 
 
-def iter_existing_layers(layers: list[ScopeLayer]) -> Iterator[ScopeLayer]:
-    """Yield only layers whose directory actually exists on disk."""
-    for layer in layers:
-        if layer.path.exists():
-            yield layer
+def encode_scope_path(path: str | Path) -> str:
+    normalized = normalize_repo_path(path)
+    if not normalized:
+        return "root"
+    encoded_parts = [quote(part, safe="._-") for part in normalized.split("/")]
+    return "---".join(encoded_parts)
 
 
-def ensure_scope_dirs(layer: ScopeLayer) -> None:
-    """Create the directory structure for a scope layer."""
-    layer.path.mkdir(parents=True, exist_ok=True)
-    layer.topics_dir.mkdir(exist_ok=True)
-    layer.files_dir.mkdir(exist_ok=True)
+def decode_scope_path(name: str) -> str:
+    return name.replace("---", "/")
 
 
-def init_project(project_root: Path) -> None:
-    """Initialize .umx/ structure for a project.
+def find_project_root(start: Path | None = None) -> Path:
+    current = (start or Path.cwd()).resolve()
+    for candidate in [current, *current.parents]:
+        if (candidate / ".umx-project").exists() or (candidate / ".git").exists():
+            return candidate
+    return current
 
-    Creates:
-      .umx/
-      .umx/topics/
-      .umx/files/
-      .umx/local/
-      .umx/local/topics/
-    """
-    umx_dir = project_root / ".umx"
-    umx_dir.mkdir(exist_ok=True)
-    (umx_dir / "topics").mkdir(exist_ok=True)
-    (umx_dir / "files").mkdir(exist_ok=True)
 
-    local_dir = umx_dir / "local"
-    local_dir.mkdir(exist_ok=True)
-    (local_dir / "topics").mkdir(exist_ok=True)
+def _slug_from_remote(cwd: Path) -> str | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(cwd), "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+    except FileNotFoundError:
+        return None
+    if completed.returncode != 0:
+        return None
+    url = completed.stdout.strip()
+    if not url:
+        return None
+    tail = url.rstrip("/").split("/")[-1]
+    if tail.endswith(".git"):
+        tail = tail[:-4]
+    if ":" in tail:
+        tail = tail.split(":")[-1]
+    return tail or None
 
-    # Write default .gitignore entries
-    gitignore_path = umx_dir.parent / ".gitignore"
-    gitignore_entries = [
-        ".umx/local/",
-        ".umx/dream.lock",
-        ".umx/dream.log",
-        ".umx/NOTICE",
-        "*.umx.json",
-    ]
-    existing = ""
-    if gitignore_path.exists():
-        existing = gitignore_path.read_text()
 
-    new_entries = []
-    for entry in gitignore_entries:
-        if entry not in existing:
-            new_entries.append(entry)
+def discover_project_slug(cwd: Path | None = None) -> str:
+    root = find_project_root(cwd)
+    marker = root / ".umx-project"
+    if marker.exists():
+        text = marker.read_text().strip()
+        if text:
+            return text
+    remote = _slug_from_remote(root)
+    if remote:
+        return remote
+    return root.name
 
-    if new_entries:
-        with gitignore_path.open("a") as f:
-            if existing and not existing.endswith("\n"):
-                f.write("\n")
-            f.write("\n# umx memory\n")
-            for entry in new_entries:
-                f.write(f"{entry}\n")
+
+def project_memory_dir(cwd: Path | None = None) -> Path:
+    return get_umx_home() / "projects" / discover_project_slug(cwd)
+
+
+def ensure_repo_structure(repo_dir: Path) -> None:
+    for relative in [
+        "sessions",
+        "episodic/topics",
+        "facts/topics",
+        "principles/topics",
+        "procedures",
+        "meta",
+        "local/private",
+        "local/secret",
+        "local/quarantine",
+        "folders",
+        "files",
+        "tools",
+        "machines",
+    ]:
+        (repo_dir / relative).mkdir(parents=True, exist_ok=True)
+    schema = repo_dir / "meta" / "schema_version"
+    if not schema.exists():
+        schema.write_text("2\n")
+    manifest = repo_dir / "meta" / "manifest.json"
+    if not manifest.exists():
+        manifest.write_text('{"topics": {}, "modules_seen": [], "uncertainty_hotspots": [], "knowledge_gaps": [], "last_rebuilt": null}\n')
+    tombstones = repo_dir / "meta" / "tombstones.jsonl"
+    if not tombstones.exists():
+        tombstones.write_text("")
+    gaps = repo_dir / "meta" / "gaps.jsonl"
+    if not gaps.exists():
+        gaps.write_text("")
+    memory = repo_dir / "meta" / "MEMORY.md"
+    if not memory.exists():
+        memory.write_text("# umx memory index\nschema_version: 2\n")
+
+
+def init_local_umx(org: str | None = None) -> Path:
+    home = get_umx_home()
+    udir = user_memory_dir()
+    ensure_repo_structure(udir)
+    home.mkdir(parents=True, exist_ok=True)
+    from umx.git_ops import git_init, is_git_repo
+
+    if not is_git_repo(udir):
+        git_init(udir)
+    return home
+
+
+def init_project_memory(cwd: Path | None = None, write_marker: bool = True) -> Path:
+    root = find_project_root(cwd)
+    slug = discover_project_slug(root)
+    repo_dir = get_umx_home() / "projects" / slug
+    ensure_repo_structure(repo_dir)
+    from umx.git_ops import git_init, is_git_repo
+
+    if not is_git_repo(repo_dir):
+        git_init(repo_dir)
+    conventions = repo_dir / "CONVENTIONS.md"
+    if not conventions.exists():
+        conventions.write_text(
+            "# Project Conventions\n\n## Topic taxonomy\n- general: default topic\n\n## Fact phrasing\n- Atomic facts only\n- <=200 characters per fact\n\n## Entity vocabulary\n- Fill in project-specific vocabulary here\n"
+        )
+    if write_marker:
+        (root / ".umx-project").write_text(f"{slug}\n")
+    return repo_dir

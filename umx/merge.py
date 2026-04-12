@@ -59,13 +59,18 @@ def merge_all(
     """
     pairs = find_conflicts(repo_dir)
     results: list[dict] = []
+    resolved_ids: set[str] = set()
     for left, right in pairs:
+        # Skip if either fact was already resolved in this pass
+        if left.fact_id in resolved_ids or right.fact_id in resolved_ids:
+            continue
         winner, loser, reason = arbitrate_conflict(left, right, config)
         results.append({
             "winner_id": winner.fact_id,
             "loser_id": loser.fact_id,
             "reason": reason,
         })
+        resolved_ids.add(loser.fact_id)
         if not dry_run:
             replace_fact(repo_dir, winner)
             replace_fact(repo_dir, loser)

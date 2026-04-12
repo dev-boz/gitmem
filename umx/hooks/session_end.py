@@ -1,46 +1,79 @@
-"""Hook handler for session end.
-
-Collects tool memory and queues dream if trigger conditions met.
-"""
-
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Any
 
-from umx.dream.gates import increment_session_count, should_dream
+from umx.config import load_config
+from umx.dream.gates import should_dream
 from umx.dream.pipeline import DreamPipeline
-from umx.memory import load_config
-from umx.models import UmxConfig
+from umx.git_ops import git_add_and_commit
+from umx.scope import config_path, find_project_root, project_memory_dir
+from umx.session_runtime import record_session_event
+from umx.sessions import archive_sessions, write_session
+
+logger = logging.getLogger(__name__)
 
 
-def on_session_end(
+def run(
     cwd: Path,
-    tool: str,
-    config: UmxConfig | None = None,
-) -> dict:
-    """Handle session end: collect memory and possibly trigger dream.
-
-    Returns a status dict.
-    """
-    umx_dir = cwd / ".umx"
-
-    if config is None:
-        config = load_config(umx_dir) if umx_dir.exists() else UmxConfig()
-
-    # Increment session count
-    session_count = 0
-    if umx_dir.exists():
-        session_count = increment_session_count(umx_dir)
-
-    # Check if dream should run
-    dream_triggered = False
-    if umx_dir.exists() and should_dream(umx_dir):
-        pipeline = DreamPipeline(cwd, config=config)
-        status = pipeline.run()
-        dream_triggered = True
-
-    return {
-        "tool": tool,
-        "session_count": session_count,
-        "dream_triggered": dream_triggered,
+    session_id: str,
+    tool: str | None = None,
+    events: list[dict] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "session_written": False,
+        "archived_sessions": 0,
+        "dream_triggered": False,
+        "dream_result": None,
     }
+
+    try:
+        root = find_project_root(cwd)
+        repo_dir = project_memory_dir(root)
+    except Exception:
+        logger.debug("session_end: no project root found for %s", cwd)
+        return result
+
+    # Write session if events provided
+    if events:
+        try:
+            cfg = load_config(config_path())
+            meta: dict[str, Any] = {"session_id": session_id}
+            if tool:
+                meta["tool"] = tool
+            write_session(repo_dir, meta=meta, events=events, config=cfg, auto_commit=False)
+            archive_result = archive_sessions(repo_dir, config=cfg)
+            result["archived_sessions"] = int(archive_result.get("archived_sessions", 0))
+            git_add_and_commit(repo_dir, message=f"umx: session {session_id}")
+            for event in events:
+                record_session_event(
+                    cwd,
+                    session_id,
+                    event,
+                    tool=tool,
+                    persist=False,
+                    auto_commit=False,
+                )
+            result["session_written"] = True
+        except Exception:
+            logger.debug("session_end: failed to write session", exc_info=True)
+
+    # Check dream gates and run pipeline if met
+    try:
+        if should_dream(repo_dir):
+            result["dream_triggered"] = True
+            try:
+                dream_result = DreamPipeline(cwd).run()
+                result["dream_result"] = {
+                    "status": dream_result.status,
+                    "added": dream_result.added,
+                    "pruned": dream_result.pruned,
+                    "message": dream_result.message,
+                }
+            except Exception as exc:
+                result["dream_result"] = {"status": "error", "error": str(exc)}
+    except Exception:
+        logger.debug("session_end: dream gate check failed", exc_info=True)
+
+    return result

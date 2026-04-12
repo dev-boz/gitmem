@@ -1,0 +1,36 @@
+name: L2 Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dream-l2-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
+      contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
+      contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||
+      contains(github.event.pull_request.labels.*.name, 'type: lint') ||
+      contains(github.event.pull_request.labels.*.name, 'type: principle') ||
+      contains(github.event.pull_request.labels.*.name, 'type: supersession')
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install umx
+        run: python -m pip install .
+      - name: Run L2 review
+        run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }}
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

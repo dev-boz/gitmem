@@ -6,7 +6,7 @@ from umx.config import UMXConfig, default_config
 from umx.dream.extract import session_records_to_facts
 from umx.memory import load_all_facts
 from umx.models import Fact
-from umx.sessions import list_sessions, read_session
+from umx.sessions import iter_session_payloads
 
 
 def rederive_from_sessions(
@@ -19,37 +19,13 @@ def rederive_from_sessions(
     If session_ids is None, re-derive from all sessions.
     Returns newly extracted facts (does not commit — caller decides).
     """
-    # session_records_to_facts skips already-gathered sessions.
-    # To force full re-derivation we temporarily clear the state so all
-    # sessions are processed.  We restore afterwards to be non-destructive.
-    from umx.dream.gates import read_dream_state
-
-    state = read_dream_state(repo_dir)
-    original_gathered = list(state.get("last_gathered_sessions", []))
-
-    # Clear gathered state so extraction considers all sessions
-    state_path = repo_dir / "meta" / "dream-state.json"
-    import json
-
-    if state_path.exists():
-        data = json.loads(state_path.read_text())
-        data["last_gathered_sessions"] = []
-        state_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-
-    try:
-        all_facts = session_records_to_facts(repo_dir, config)
-    finally:
-        # Restore original state
-        if state_path.exists():
-            data = json.loads(state_path.read_text())
-            data["last_gathered_sessions"] = original_gathered
-            state_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
-
-    if session_ids is not None:
-        id_set = set(session_ids)
-        all_facts = [f for f in all_facts if f.source_session in id_set]
-
-    return all_facts
+    return session_records_to_facts(
+        repo_dir,
+        config,
+        include_archived=True,
+        session_ids=set(session_ids) if session_ids else None,
+        skip_gathered=False,
+    )
 
 
 def compare_derived(existing: list[Fact], rederived: list[Fact]) -> dict:
@@ -93,7 +69,7 @@ def audit_report(repo_dir: Path, config: UMXConfig) -> dict:
     Returns report dict with statistics and divergences.
     """
     existing = load_all_facts(repo_dir, include_superseded=False)
-    sessions = list_sessions(repo_dir)
+    sessions = list(iter_session_payloads(repo_dir, include_archived=True))
 
     # Source type breakdown
     source_types: dict[str, int] = {}

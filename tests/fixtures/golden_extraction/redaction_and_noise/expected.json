@@ -1,0 +1,28 @@
+{
+  "runner": "session_records_to_facts",
+  "expected_facts": [
+    {
+      "text": "openai key is [REDACTED:openai-key]",
+      "topic": "openai",
+      "scope": "project",
+      "encoding_strength": 2,
+      "memory_type": "implicit",
+      "verification": "self-reported",
+      "source_type": "llm_inference",
+      "source_tool": "session-extract",
+      "source_session": "2026-04-11-golden-redaction",
+      "consolidation_status": "fragile",
+      "confidence": 0.5,
+      "provenance": {
+        "extracted_by": "dream-gather",
+        "sessions": [
+          "2026-04-11-golden-redaction"
+        ]
+      }
+    }
+  ],
+  "forbidden_substrings": [
+    "sk-ABCDEFGHIJKLMNOPQRSTUV",
+    "Let me check the logs"
+  ]
+}

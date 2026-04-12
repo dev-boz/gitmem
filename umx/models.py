@@ -1,220 +1,301 @@
-"""Core data models for umx.
-
-Defines the Fact schema, enums, and configuration dataclasses used throughout
-the system. Grounded in Tulving's episodic/semantic and Schacter's
-explicit/implicit memory taxonomy.
-"""
-
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 
-class MemoryType(str, Enum):
-    """Memory type from cognitive science taxonomy."""
+def utcnow() -> datetime:
+    return datetime.now(tz=UTC)
 
+
+def isoformat_z(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.replace("Z", "+00:00")
+    return datetime.fromisoformat(text)
+
+
+class Scope(str, Enum):
+    USER = "user"
+    TOOL = "tool"
+    MACHINE = "machine"
+    PROJECT = "project"
+    PROJECT_PRIVATE = "project_private"
+    PROJECT_SECRET = "project_secret"
+    FOLDER = "folder"
+    FILE = "file"
+
+
+class MemoryType(str, Enum):
     EXPLICIT_SEMANTIC = "explicit_semantic"
     EXPLICIT_EPISODIC = "explicit_episodic"
     IMPLICIT = "implicit"
 
 
-class EncodingStrength(int, Enum):
-    """Encoding strength levels (1-5).
-
-    Higher = more deliberately encoded = more reliable.
-    """
-
-    INCIDENTAL = 1   # single transcript mention, unconfirmed
-    INFERRED = 2     # repeated pattern across multiple logs
-    EXTRACTED = 3    # dream pipeline from session transcript
-    DELIBERATE = 4   # tool native memory (LLM intentionally wrote it)
-    GROUND_TRUTH = 5  # user manually edited in viewer
+class Verification(str, Enum):
+    SELF_REPORTED = "self-reported"
+    CORROBORATED = "corroborated"
+    SOTA_REVIEWED = "sota-reviewed"
+    HUMAN_CONFIRMED = "human-confirmed"
 
 
-class Scope(str, Enum):
-    """Memory scope hierarchy, most specific first."""
-
-    FILE = "file"
-    FOLDER = "folder"
-    PROJECT_LOCAL = "project_local"
-    PROJECT_TEAM = "project_team"
-    TOOL = "tool"
-    USER = "user"
+class SourceType(str, Enum):
+    GROUND_TRUTH_CODE = "ground_truth_code"
+    USER_PROMPT = "user_prompt"
+    TOOL_OUTPUT = "tool_output"
+    LLM_INFERENCE = "llm_inference"
+    DREAM_CONSOLIDATION = "dream_consolidation"
+    EXTERNAL_DOC = "external_doc"
 
 
-# Numeric proximity for relevance scoring (higher = more specific)
-SCOPE_PROXIMITY: dict[Scope, float] = {
-    Scope.FILE: 1.0,
-    Scope.FOLDER: 0.8,
-    Scope.PROJECT_LOCAL: 0.7,
-    Scope.PROJECT_TEAM: 0.6,
-    Scope.TOOL: 0.4,
-    Scope.USER: 0.2,
-}
+class ConsolidationStatus(str, Enum):
+    FRAGILE = "fragile"
+    STABLE = "stable"
 
 
-class DreamStatus(str, Enum):
-    """Status of a dream run."""
-
-    FULL = "full"
-    PARTIAL = "partial"
-    NATIVE_ONLY = "native_only"
-    SKIPPED = "skipped"
-    FAILED = "failed"
+class TaskStatus(str, Enum):
+    OPEN = "open"
+    BLOCKED = "blocked"
+    RESOLVED = "resolved"
+    ABANDONED = "abandoned"
 
 
-@dataclass
+@dataclass(slots=True)
+class AppliesTo:
+    env: str = "*"
+    os: str = "*"
+    machine: str = "*"
+    branch: str = "*"
+
+    def normalized(self) -> "AppliesTo":
+        return AppliesTo(
+            env=self.env or "*",
+            os=self.os or "*",
+            machine=self.machine or "*",
+            branch=self.branch or "*",
+        )
+
+    def overlaps(self, other: "AppliesTo | None") -> bool:
+        left = self.normalized()
+        right = (other or AppliesTo()).normalized()
+        return all(
+            getattr(left, key) == getattr(right, key)
+            or getattr(left, key) == "*"
+            or getattr(right, key) == "*"
+            for key in ("env", "os", "machine", "branch")
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "env": self.env,
+            "os": self.os,
+            "machine": self.machine,
+            "branch": self.branch,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "AppliesTo | None":
+        if not data:
+            return None
+        if isinstance(data, cls):
+            return data
+        return cls(
+            env=data.get("env", "*"),
+            os=data.get("os", "*"),
+            machine=data.get("machine", "*"),
+            branch=data.get("branch", "*"),
+        )
+
+
+@dataclass(slots=True)
+class CodeAnchor:
+    repo: str
+    path: str
+    git_sha: str | None = None
+    line_range: list[int] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"repo": self.repo, "path": self.path}
+        if self.git_sha:
+            data["git_sha"] = self.git_sha
+        if self.line_range:
+            data["line_range"] = list(self.line_range)
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "CodeAnchor | None":
+        if not data:
+            return None
+        if isinstance(data, cls):
+            return data
+        return cls(
+            repo=data["repo"],
+            path=data["path"],
+            git_sha=data.get("git_sha"),
+            line_range=data.get("line_range"),
+        )
+
+
+@dataclass(slots=True)
+class Provenance:
+    extracted_by: str = "manual"
+    approved_by: str | None = None
+    approval_tier: str | None = None
+    pr: str | None = None
+    sessions: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"extracted_by": self.extracted_by, "sessions": list(self.sessions)}
+        if self.approved_by:
+            data["approved_by"] = self.approved_by
+        if self.approval_tier:
+            data["approval_tier"] = self.approval_tier
+        if self.pr:
+            data["pr"] = self.pr
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "Provenance":
+        if not data:
+            return cls()
+        if isinstance(data, cls):
+            return data
+        return cls(
+            extracted_by=data.get("extracted_by", "manual"),
+            approved_by=data.get("approved_by"),
+            approval_tier=data.get("approval_tier"),
+            pr=data.get("pr"),
+            sessions=list(data.get("sessions", [])),
+        )
+
+
+@dataclass(slots=True)
 class Fact:
-    """An atomic memory fact.
-
-    Facts must remain atomic — never merge multiple facts into a single
-    narrative statement.
-    """
-
-    id: str
+    fact_id: str
     text: str
     scope: Scope
     topic: str
-    encoding_strength: int  # 1-5
+    encoding_strength: int
     memory_type: MemoryType
-    confidence: float  # 0.0-1.0, extractor certainty
+    verification: Verification
+    source_type: SourceType
+    confidence: float = 1.0
     tags: list[str] = field(default_factory=list)
-    source_tool: str = ""
-    source_session: str = ""
-    corroborated_by: list[str] = field(default_factory=list)
+    source_tool: str = "manual"
+    source_session: str = "manual"
+    corroborated_by_tools: list[str] = field(default_factory=list)
+    corroborated_by_facts: list[str] = field(default_factory=list)
+    conflicts_with: list[str] = field(default_factory=list)
+    supersedes: str | None = None
+    superseded_by: str | None = None
+    consolidation_status: ConsolidationStatus = ConsolidationStatus.FRAGILE
+    task_status: TaskStatus | None = None
     last_retrieved: datetime | None = None
-    created: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created: datetime = field(default_factory=utcnow)
+    last_referenced: datetime | None = None
+    expires_at: datetime | None = None
+    applies_to: AppliesTo | None = None
+    provenance: Provenance = field(default_factory=Provenance)
+    encoding_context: dict[str, Any] = field(default_factory=dict)
+    code_anchor: CodeAnchor | None = None
+    repo: str | None = None
+    file_path: Path | None = None
 
-    def __post_init__(self) -> None:
-        if not 1 <= self.encoding_strength <= 5:
-            raise ValueError(
-                f"encoding_strength must be 1-5, got {self.encoding_strength}"
-            )
-        if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"confidence must be 0.0-1.0, got {self.confidence}"
-            )
+    @property
+    def is_active(self) -> bool:
+        return self.superseded_by is None
 
-    @staticmethod
-    def generate_id() -> str:
-        """Generate a unique fact ID."""
-        return f"f_{uuid.uuid4().hex[:8]}"
+    @property
+    def is_fragile(self) -> bool:
+        return self.consolidation_status == ConsolidationStatus.FRAGILE
+
+    def clone(self, **updates: Any) -> "Fact":
+        values = self.to_dict()
+        values.update(updates)
+        return fact_from_dict(values)
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to dictionary."""
         return {
-            "id": self.id,
+            "fact_id": self.fact_id,
             "text": self.text,
             "scope": self.scope.value,
             "topic": self.topic,
             "encoding_strength": self.encoding_strength,
             "memory_type": self.memory_type.value,
+            "verification": self.verification.value,
+            "source_type": self.source_type.value,
             "confidence": self.confidence,
-            "tags": self.tags,
+            "tags": list(self.tags),
             "source_tool": self.source_tool,
             "source_session": self.source_session,
-            "corroborated_by": self.corroborated_by,
-            "last_retrieved": (
-                self.last_retrieved.isoformat() if self.last_retrieved else None
-            ),
-            "created": self.created.isoformat(),
+            "corroborated_by_tools": list(self.corroborated_by_tools),
+            "corroborated_by_facts": list(self.corroborated_by_facts),
+            "conflicts_with": list(self.conflicts_with),
+            "supersedes": self.supersedes,
+            "superseded_by": self.superseded_by,
+            "consolidation_status": self.consolidation_status.value,
+            "task_status": self.task_status.value if self.task_status else None,
+            "last_retrieved": isoformat_z(self.last_retrieved),
+            "created": isoformat_z(self.created),
+            "last_referenced": isoformat_z(self.last_referenced),
+            "expires_at": isoformat_z(self.expires_at),
+            "applies_to": self.applies_to.to_dict() if self.applies_to else None,
+            "provenance": self.provenance.to_dict(),
+            "encoding_context": dict(self.encoding_context),
+            "code_anchor": self.code_anchor.to_dict() if self.code_anchor else None,
+            "repo": self.repo,
+            "file_path": str(self.file_path) if self.file_path else None,
         }
 
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Fact:
-        """Deserialize from dictionary."""
-        d = dict(data)
-        d["scope"] = Scope(d["scope"])
-        d["memory_type"] = MemoryType(d["memory_type"])
-        if d.get("last_retrieved"):
-            d["last_retrieved"] = datetime.fromisoformat(d["last_retrieved"])
-        else:
-            d["last_retrieved"] = None
-        if d.get("created"):
-            d["created"] = datetime.fromisoformat(d["created"])
-        else:
-            d["created"] = datetime.now(timezone.utc)
-        return cls(**d)
 
-
-@dataclass
-class UmxConfig:
-    """Configuration for umx, loaded from .umx/config.yaml or ~/.umx/config.yaml."""
-
-    # Composite score weights
-    weight_strength: float = 0.4
-    weight_confidence: float = 0.2
-    weight_recency: float = 0.2
-    weight_corroboration: float = 0.2
-
-    # Relevance score weights
-    relevance_scope_proximity: float = 0.3
-    relevance_keyword_overlap: float = 0.3
-    relevance_recent_retrieval: float = 0.2
-    relevance_encoding_strength: float = 0.2
-
-    # Decay
-    decay_lambda: float = 0.023  # ~30 day half-life
-
-    # Dream gates
-    dream_time_hours: int = 24
-    dream_session_threshold: int = 5
-
-    # Prune
-    prune_strength_threshold: int = 1
-    memory_md_max_lines: int = 200
-    memory_md_max_bytes: int = 25 * 1024  # 25 KB
-
-    # Context budget
-    default_max_tokens: int = 4000
-
-    # LLM providers
-    llm_providers: list[str] = field(
-        default_factory=lambda: [
-            "cerebras",
-            "groq",
-            "glm",
-            "minimax",
-            "openrouter",
-        ]
+def fact_from_dict(data: dict[str, Any]) -> Fact:
+    return Fact(
+        fact_id=data["fact_id"],
+        text=data["text"],
+        scope=data["scope"] if isinstance(data["scope"], Scope) else Scope(data["scope"]),
+        topic=data["topic"],
+        encoding_strength=int(data["encoding_strength"]),
+        memory_type=data["memory_type"] if isinstance(data["memory_type"], MemoryType) else MemoryType(data["memory_type"]),
+        verification=data["verification"] if isinstance(data["verification"], Verification) else Verification(data["verification"]),
+        source_type=data["source_type"] if isinstance(data["source_type"], SourceType) else SourceType(data["source_type"]),
+        confidence=float(data.get("confidence", 1.0)),
+        tags=list(data.get("tags", [])),
+        source_tool=data.get("source_tool", "manual"),
+        source_session=data.get("source_session", "manual"),
+        corroborated_by_tools=list(data.get("corroborated_by_tools", [])),
+        corroborated_by_facts=list(data.get("corroborated_by_facts", [])),
+        conflicts_with=list(data.get("conflicts_with", [])),
+        supersedes=data.get("supersedes"),
+        superseded_by=data.get("superseded_by"),
+        consolidation_status=data.get("consolidation_status")
+        if isinstance(data.get("consolidation_status"), ConsolidationStatus)
+        else ConsolidationStatus(data.get("consolidation_status", ConsolidationStatus.FRAGILE.value)),
+        task_status=(
+            data["task_status"]
+            if isinstance(data.get("task_status"), TaskStatus)
+            else TaskStatus(data["task_status"])
+        )
+        if data.get("task_status")
+        else None,
+        last_retrieved=parse_datetime(data.get("last_retrieved")),
+        created=parse_datetime(data.get("created")) or utcnow(),
+        last_referenced=parse_datetime(data.get("last_referenced")),
+        expires_at=parse_datetime(data.get("expires_at")),
+        applies_to=AppliesTo.from_dict(data.get("applies_to")),
+        provenance=Provenance.from_dict(data.get("provenance")),
+        encoding_context=dict(data.get("encoding_context", {})),
+        code_anchor=CodeAnchor.from_dict(data.get("code_anchor")),
+        repo=data.get("repo"),
+        file_path=Path(data["file_path"]) if data.get("file_path") else None,
     )
-    local_llm_endpoint: str = ""
-    local_llm_model: str = ""
-
-    # Legacy bridge
-    bridge_targets: list[str] = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> UmxConfig:
-        """Create config from a dictionary (parsed YAML)."""
-        cfg = cls()
-        for k, v in data.items():
-            if hasattr(cfg, k):
-                setattr(cfg, k, v)
-        return cfg
-
-
-@dataclass
-class TopicIndex:
-    """A row in the MEMORY.md index table."""
-
-    topic: str
-    file: str
-    updated: str
-    avg_strength: float
-
-
-@dataclass
-class ConflictEntry:
-    """A conflict between two facts."""
-
-    topic: str
-    description: str
-    fact_a: Fact
-    fact_b: Fact
-    resolution: str = ""
-    status: str = "OPEN"  # OPEN | RESOLVED

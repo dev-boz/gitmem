@@ -1,0 +1,27 @@
+{
+  "runner": "source_files_to_facts",
+  "expected_facts": [
+    {
+      "text": "src/settings.py defines DEFAULT_PORT = 5433",
+      "topic": "default_port",
+      "scope": "project",
+      "encoding_strength": 3,
+      "memory_type": "implicit",
+      "verification": "self-reported",
+      "source_type": "ground_truth_code",
+      "source_tool": "source-extract",
+      "source_session": "2026-04-11-golden-source",
+      "consolidation_status": "stable",
+      "confidence": 0.9,
+      "provenance": {
+        "extracted_by": "dream-gather-source",
+        "sessions": [
+          "2026-04-11-golden-source"
+        ]
+      },
+      "code_anchor": {
+        "path": "src/settings.py"
+      }
+    }
+  ]
+}

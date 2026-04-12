@@ -1,59 +1,91 @@
-"""Context budget inference and enforcement.
-
-Ensures memory injection never crowds out codebase context.
-No partial fact inclusion — a fact is either fully included or excluded.
-"""
-
 from __future__ import annotations
 
-from umx.models import Fact, UmxConfig
+import re
+from dataclasses import dataclass
+
+from umx.config import UMXConfig, default_config
+from umx.models import Fact
+
+
+COMMENT_RE = re.compile(r"<!--\s*umx:.*?-->", re.DOTALL)
+
+
+def strip_inline_metadata(text: str) -> str:
+    return COMMENT_RE.sub("", text).strip()
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate token count for a text string.
-
-    Uses a simple heuristic: ~4 characters per token for English.
-    """
-    return max(1, len(text) // 4)
+    clean = strip_inline_metadata(text)
+    if not clean:
+        return 1
+    return max(1, (len(clean) + 3) // 4)
 
 
 def estimate_fact_tokens(fact: Fact) -> int:
-    """Estimate the token cost of injecting a single fact."""
-    line = f"- [S:{fact.encoding_strength}] {fact.text}"
-    return estimate_tokens(line)
+    return estimate_tokens(fact.text)
+
+
+@dataclass(slots=True)
+class BudgetDecision:
+    selected: list[Fact]
+    packing_scores: dict[str, float]
 
 
 def enforce_budget(
     facts: list[Fact],
-    max_tokens: int | None = None,
-    config: UmxConfig | None = None,
-) -> list[Fact]:
-    """Select facts that fit within the context budget.
-
-    Facts should be pre-sorted by relevance/priority (highest first).
-    No partial fact inclusion: a fact is either fully included or excluded.
-
-    Args:
-        facts: Facts sorted by priority (highest first).
-        max_tokens: Override max tokens. Falls back to config default.
-        config: UmxConfig for defaults.
-
-    Returns:
-        List of facts that fit within budget.
-    """
-    if config is None:
-        config = UmxConfig()
-    budget = max_tokens or config.default_max_tokens
-
-    # Reserve some tokens for framing (headers, separators)
-    overhead = 50
-    remaining = budget - overhead
-
+    max_tokens: int,
+    relevance_scores: dict[str, float] | None = None,
+    always_include_ids: set[str] | None = None,
+    config: UMXConfig | None = None,
+) -> BudgetDecision:
+    cfg = config or default_config()
+    relevance_scores = relevance_scores or {}
+    always_include_ids = always_include_ids or set()
     selected: list[Fact] = []
-    for fact in facts:
-        cost = estimate_fact_tokens(fact)
-        if cost <= remaining:
+    used_tokens = 0
+    packing_scores = {
+        fact.fact_id: (
+            relevance_scores.get(fact.fact_id, 0.0) / max(1, estimate_fact_tokens(fact))
+        )
+        for fact in facts
+    }
+
+    always = [fact for fact in facts if fact.fact_id in always_include_ids]
+    always.sort(key=lambda fact: (fact.encoding_strength, fact.created), reverse=True)
+    for fact in always:
+        tokens = estimate_fact_tokens(fact)
+        if used_tokens + tokens <= max_tokens:
             selected.append(fact)
-            remaining -= cost
-        # No partial facts — skip if doesn't fit
-    return selected
+            used_tokens += tokens
+
+    remaining = [fact for fact in facts if fact.fact_id not in always_include_ids]
+    remaining.sort(
+        key=lambda fact: (
+            packing_scores.get(fact.fact_id, 0.0),
+            relevance_scores.get(fact.fact_id, 0.0),
+            fact.encoding_strength,
+        ),
+        reverse=True,
+    )
+    for fact in remaining:
+        tokens = estimate_fact_tokens(fact)
+        if used_tokens + tokens > max_tokens:
+            continue
+        selected.append(fact)
+        used_tokens += tokens
+
+    removable = [fact for fact in selected if fact.fact_id not in always_include_ids]
+    removable.sort(
+        key=lambda fact: (
+            packing_scores.get(fact.fact_id, 0.0),
+            relevance_scores.get(fact.fact_id, 0.0),
+            fact.encoding_strength,
+        )
+    )
+    while len(selected) > cfg.inject.max_concurrent_facts and removable:
+        victim = removable.pop(0)
+        selected = [fact for fact in selected if fact.fact_id != victim.fact_id]
+
+    if len(selected) < cfg.inject.min_facts and facts:
+        return BudgetDecision(selected=selected, packing_scores=packing_scores)
+    return BudgetDecision(selected=selected, packing_scores=packing_scores)

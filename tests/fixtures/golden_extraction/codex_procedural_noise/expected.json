@@ -1,0 +1,29 @@
+{
+  "runner": "session_records_to_facts",
+  "expected_facts": [
+    {
+      "text": "Codex stores rollout files under `~/.codex/sessions`",
+      "topic": "codex",
+      "scope": "project",
+      "encoding_strength": 2,
+      "memory_type": "implicit",
+      "verification": "self-reported",
+      "source_type": "llm_inference",
+      "source_tool": "session-extract",
+      "source_session": "2026-04-12-golden-codex-noise",
+      "consolidation_status": "fragile",
+      "confidence": 0.5,
+      "provenance": {
+        "extracted_by": "dream-gather",
+        "sessions": [
+          "2026-04-12-golden-codex-noise"
+        ]
+      }
+    }
+  ],
+  "forbidden_substrings": [
+    "capture code is in",
+    "full test suite is green",
+    "CLI now exposes"
+  ]
+}

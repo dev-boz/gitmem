@@ -1,0 +1,24 @@
+{
+  "runner": "gap_records_to_facts",
+  "expected_facts": [
+    {
+      "text": "postgres runs on 5433 in dev",
+      "topic": "postgres",
+      "scope": "project",
+      "encoding_strength": 1,
+      "memory_type": "implicit",
+      "verification": "self-reported",
+      "source_type": "llm_inference",
+      "source_tool": "gap",
+      "source_session": "2026-04-11-gap",
+      "consolidation_status": "fragile",
+      "confidence": 0.5,
+      "provenance": {
+        "extracted_by": "gap-signal",
+        "sessions": [
+          "2026-04-11-gap"
+        ]
+      }
+    }
+  ]
+}

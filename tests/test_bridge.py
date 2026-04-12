@@ -1,96 +1,87 @@
-"""Tests for umx.bridge — legacy file bridge."""
-
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pytest
+from click.testing import CliRunner
 
-from umx.bridge import UMX_END_MARKER, UMX_START_MARKER, remove_bridge, write_bridge
-from umx.memory import add_fact
-from umx.models import Fact, MemoryType, Scope
-from umx.scope import init_project
+from umx.bridge import END_MARKER, START_MARKER
+from umx.cli import main
+from umx.memory import add_fact, load_all_facts
+from umx.models import (
+    ConsolidationStatus,
+    Fact,
+    MemoryType,
+    Scope,
+    SourceType,
+    Verification,
+)
+from umx.strength import independent_corroboration
 
 
-def _make_fact(text: str) -> Fact:
-    return Fact(
-        id=Fact.generate_id(),
-        text=text,
-        scope=Scope.PROJECT_TEAM,
-        topic="general",
-        encoding_strength=4,
-        memory_type=MemoryType.EXPLICIT_SEMANTIC,
-        confidence=0.9,
+def _make_fact(text: str, topic: str = "general", **overrides) -> Fact:
+    values = {
+        "fact_id": overrides.pop("fact_id", "01TESTFACT0000000000000700"),
+        "text": text,
+        "scope": Scope.PROJECT,
+        "topic": topic,
+        "encoding_strength": 4,
+        "memory_type": MemoryType.EXPLICIT_SEMANTIC,
+        "verification": Verification.CORROBORATED,
+        "source_type": SourceType.GROUND_TRUTH_CODE,
+        "source_tool": "codex",
+        "source_session": "sess-bridge-001",
+        "consolidation_status": ConsolidationStatus.STABLE,
+    }
+    values.update(overrides)
+    return Fact(**values)
+
+
+def test_bridge_sync_import_and_remove(project_dir: Path, project_repo: Path) -> None:
+    base_fact = _make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000701",
     )
+    add_fact(project_repo, base_fact, auto_commit=False)
 
+    runner = CliRunner()
+    sync_result = runner.invoke(
+        main,
+        ["bridge", "sync", "--cwd", str(project_dir), "--target", "CLAUDE.md"],
+    )
+    assert sync_result.exit_code == 0, sync_result.output
+    sync_payload = json.loads(sync_result.output)
+    assert sync_payload == [str(project_dir / "CLAUDE.md")]
 
-@pytest.fixture
-def project(tmp_path: Path) -> Path:
-    project_root = tmp_path / "project"
-    project_root.mkdir()
-    (project_root / ".git").mkdir()
-    init_project(project_root)
-    return project_root
+    bridge_text = (project_dir / "CLAUDE.md").read_text()
+    assert START_MARKER in bridge_text
+    assert END_MARKER in bridge_text
+    assert "postgres runs on 5433 in dev" in bridge_text
 
+    import_result = runner.invoke(
+        main,
+        ["bridge", "import", "--cwd", str(project_dir), "--target", "CLAUDE.md"],
+    )
+    assert import_result.exit_code == 0, import_result.output
+    assert json.loads(import_result.output) == {"dry_run": False, "imported": 1}
 
-class TestWriteBridge:
-    def test_creates_new_files(self, project: Path):
-        umx_dir = project / ".umx"
-        add_fact(umx_dir, _make_fact("postgres on 5433"))
-        add_fact(umx_dir, _make_fact("use pytest -x"))
+    imported = [
+        fact
+        for fact in load_all_facts(project_repo, include_superseded=False)
+        if fact.source_session.startswith("bridge:")
+    ]
+    assert len(imported) == 1
+    bridge_fact = imported[0]
+    assert bridge_fact.provenance.extracted_by == "legacy-bridge"
+    assert not independent_corroboration(base_fact, bridge_fact)
 
-        written = write_bridge(project)
-        assert len(written) == 2
-
-        for path in written:
-            content = path.read_text()
-            assert UMX_START_MARKER in content
-            assert UMX_END_MARKER in content
-            assert "postgres on 5433" in content
-
-    def test_updates_existing_file(self, project: Path):
-        claude_md = project / "CLAUDE.md"
-        claude_md.write_text("# Project Info\n\nExisting content.\n")
-
-        umx_dir = project / ".umx"
-        add_fact(umx_dir, _make_fact("new fact"))
-
-        write_bridge(project, target_files=["CLAUDE.md"])
-        content = claude_md.read_text()
-
-        assert "Existing content." in content
-        assert "new fact" in content
-        assert UMX_START_MARKER in content
-
-    def test_replaces_existing_bridge(self, project: Path):
-        claude_md = project / "CLAUDE.md"
-        umx_dir = project / ".umx"
-
-        add_fact(umx_dir, _make_fact("first version"))
-        write_bridge(project, target_files=["CLAUDE.md"])
-
-        # Clear and add new facts
-        add_fact(umx_dir, _make_fact("second version"))
-        write_bridge(project, target_files=["CLAUDE.md"])
-
-        content = claude_md.read_text()
-        assert content.count(UMX_START_MARKER) == 1
-
-    def test_no_facts_no_write(self, project: Path):
-        written = write_bridge(project)
-        assert written == []
-
-
-class TestRemoveBridge:
-    def test_removes_bridge_section(self, project: Path):
-        umx_dir = project / ".umx"
-        add_fact(umx_dir, _make_fact("temp fact"))
-        write_bridge(project, target_files=["CLAUDE.md"])
-
-        # Verify it was written
-        assert UMX_START_MARKER in (project / "CLAUDE.md").read_text()
-
-        remove_bridge(project, target_files=["CLAUDE.md"])
-        content = (project / "CLAUDE.md").read_text()
-        assert UMX_START_MARKER not in content
-        assert "temp fact" not in content
+    remove_result = runner.invoke(
+        main,
+        ["bridge", "remove", "--cwd", str(project_dir), "--target", "CLAUDE.md"],
+    )
+    assert remove_result.exit_code == 0, remove_result.output
+    assert json.loads(remove_result.output) == [str(project_dir / "CLAUDE.md")]
+    cleaned = (project_dir / "CLAUDE.md").read_text()
+    assert START_MARKER not in cleaned
+    assert END_MARKER not in cleaned

@@ -1,36 +1,73 @@
-"""Hook handlers for session lifecycle events.
-
-Session start: inject memory into tool context.
-"""
-
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from umx.dream.notice import read_notice
-from umx.inject import collect_facts_for_injection, build_injection_block
-from umx.models import UmxConfig
+from umx.config import load_config
+from umx.dream.gates import increment_session_count
+from umx.git_ops import git_fetch, git_pull_rebase, safety_sweep
+from umx.inject import inject_for_tool
+from umx.search import ensure_session_state
+from umx.scope import config_path, find_project_root, project_memory_dir
+
+logger = logging.getLogger(__name__)
 
 
-def on_session_start(
+def run(
     cwd: Path,
-    tool: str,
-    max_tokens: int | None = None,
-    config: UmxConfig | None = None,
-) -> str:
-    """Handle session start: inject memory context.
+    tool: str | None = None,
+    session_id: str | None = None,
+    max_tokens: int = 4000,
+    context_window_tokens: int | None = None,
+) -> str | None:
+    try:
+        root = find_project_root(cwd)
+        repo_dir = project_memory_dir(root)
+    except Exception:
+        logger.debug("session_start: no project root found for %s", cwd)
+        return None
+    cfg = load_config(config_path())
 
-    Returns the injection block to prepend to the session.
-    """
-    # Check for notices
-    umx_dir = cwd / ".umx"
-    notice = read_notice(umx_dir) if umx_dir.exists() else None
+    # Startup sweep: commit any uncommitted session files from crashed runs
+    try:
+        safety_sweep(repo_dir)
+    except Exception:
+        logger.debug("session_start: safety sweep failed", exc_info=True)
 
-    # Collect and build injection
-    facts = collect_facts_for_injection(cwd, tool=tool, config=config)
-    block = build_injection_block(facts, max_tokens=max_tokens, config=config)
+    # Pull latest if remote/hybrid mode
+    try:
+        mode = cfg.dream.mode
+        if mode in ("remote", "hybrid"):
+            git_fetch(repo_dir)
+            git_pull_rebase(repo_dir)
+    except Exception:
+        logger.debug("session_start: remote sync failed", exc_info=True)
 
-    if notice:
-        block = f"⚠️ umx notice: {notice}\n\n{block}"
+    # Log start to dream state
+    try:
+        increment_session_count(repo_dir)
+    except Exception:
+        logger.debug("session_start: failed to increment session count", exc_info=True)
 
-    return block
+    # Generate injection block
+    try:
+        if session_id:
+            ensure_session_state(
+                repo_dir,
+                session_id,
+                tool=tool,
+                context_window_tokens=context_window_tokens,
+                avg_tokens_per_turn=cfg.inject.turn_token_estimate,
+            )
+        block = inject_for_tool(
+            cwd,
+            tool=tool,
+            max_tokens=max_tokens,
+            session_id=session_id,
+            injection_point="session_start",
+            context_window_tokens=context_window_tokens,
+        )
+        return block
+    except Exception:
+        logger.debug("session_start: injection failed", exc_info=True)
+        return None

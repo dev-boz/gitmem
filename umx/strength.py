@@ -1,197 +1,202 @@
-"""Encoding strength, composite scoring, corroboration, and relevance.
-
-Implements ACT-R activation strength model with exponential recency decay.
-"""
-
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+import re
+from datetime import datetime
 
+from umx.config import UMXConfig, default_config
 from umx.models import (
-    SCOPE_PROXIMITY,
-    EncodingStrength,
+    ConsolidationStatus,
     Fact,
     Scope,
-    UmxConfig,
+    SourceType,
+    TaskStatus,
+    Verification,
 )
 
 
-def recency_score(
-    fact: Fact,
-    now: datetime | None = None,
-    decay_lambda: float = 0.023,
-) -> float:
-    """Calculate recency as normalised 0-1 score using exponential decay.
+SOURCE_TYPE_WEIGHTS = {
+    SourceType.GROUND_TRUTH_CODE: 1.5,
+    SourceType.TOOL_OUTPUT: 0.5,
+    SourceType.EXTERNAL_DOC: 0.5,
+    SourceType.USER_PROMPT: 0.3,
+    SourceType.DREAM_CONSOLIDATION: 0.0,
+    SourceType.LLM_INFERENCE: 0.0,
+}
 
-    recency = exp(-λ × age_days)
+VERIFICATION_BONUS = {
+    Verification.SELF_REPORTED: 0.0,
+    Verification.CORROBORATED: 0.5,
+    Verification.SOTA_REVIEWED: 1.0,
+    Verification.HUMAN_CONFIRMED: 1.5,
+}
 
-    Uses last_retrieved if available, falls back to created.
-    """
-    if now is None:
-        now = datetime.now(timezone.utc)
-    reference = fact.last_retrieved or fact.created
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=timezone.utc)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=timezone.utc)
-    age_days = max(0.0, (now - reference).total_seconds() / 86400)
+SCOPE_PROXIMITY = {
+    Scope.FILE: 4.0,
+    Scope.FOLDER: 3.0,
+    Scope.PROJECT: 2.0,
+    Scope.PROJECT_PRIVATE: 2.0,
+    Scope.TOOL: 1.5,
+    Scope.MACHINE: 1.2,
+    Scope.USER: 1.0,
+    Scope.PROJECT_SECRET: 0.0,
+}
+
+
+def recency_value(created_at: datetime, now: datetime, decay_lambda: float) -> float:
+    age_days = max(0.0, (now - created_at).total_seconds() / 86400)
     return math.exp(-decay_lambda * age_days)
 
 
-def composite_score(
-    fact: Fact,
-    config: UmxConfig | None = None,
-    now: datetime | None = None,
-) -> float:
-    """Calculate composite fact score for prioritisation.
+def decay_lambda_for_fact(fact: Fact, config: UMXConfig | None = None) -> float:
+    cfg = config or default_config()
+    if fact.repo and fact.repo in cfg.decay.per_project:
+        return float(cfg.decay.per_project[fact.repo])
+    return float(cfg.decay.decay_lambda)
 
-    fact_score =
-      (w_s × encoding_strength)
-    + (w_c × confidence)
-    + (w_r × recency)
-    + (w_k × corroboration_count)
-    """
-    if config is None:
-        config = UmxConfig()
 
-    rec = recency_score(fact, now=now, decay_lambda=config.decay_lambda)
-    corr_count = len(fact.corroborated_by)
+def recency_score(fact: Fact, now: datetime, config: UMXConfig | None = None) -> float:
+    reference = fact.last_referenced or fact.created
+    return recency_value(reference, now, decay_lambda_for_fact(fact, config))
 
-    # Normalise strength to 0-1 range for weighted sum
-    norm_strength = fact.encoding_strength / 5.0
 
+def verification_bonus(value: Verification) -> float:
+    return VERIFICATION_BONUS[value]
+
+
+def source_type_weight(value: SourceType, corroborating_source_weights: list[float] | None = None) -> float:
+    if value == SourceType.DREAM_CONSOLIDATION and corroborating_source_weights:
+        return sum(corroborating_source_weights) / len(corroborating_source_weights)
+    return SOURCE_TYPE_WEIGHTS[value]
+
+
+def trust_score(fact: Fact, config: UMXConfig | None = None) -> float:
+    cfg = config or default_config()
+    weights = cfg.weights.trust
     score = (
-        config.weight_strength * norm_strength
-        + config.weight_confidence * fact.confidence
-        + config.weight_recency * rec
-        + config.weight_corroboration * min(corr_count / 3.0, 1.0)
+        weights.strength * fact.encoding_strength
+        + weights.corroboration * len(fact.corroborated_by_tools + fact.corroborated_by_facts)
+        + weights.verification * verification_bonus(fact.verification)
+        + weights.source_type * source_type_weight(fact.source_type)
     )
-    return round(score, 4)
+    if fact.consolidation_status == ConsolidationStatus.FRAGILE:
+        score -= 0.25
+    return score
 
 
 def relevance_score(
     fact: Fact,
     target_scope: Scope,
-    keywords: list[str] | None = None,
-    session_fact_ids: set[str] | None = None,
-    config: UmxConfig | None = None,
+    keywords: set[str] | None = None,
+    recent_retrieval: float = 0.0,
+    semantic_similarity: float = 0.0,
+    config: UMXConfig | None = None,
 ) -> float:
-    """Calculate relevance score for injection prioritisation.
-
-    relevance_score =
-      (p_s × scope_proximity)
-    + (p_k × keyword_overlap)
-    + (p_r × recent_retrieval)
-    + (p_e × encoding_strength)
-
-    Scope proximity is boosted when fact scope matches or is close
-    to the target scope in the hierarchy.
-    """
-    if config is None:
-        config = UmxConfig()
-    if keywords is None:
-        keywords = []
-    if session_fact_ids is None:
-        session_fact_ids = set()
-
-    # Scope proximity — closer to target scope gets higher score
-    fact_prox = SCOPE_PROXIMITY.get(fact.scope, 0.5)
-    target_prox = SCOPE_PROXIMITY.get(target_scope, 0.5)
-    # The closer the fact's scope is to the target, the higher the proximity.
-    # Exact match → 1.0; max distance → base proximity value.
-    distance = abs(fact_prox - target_prox)
-    scope_prox = max(0.0, 1.0 - distance)
-
-    # Keyword overlap: fraction of keywords that appear in fact text or tags
-    kw_score = 0.0
-    if keywords:
-        text_lower = fact.text.lower()
-        tag_set = {t.lower() for t in fact.tags}
-        matches = sum(
-            1 for kw in keywords
-            if kw.lower() in text_lower or kw.lower() in tag_set
-        )
-        kw_score = matches / len(keywords)
-
-    # Recent retrieval in this session
-    recent_ret = 1.0 if fact.id in session_fact_ids else 0.0
-
-    # Encoding strength normalised
-    norm_strength = fact.encoding_strength / 5.0
-
-    score = (
-        config.relevance_scope_proximity * scope_prox
-        + config.relevance_keyword_overlap * kw_score
-        + config.relevance_recent_retrieval * recent_ret
-        + config.relevance_encoding_strength * norm_strength
+    cfg = config or default_config()
+    weights = cfg.weights.relevance
+    keywords = keywords or set()
+    scope_distance = abs(SCOPE_PROXIMITY[fact.scope] - SCOPE_PROXIMITY[target_scope])
+    scope_component = max(0.0, 1.0 - 0.25 * scope_distance)
+    text_terms = set(re.findall(r"[a-zA-Z0-9_]+", fact.text.lower()))
+    tag_terms = {tag.lower() for tag in fact.tags}
+    overlap_count = len(keywords & (text_terms | tag_terms))
+    keyword_component = overlap_count / max(1, len(keywords))
+    task_bonus = 1.0 if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED} else 0.0
+    return (
+        weights.scope_proximity * scope_component
+        + weights.keyword_overlap * keyword_component
+        + weights.recent_retrieval * recent_retrieval
+        + weights.encoding_strength * (fact.encoding_strength / 5.0)
+        + weights.context_match * 0.0
+        + weights.task_salience * task_bonus
+        + weights.semantic_similarity * semantic_similarity
     )
-    return round(score, 4)
 
 
-def apply_corroboration(
+def retention_score(
     fact: Fact,
-    corroborating_tool: str,
-    other_confidence: float | None = None,
-) -> Fact:
-    """Apply corroboration bonus to a fact.
-
-    - encoding_strength promoted (+1, capped at 4)
-    - corroborated_by updated
-    - confidence averaged across sources
-
-    Corroboration alone cannot reach strength 5 (ground truth).
-    """
-    if corroborating_tool in fact.corroborated_by:
-        return fact
-
-    fact.corroborated_by.append(corroborating_tool)
-    if fact.encoding_strength < EncodingStrength.DELIBERATE:
-        fact.encoding_strength = min(fact.encoding_strength + 1, 4)
-
-    if other_confidence is not None:
-        fact.confidence = round(
-            (fact.confidence + other_confidence) / 2.0, 4
-        )
-
-    return fact
+    now: datetime,
+    usage_frequency: int = 0,
+    config: UMXConfig | None = None,
+) -> float:
+    cfg = config or default_config()
+    weights = cfg.weights.retention
+    return (
+        weights.strength * fact.encoding_strength
+        + weights.recency * recency_score(fact, now, cfg)
+        + weights.usage_frequency * usage_frequency
+        + weights.verification * verification_bonus(fact.verification)
+    )
 
 
-def promote_to_ground_truth(fact: Fact) -> Fact:
-    """Promote a fact to strength 5 (ground truth).
-
-    Used when a user manually confirms or edits a fact.
-    """
-    fact.encoding_strength = EncodingStrength.GROUND_TRUTH
-    return fact
-
-
-def should_prune(
-    fact: Fact,
-    config: UmxConfig | None = None,
-    now: datetime | None = None,
-) -> bool:
-    """Determine if a fact should be pruned.
-
-    Facts below strength threshold are candidates. Time decay on
-    uncorroborated low-strength facts (Ebbinghaus forgetting curve).
-    """
-    if config is None:
-        config = UmxConfig()
-
-    if fact.encoding_strength >= EncodingStrength.GROUND_TRUTH:
-        return False
-
-    if fact.encoding_strength < config.prune_strength_threshold:
-        return True
-
-    # Aggressive decay for low-strength uncorroborated facts
+def independent_corroboration(existing: Fact, incoming: Fact) -> bool:
     if (
-        fact.encoding_strength <= EncodingStrength.INFERRED
-        and not fact.corroborated_by
+        "bridge" in existing.provenance.extracted_by
+        or "bridge" in incoming.provenance.extracted_by
     ):
-        rec = recency_score(fact, now=now, decay_lambda=config.decay_lambda)
-        if rec < 0.1:  # very stale
+        return False
+    if (
+        existing.source_session == incoming.source_session
+        and existing.source_type == incoming.source_type
+    ):
+        return False
+    if existing.source_session != incoming.source_session and existing.source_tool != incoming.source_tool:
+        return True
+    if existing.source_tool == incoming.source_tool and existing.source_session != incoming.source_session:
+        if not existing.created or not incoming.created:
             return True
-
+        return abs((incoming.created - existing.created).total_seconds()) >= 86400
     return False
+
+
+def apply_corroboration(existing: Fact, incoming: Fact) -> Fact:
+    updated = existing.clone()
+    if incoming.source_tool not in updated.corroborated_by_tools:
+        updated.corroborated_by_tools.append(incoming.source_tool)
+    if incoming.fact_id not in updated.corroborated_by_facts:
+        updated.corroborated_by_facts.append(incoming.fact_id)
+    anchored = (
+        existing.source_type == SourceType.GROUND_TRUTH_CODE
+        or incoming.source_type == SourceType.GROUND_TRUTH_CODE
+        or existing.verification == Verification.HUMAN_CONFIRMED
+        or incoming.verification == Verification.HUMAN_CONFIRMED
+    )
+    if updated.encoding_strength < 4:
+        updated.encoding_strength += 1
+    if updated.encoding_strength >= 4 and not anchored:
+        updated.encoding_strength = 3
+    if existing.verification == Verification.HUMAN_CONFIRMED or incoming.verification == Verification.HUMAN_CONFIRMED:
+        updated.verification = Verification.HUMAN_CONFIRMED
+    else:
+        updated.verification = Verification.CORROBORATED
+    updated.confidence = round((updated.confidence + incoming.confidence) / 2.0, 4)
+    return updated
+
+
+def should_prune(fact: Fact, now: datetime, usage_frequency: int = 0, config: UMXConfig | None = None) -> bool:
+    cfg = config or default_config()
+    if fact.expires_at and fact.expires_at <= now:
+        return True
+    age_days = max(0.0, (now - fact.created).total_seconds() / 86400)
+    if age_days < cfg.prune.min_age_days:
+        return False
+    if fact.encoding_strength >= 5:
+        return False
+    if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+        return False
+    return retention_score(fact, now, usage_frequency=usage_frequency, config=cfg) < cfg.prune.threshold
+
+
+def conflict_winner(left: Fact, right: Fact, config: UMXConfig | None = None) -> Fact:
+    # Ground-truth hard rule: ground_truth_code MUST NOT lose to ANY other source type
+    if (
+        left.source_type == SourceType.GROUND_TRUTH_CODE
+        and right.source_type != SourceType.GROUND_TRUTH_CODE
+    ):
+        return left
+    if (
+        right.source_type == SourceType.GROUND_TRUTH_CODE
+        and left.source_type != SourceType.GROUND_TRUTH_CODE
+    ):
+        return right
+    return left if trust_score(left, config) >= trust_score(right, config) else right

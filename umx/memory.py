@@ -1,379 +1,523 @@
-"""Memory read/write — MEMORY.md, topic files, and JSON derivation.
-
-Markdown is the canonical storage format. JSON is derived, not authoritative.
-"""
-
 from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from umx.config import UMXConfig, default_config, load_config
+from umx.identity import generate_fact_id
 from umx.models import (
+    CodeAnchor,
+    ConsolidationStatus,
     Fact,
     MemoryType,
+    Provenance,
     Scope,
-    TopicIndex,
-    UmxConfig,
-)
-
-# Pattern for inline metadata: <!-- umx: {...} -->
-_META_PATTERN = re.compile(
-    r"<!--\s*umx:\s*(\{.*?\})\s*-->",
-    re.DOTALL,
-)
-# Pattern for strength prefix: [S:N]
-_STRENGTH_PATTERN = re.compile(r"\[S:(\d)\]")
-# Pattern for a fact line: - [S:N] text <!-- umx: {...} -->
-_FACT_LINE_PATTERN = re.compile(
-    r"^-\s+\[S:(\d)\]\s+(.*?)(?:\s*<!--\s*umx:\s*(\{.*?\})\s*-->)?\s*$"
+    SourceType,
+    TaskStatus,
+    Verification,
+    fact_from_dict,
+    parse_datetime,
 )
 
 
-def load_config(umx_dir: Path) -> UmxConfig:
-    """Load config from .umx/config.yaml, falling back to defaults."""
-    config_path = umx_dir / "config.yaml"
-    if config_path.exists():
-        with config_path.open() as f:
-            data = yaml.safe_load(f) or {}
-        return UmxConfig.from_dict(data)
-    return UmxConfig()
+VERIFICATION_SHORT = {
+    Verification.SELF_REPORTED: "sr",
+    Verification.CORROBORATED: "cor",
+    Verification.SOTA_REVIEWED: "sota",
+    Verification.HUMAN_CONFIRMED: "hum",
+}
+VERIFICATION_LONG = {value: key for key, value in VERIFICATION_SHORT.items()}
+FACT_PREFIX_RE = re.compile(r"^\[S:(?P<strength>\d+)\|V:(?P<verification>[a-z-]+)\]\s*")
 
 
-def save_config(umx_dir: Path, config: UmxConfig) -> None:
-    """Save config to .umx/config.yaml."""
-    umx_dir.mkdir(parents=True, exist_ok=True)
-    config_path = umx_dir / "config.yaml"
-    data = {
-        k: v for k, v in config.__dict__.items()
-        if not k.startswith("_")
+def _kind_scope_memory_type(path: Path, repo_dir: Path) -> tuple[Scope, MemoryType, str]:
+    relative = path.relative_to(repo_dir)
+    parts = relative.parts
+    repo_default_scope = Scope.USER if repo_dir.parent.name != "projects" else Scope.PROJECT
+    if parts[:2] == ("facts", "topics"):
+        return repo_default_scope, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[:2] == ("episodic", "topics"):
+        return repo_default_scope, MemoryType.EXPLICIT_EPISODIC, path.stem
+    if parts[:2] == ("principles", "topics"):
+        return repo_default_scope, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[:2] == ("local", "private"):
+        return Scope.PROJECT_PRIVATE, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[:2] == ("local", "secret"):
+        return Scope.PROJECT_SECRET, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[0] == "tools":
+        return Scope.TOOL, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[0] == "machines":
+        return Scope.MACHINE, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[0] == "folders":
+        return Scope.FOLDER, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    if parts[0] == "files":
+        return Scope.FILE, MemoryType.EXPLICIT_SEMANTIC, path.stem
+    return Scope.PROJECT, MemoryType.EXPLICIT_SEMANTIC, path.stem
+
+
+def topic_path(repo_dir: Path, topic: str, kind: str = "facts") -> Path:
+    return repo_dir / kind / "topics" / f"{topic}.md"
+
+
+def cache_path_for(markdown_path: Path) -> Path:
+    return markdown_path.with_suffix(".umx.json")
+
+
+def _compact_metadata(fact: Fact) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "id": fact.fact_id,
+        "conf": round(fact.confidence, 4),
+        "cort": list(fact.corroborated_by_tools),
+        "src": fact.source_tool,
+        "xby": fact.provenance.extracted_by,
+        "ss": fact.source_session,
+        "st": fact.source_type.value,
+        "cr": fact.created.isoformat().replace("+00:00", "Z"),
+        "v": fact.verification.value,
+        "cs": fact.consolidation_status.value,
     }
-    with config_path.open("w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-
-
-# ──────────────────────────────────────────────────────────────
-#  Topic file parsing and writing
-# ──────────────────────────────────────────────────────────────
-
-
-def parse_fact_line(line: str, topic: str, scope: Scope) -> Fact | None:
-    """Parse a single fact line from a topic markdown file.
-
-    Handles both annotated and bare lines:
-      - [S:4] some fact <!-- umx: {"id":"f_001","conf":0.97,...} -->
-      - [S:3] some fact
-      - some fact (bare — assigned strength 5)
-    """
-    line = line.strip()
-    if not line.startswith("-"):
-        return None
-
-    # Try full pattern with metadata
-    m = _FACT_LINE_PATTERN.match(line)
-    if m:
-        strength = int(m.group(1))
-        text = m.group(2).strip()
-        meta_json = m.group(3)
-
-        meta: dict[str, Any] = {}
-        if meta_json:
-            try:
-                meta = json.loads(meta_json)
-            except json.JSONDecodeError:
-                pass
-
-        fact = Fact(
-            id=meta.get("id", Fact.generate_id()),
-            text=text,
-            scope=scope,
-            topic=topic,
-            encoding_strength=strength,
-            memory_type=_strength_to_memory_type(strength),
-            confidence=meta.get("conf", 0.8),
-            tags=meta.get("tags", []),
-            source_tool=meta.get("source_tool", ""),
-            source_session=meta.get("source_session", ""),
-            corroborated_by=meta.get("corroborated_by", []),
-            last_retrieved=(
-                datetime.fromisoformat(meta["last_retrieved"])
-                if meta.get("last_retrieved")
-                else None
-            ),
-            created=(
-                datetime.fromisoformat(meta["created"])
-                if meta.get("created")
-                else datetime.now(timezone.utc)
-            ),
-        )
-
-        # Track stored text hash for edit detection
-        stored_hash = meta.get("text_hash")
-        if stored_hash:
-            current_hash = _text_hash(text)
-            if current_hash != stored_hash:
-                # Text was edited by user → promote to ground truth
-                fact.encoding_strength = 5
-                fact.confidence = 1.0
-                fact.memory_type = MemoryType.EXPLICIT_SEMANTIC
-
-        return fact
-
-    # Bare line (no strength prefix): user-added, promote to S:5
-    bare = line.lstrip("- ").strip()
-    if bare:
-        return Fact(
-            id=Fact.generate_id(),
-            text=bare,
-            scope=scope,
-            topic=topic,
-            encoding_strength=5,
-            memory_type=MemoryType.EXPLICIT_SEMANTIC,
-            confidence=1.0,
-        )
-
-    return None
-
-
-def _strength_to_memory_type(strength: int) -> MemoryType:
-    if strength >= 4:
-        return MemoryType.EXPLICIT_SEMANTIC
-    elif strength == 3:
-        return MemoryType.EXPLICIT_EPISODIC
-    else:
-        return MemoryType.IMPLICIT
+    if fact.corroborated_by_facts:
+        data["corf"] = list(fact.corroborated_by_facts)
+    if fact.provenance.pr:
+        data["pr"] = fact.provenance.pr
+    if fact.provenance.approved_by:
+        data["aby"] = fact.provenance.approved_by
+    if fact.provenance.approval_tier:
+        data["tier"] = fact.provenance.approval_tier
+    if fact.conflicts_with:
+        data["cw"] = list(fact.conflicts_with)
+    if fact.supersedes:
+        data["sup"] = fact.supersedes
+    if fact.superseded_by:
+        data["sby"] = fact.superseded_by
+    if fact.task_status:
+        data["ts"] = fact.task_status.value
+    if fact.expires_at:
+        data["ex"] = fact.expires_at.isoformat().replace("+00:00", "Z")
+    if fact.applies_to:
+        data["at"] = fact.applies_to.to_dict()
+    if fact.code_anchor:
+        data["ca"] = fact.code_anchor.to_dict()
+    return data
 
 
 def format_fact_line(fact: Fact) -> str:
-    """Format a fact as a markdown line with inline metadata."""
-    meta = {
-        "id": fact.id,
-        "conf": fact.confidence,
-        "corroborated_by": fact.corroborated_by,
-        "text_hash": _text_hash(fact.text),
-    }
-    if fact.tags:
-        meta["tags"] = fact.tags
-    if fact.source_tool:
-        meta["source_tool"] = fact.source_tool
-    if fact.source_session:
-        meta["source_session"] = fact.source_session
-    if fact.last_retrieved:
-        meta["last_retrieved"] = fact.last_retrieved.isoformat()
-    meta["created"] = fact.created.isoformat()
-
-    meta_str = json.dumps(meta, separators=(",", ":"))
-    return f"- [S:{fact.encoding_strength}] {fact.text} <!-- umx: {meta_str} -->"
+    verification = VERIFICATION_SHORT.get(fact.verification, fact.verification.value)
+    metadata = json.dumps(_compact_metadata(fact), sort_keys=True, separators=(",", ":"))
+    return f"- [S:{fact.encoding_strength}|V:{verification}] {fact.text} <!-- umx:{metadata} -->"
 
 
-def _text_hash(text: str) -> str:
-    """Compute a short hash of fact text for edit detection."""
-    import hashlib
-    return hashlib.sha256(text.encode()).hexdigest()[:12]
+def _cache_payload(facts: list[Fact], existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    existing_facts = (existing or {}).get("facts", {})
+    payload: dict[str, Any] = {"facts": {}}
+    for fact in facts:
+        preserved = {
+            key: value
+            for key, value in existing_facts.get(fact.fact_id, {}).items()
+            if key not in {"text", "created"}
+        }
+        payload["facts"][fact.fact_id] = {
+            "text": fact.text,
+            "created": fact.created.isoformat().replace("+00:00", "Z"),
+            **preserved,
+        }
+    return payload
 
 
-def load_topic_facts(
-    topic_path: Path,
-    topic: str,
-    scope: Scope,
-) -> list[Fact]:
-    """Load all facts from a topic markdown file.
+def _load_cache(path: Path) -> dict[str, Any]:
+    cache_path = cache_path_for(path)
+    if not cache_path.exists():
+        return {"facts": {}}
+    return json.loads(cache_path.read_text())
 
-    Edit detection happens in parse_fact_line: if a fact with a known id
-    has different text than what was stored (via text_hash), it is promoted
-    to S:5 (user edited = ground truth).
-    """
-    if not topic_path.exists():
+
+def _save_cache(path: Path, facts: list[Fact]) -> None:
+    cache_path = cache_path_for(path)
+    existing = _load_cache(path)
+    cache_path.write_text(json.dumps(_cache_payload(facts, existing), indent=2, sort_keys=True))
+
+
+def _parse_verification(value: str) -> Verification:
+    if value in VERIFICATION_LONG:
+        return VERIFICATION_LONG[value]
+    for verification in Verification:
+        if verification.value == value:
+            return verification
+    raise ValueError(f"unknown verification value: {value}")
+
+
+def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
+    stripped = line.strip()
+    if not stripped.startswith("- "):
+        return None
+    content = stripped[2:].strip()
+    if "<!-- umx:" in content:
+        text_part, comment = content.split("<!-- umx:", 1)
+        metadata = json.loads(comment.rsplit("-->", 1)[0].strip())
+    else:
+        text_part = content
+        metadata = {}
+
+    prefix = FACT_PREFIX_RE.match(text_part)
+    if prefix:
+        strength = int(prefix.group("strength"))
+        verification = _parse_verification(prefix.group("verification"))
+        text = text_part[prefix.end() :].strip()
+    else:
+        strength = 5
+        verification = Verification.HUMAN_CONFIRMED
+        text = text_part.strip()
+
+    if text.startswith("[DEPRECATED]"):
+        text = text.replace("[DEPRECATED]", "", 1).strip()
+
+    scope, memory_type, derived_topic = _kind_scope_memory_type(path, repo_dir)
+    fact = Fact(
+        fact_id=metadata.get("id", generate_fact_id()),
+        text=text,
+        scope=scope,
+        topic=derived_topic,
+        encoding_strength=strength,
+        memory_type=memory_type,
+        verification=Verification(metadata.get("v", verification.value)),
+        source_type=SourceType(metadata.get("st", SourceType.USER_PROMPT.value)),
+        confidence=float(metadata.get("conf", 1.0)),
+        tags=[],
+        source_tool=metadata.get("src", "manual"),
+        source_session=metadata.get("ss", "manual"),
+        corroborated_by_tools=list(metadata.get("cort", [])),
+        corroborated_by_facts=list(metadata.get("corf", [])),
+        conflicts_with=list(metadata.get("cw", [])),
+        supersedes=metadata.get("sup"),
+        superseded_by=metadata.get("sby"),
+        consolidation_status=ConsolidationStatus(
+            metadata.get("cs", ConsolidationStatus.STABLE.value if strength >= 5 else ConsolidationStatus.FRAGILE.value)
+        ),
+        task_status=TaskStatus(metadata["ts"]) if metadata.get("ts") else None,
+        expires_at=parse_datetime(metadata.get("ex")),
+        provenance=Provenance(
+            extracted_by=metadata.get("xby", "manual"),
+            approved_by=metadata.get("aby"),
+            approval_tier=metadata.get("tier"),
+            pr=metadata.get("pr"),
+            sessions=[metadata["ss"]] if metadata.get("ss") else [],
+        ),
+        code_anchor=CodeAnchor.from_dict(metadata.get("ca")),
+        repo=repo_dir.name,
+        file_path=path,
+    )
+    if not metadata:
+        fact.encoding_strength = 5
+        fact.verification = Verification.HUMAN_CONFIRMED
+        fact.source_type = SourceType.USER_PROMPT
+        fact.source_tool = "human"
+        fact.source_session = "manual-edit"
+        fact.consolidation_status = ConsolidationStatus.STABLE
+    return fact
+
+
+def read_fact_file(path: Path, repo_dir: Path, normalize: bool = True) -> list[Fact]:
+    if not path.exists():
         return []
-
-    facts: list[Fact] = []
-    content = topic_path.read_text()
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("-"):
-            fact = parse_fact_line(stripped, topic=topic, scope=scope)
-            if fact:
-                facts.append(fact)
-
-    return facts
-
-
-def save_topic_facts(
-    topic_path: Path,
-    topic: str,
-    facts: list[Fact],
-) -> None:
-    """Write facts to a topic markdown file."""
-    topic_path.parent.mkdir(parents=True, exist_ok=True)
-
-    lines = [f"## {topic}", ""]
-    for fact in sorted(facts, key=lambda f: -f.encoding_strength):
-        lines.append(format_fact_line(fact))
-    lines.append("")
-
-    topic_path.write_text("\n".join(lines))
-
-
-def derive_json(topic_path: Path, facts: list[Fact]) -> None:
-    """Derive JSON cache from parsed facts.
-
-    JSON path is the same as the markdown path but with .umx.json extension.
-    """
-    json_path = topic_path.with_suffix(".umx.json")
-    data = [f.to_dict() for f in facts]
-    with json_path.open("w") as f:
-        json.dump(data, f, indent=2, default=str)
-
-
-def load_all_facts(umx_dir: Path, scope: Scope) -> list[Fact]:
-    """Load all facts from all topic files and file-scope files in a .umx/ directory."""
-    all_facts: list[Fact] = []
-
-    # Load from topics/
-    topics_dir = umx_dir / "topics"
-    if topics_dir.exists():
-        for md_file in sorted(topics_dir.glob("*.md")):
-            topic = md_file.stem
-            facts = load_topic_facts(md_file, topic=topic, scope=scope)
-            all_facts.extend(facts)
-
-    # Load from files/ (file-scope memory)
-    files_dir = umx_dir / "files"
-    if files_dir.exists():
-        for md_file in sorted(files_dir.glob("*.md")):
-            topic = md_file.stem
-            facts = load_topic_facts(md_file, topic=topic, scope=Scope.FILE)
-            all_facts.extend(facts)
-
-    return all_facts
-
-
-# ──────────────────────────────────────────────────────────────
-#  MEMORY.md
-# ──────────────────────────────────────────────────────────────
-
-
-def build_memory_md(
-    umx_dir: Path,
-    scope: str,
-    session_count: int = 0,
-    last_dream: str = "",
-) -> str:
-    """Build the MEMORY.md content from topic files."""
-    topics_dir = umx_dir / "topics"
-    rows: list[TopicIndex] = []
-
-    if topics_dir.exists():
-        for md_file in sorted(topics_dir.glob("*.md")):
-            topic = md_file.stem
-            facts = load_topic_facts(
-                md_file,
-                topic=topic,
-                scope=Scope(scope) if scope in [s.value for s in Scope] else Scope.PROJECT_TEAM,
+    lines = path.read_text().splitlines()
+    parsed = [fact for line in lines if (fact := parse_fact_line(line, repo_dir=repo_dir, path=path))]
+    cache = _load_cache(path)
+    cached_facts = cache.get("facts", {})
+    rewritten: list[Fact] = []
+    changed = False
+    for fact in parsed:
+        cached = cached_facts.get(fact.fact_id)
+        if cached and cached.get("text") != fact.text:
+            changed = True
+            previous = fact.clone(text=cached["text"], superseded_by=None)
+            new_id = generate_fact_id()
+            previous.superseded_by = new_id
+            rewritten.append(previous)
+            rewritten.append(
+                fact.clone(
+                    fact_id=new_id,
+                    encoding_strength=5,
+                    verification=Verification.HUMAN_CONFIRMED,
+                    source_type=SourceType.USER_PROMPT,
+                    source_tool="human",
+                    source_session="manual-edit",
+                    consolidation_status=ConsolidationStatus.STABLE,
+                    supersedes=fact.fact_id,
+                    superseded_by=None,
+                    provenance=Provenance(extracted_by="manual", sessions=["manual-edit"]),
+                )
             )
-            if facts:
-                avg_str = round(
-                    sum(f.encoding_strength for f in facts) / len(facts), 1
-                )
-                # Get file modification time
-                mtime = datetime.fromtimestamp(
-                    md_file.stat().st_mtime, tz=timezone.utc
-                )
-                rows.append(TopicIndex(
-                    topic=topic.replace("_", " ").title(),
-                    file=f"topics/{md_file.name}",
-                    updated=mtime.strftime("%Y-%m-%d"),
-                    avg_strength=avg_str,
-                ))
+        else:
+            rewritten.append(fact)
+            if fact.source_session == "manual-edit":
+                changed = True
+    if normalize and (changed or any(fact.source_session == "manual-edit" for fact in rewritten)):
+        write_fact_file(path, rewritten, repo_dir=repo_dir)
+    return rewritten
 
-    lines = [
-        "# umx memory index",
-        f"scope: {scope}",
-        f"last_dream: {last_dream or 'never'}",
-        f"session_count: {session_count}",
-        "",
-        "## Index",
-        "| Topic | File | Updated | Avg strength |",
-        "|-------|------|---------|--------------|",
+
+def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(
+        facts,
+        key=lambda fact: (
+            fact.topic,
+            fact.created,
+            fact.fact_id,
+        ),
+    )
+    header = f"# {path.stem}\n\n## Facts\n"
+    body = "\n".join(format_fact_line(fact) for fact in ordered)
+    path.write_text(f"{header}{body}\n" if body else header)
+    _save_cache(path, ordered)
+
+
+def add_fact(repo_dir: Path, fact: Fact, kind: str = "facts", *, auto_commit: bool = True) -> Path:
+    path = target_path_for_fact(repo_dir, fact)
+    if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
+        path = topic_path(repo_dir, fact.topic, kind="episodic")
+    elif fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
+        path = topic_path(repo_dir, fact.topic, kind=kind)
+    facts = read_fact_file(path, repo_dir=repo_dir)
+    facts.append(fact.clone(repo=repo_dir.name, file_path=path))
+    write_fact_file(path, facts, repo_dir=repo_dir)
+    if auto_commit:
+        from umx.git_ops import git_add_and_commit
+
+        git_add_and_commit(repo_dir, paths=[path, cache_path_for(path)], message=f"umx: add fact to {path.stem}")
+    return path
+
+
+def load_all_facts(repo_dir: Path, include_superseded: bool = True) -> list[Fact]:
+    facts: list[Fact] = []
+    for path in iter_fact_files(repo_dir):
+        facts.extend(read_fact_file(path, repo_dir=repo_dir))
+    if include_superseded:
+        return facts
+    return [fact for fact in facts if fact.superseded_by is None]
+
+
+def iter_fact_files(repo_dir: Path) -> list[Path]:
+    patterns = [
+        "facts/topics/*.md",
+        "episodic/topics/*.md",
+        "principles/topics/*.md",
+        "local/private/*.md",
+        "local/secret/*.md",
+        "tools/*.md",
+        "machines/*.md",
+        "folders/*.md",
+        "files/*.md",
     ]
-
-    for row in rows:
-        lines.append(
-            f"| {row.topic} | {row.file} | {row.updated} | {row.avg_strength} |"
-        )
-
-    lines.append("")
-    return "\n".join(lines)
+    files: list[Path] = []
+    for pattern in patterns:
+        files.extend(sorted(repo_dir.glob(pattern)))
+    return files
 
 
-def write_memory_md(umx_dir: Path, content: str) -> None:
-    """Write MEMORY.md, enforcing size constraints."""
-    memory_path = umx_dir / "MEMORY.md"
-    lines = content.splitlines()
-
-    # Enforce 200-line limit
-    if len(lines) > 200:
-        lines = lines[:200]
-        content = "\n".join(lines) + "\n"
-
-    # Enforce 25KB limit
-    encoded = content.encode("utf-8")
-    if len(encoded) > 25 * 1024:
-        while len(content.encode("utf-8")) > 25 * 1024 and lines:
-            lines.pop()
-            content = "\n".join(lines) + "\n"
-
-    memory_path.write_text(content)
-
-
-def read_memory_md(umx_dir: Path) -> str | None:
-    """Read MEMORY.md if it exists."""
-    memory_path = umx_dir / "MEMORY.md"
-    if memory_path.exists():
-        return memory_path.read_text()
+def find_fact_by_id(repo_dir: Path, fact_id: str) -> Fact | None:
+    for fact in load_all_facts(repo_dir, include_superseded=True):
+        if fact.fact_id == fact_id:
+            return fact
     return None
 
 
-def add_fact(
-    umx_dir: Path,
-    fact: Fact,
-) -> None:
-    """Add a single fact to the appropriate topic file."""
-    topics_dir = umx_dir / "topics"
-    topics_dir.mkdir(parents=True, exist_ok=True)
-
-    topic_path = topics_dir / f"{fact.topic}.md"
-    existing = load_topic_facts(topic_path, topic=fact.topic, scope=fact.scope)
-
-    # Check for duplicate by ID
-    existing_ids = {f.id for f in existing}
-    if fact.id not in existing_ids:
-        existing.append(fact)
-
-    save_topic_facts(topic_path, fact.topic, existing)
-    derive_json(topic_path, existing)
-
-
-def remove_fact(umx_dir: Path, fact_id: str, topic: str, scope: Scope) -> bool:
-    """Remove a fact by ID from a topic file."""
-    topic_path = umx_dir / "topics" / f"{topic}.md"
-    facts = load_topic_facts(topic_path, topic=topic, scope=scope)
-    new_facts = [f for f in facts if f.id != fact_id]
-    if len(new_facts) < len(facts):
-        save_topic_facts(topic_path, topic, new_facts)
-        derive_json(topic_path, new_facts)
-        return True
+def replace_fact(repo_dir: Path, updated: Fact) -> bool:
+    for path in iter_fact_files(repo_dir):
+        facts = read_fact_file(path, repo_dir=repo_dir)
+        replaced = False
+        for index, fact in enumerate(facts):
+            if fact.fact_id == updated.fact_id:
+                facts[index] = updated.clone(file_path=path, repo=repo_dir.name)
+                replaced = True
+        if replaced:
+            write_fact_file(path, facts, repo_dir=repo_dir)
+            return True
     return False
 
 
-def find_fact_by_id(umx_dir: Path, fact_id: str, scope: Scope) -> Fact | None:
-    """Find a fact by ID across all topic files."""
-    all_facts = load_all_facts(umx_dir, scope)
-    for fact in all_facts:
-        if fact.id == fact_id:
-            return fact
+def remove_fact(repo_dir: Path, fact_id: str) -> Fact | None:
+    for path in iter_fact_files(repo_dir):
+        facts = read_fact_file(path, repo_dir=repo_dir)
+        kept = [fact for fact in facts if fact.fact_id != fact_id]
+        if len(kept) != len(facts):
+            removed = next(fact for fact in facts if fact.fact_id == fact_id)
+            write_fact_file(path, kept, repo_dir=repo_dir)
+            return removed
     return None
+
+
+def target_path_for_fact(repo_dir: Path, fact: Fact) -> Path:
+    if fact.file_path and repo_dir in fact.file_path.parents:
+        return fact.file_path
+    if fact.scope == Scope.PROJECT_PRIVATE:
+        return repo_dir / "local" / "private" / f"{fact.topic}.md"
+    if fact.scope == Scope.PROJECT_SECRET:
+        return repo_dir / "local" / "secret" / f"{fact.topic}.md"
+    if fact.scope == Scope.USER:
+        return repo_dir / "facts" / "topics" / f"{fact.topic}.md"
+    if fact.scope == Scope.TOOL:
+        return repo_dir / "tools" / f"{fact.topic}.md"
+    if fact.scope == Scope.MACHINE:
+        return repo_dir / "machines" / f"{fact.topic}.md"
+    if fact.scope == Scope.FOLDER:
+        return repo_dir / "folders" / f"{fact.topic}.md"
+    if fact.scope == Scope.FILE:
+        return repo_dir / "files" / f"{fact.topic}.md"
+    if fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
+        return repo_dir / "episodic" / "topics" / f"{fact.topic}.md"
+    return repo_dir / "facts" / "topics" / f"{fact.topic}.md"
+
+
+def save_repository_facts(repo_dir: Path, facts: list[Fact], *, auto_commit: bool = True) -> None:
+    grouped: dict[Path, list[Fact]] = {}
+    for fact in facts:
+        path = target_path_for_fact(repo_dir, fact)
+        grouped.setdefault(path, []).append(fact.clone(file_path=path, repo=repo_dir.name))
+    existing = set(iter_fact_files(repo_dir))
+    for path in existing - set(grouped):
+        path.unlink(missing_ok=True)
+        cache_path_for(path).unlink(missing_ok=True)
+    for path, path_facts in grouped.items():
+        write_fact_file(path, path_facts, repo_dir=repo_dir)
+    if auto_commit:
+        from umx.git_ops import git_add_and_commit
+
+        git_add_and_commit(repo_dir, message="umx: save repository facts")
+
+
+def read_memory_md(repo_dir: Path) -> str:
+    path = repo_dir / "meta" / "MEMORY.md"
+    return path.read_text() if path.exists() else ""
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+def write_memory_md(
+    repo_dir: Path,
+    facts: list[Fact],
+    *,
+    last_dream: str | None = None,
+    session_count: int | None = None,
+    config: UMXConfig | None = None,
+    auto_commit: bool = True,
+) -> None:
+    from umx.scope import config_path as _config_path
+    from umx.strength import relevance_score
+
+    cfg = config or load_config(_config_path())
+    max_tokens = cfg.memory.hot_tier_max_tokens
+    index_max_lines = cfg.memory.index_max_lines
+
+    # Build topic stats from ALL non-superseded facts (for index)
+    topic_stats: dict[str, list[Fact]] = {}
+    for fact in facts:
+        topic_stats.setdefault(fact.topic, []).append(fact)
+
+    # Score all facts with a synthetic "project overview" query
+    overview_keywords: set[str] = set()
+    for topic in topic_stats:
+        overview_keywords.update(re.findall(r"[a-zA-Z0-9_]+", topic.lower()))
+    overview_keywords.update({"project", "overview", "architecture", "setup"})
+
+    scored: dict[str, float] = {}
+    for fact in facts:
+        scored[fact.fact_id] = relevance_score(
+            fact,
+            target_scope=Scope.PROJECT,
+            keywords=overview_keywords,
+            config=cfg,
+        )
+
+    # Protected floor: USER S:4+ and open/blocked tasks
+    protected_ids: set[str] = set()
+    for fact in facts:
+        if fact.scope == Scope.USER and fact.encoding_strength >= 4:
+            protected_ids.add(fact.fact_id)
+        if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+            protected_ids.add(fact.fact_id)
+
+    # Pack protected facts first
+    hot_facts: list[Fact] = []
+    hot_ids: set[str] = set()
+    used_tokens = 0
+
+    protected = [f for f in facts if f.fact_id in protected_ids]
+    protected.sort(key=lambda f: scored.get(f.fact_id, 0.0), reverse=True)
+    for fact in protected:
+        tokens = _estimate_tokens(fact.text)
+        if used_tokens + tokens > max_tokens and hot_facts:
+            # Protected facts that won't fit still get included, but log a warning
+            import logging
+            logging.getLogger(__name__).warning(
+                "Protected facts exceed hot-tier budget (%d/%d tokens)", used_tokens + tokens, max_tokens
+            )
+        used_tokens += tokens
+        hot_facts.append(fact)
+        hot_ids.add(fact.fact_id)
+
+    # Pack remaining by packing_score = relevance / tokens, descending
+    remaining = [f for f in facts if f.fact_id not in hot_ids]
+    remaining.sort(
+        key=lambda f: scored.get(f.fact_id, 0.0) / max(1, _estimate_tokens(f.text)),
+        reverse=True,
+    )
+    for fact in remaining:
+        tokens = _estimate_tokens(fact.text)
+        if used_tokens + tokens > max_tokens:
+            continue
+        hot_facts.append(fact)
+        hot_ids.add(fact.fact_id)
+        used_tokens += tokens
+
+    # Build output
+    lines = [
+        "# umx memory index",
+        "scope: project",
+        "schema_version: 2",
+        f"last_dream: {last_dream or 'never'}",
+        f"session_count: {session_count or 0}",
+        "",
+        "## Index",
+        "| Topic | File | Updated | Avg strength | Facts |",
+        "|---|---|---|---:|---:|",
+    ]
+
+    sorted_topics = sorted(topic_stats.items())
+    total_topics = len(sorted_topics)
+    shown_topics = min(total_topics, index_max_lines)
+    for topic, topic_facts in sorted_topics[:shown_topics]:
+        avg_strength = sum(f.encoding_strength for f in topic_facts) / max(1, len(topic_facts))
+        updated = max(topic_facts, key=lambda fact: fact.created).created.date().isoformat()
+        lines.append(
+            f"| {topic} | facts/topics/{topic}.md | {updated} | {avg_strength:.1f} | {len(topic_facts)} |"
+        )
+    if total_topics > index_max_lines:
+        lines.append(f"<!-- umx: {total_topics} topics, showing top {shown_topics} -->")
+
+    # Hot Facts section — only hot-tier selected facts
+    hot_by_topic: dict[str, list[Fact]] = {}
+    for fact in hot_facts:
+        hot_by_topic.setdefault(fact.topic, []).append(fact)
+
+    lines.extend(["", "## Hot Facts"])
+    for topic, topic_facts in sorted(hot_by_topic.items()):
+        lines.append(f"### {topic}")
+        for fact in topic_facts:
+            lines.append(f"- {fact.text}")
+
+    # Capacity warning
+    pct = int(round(used_tokens / max_tokens * 100)) if max_tokens > 0 else 0
+    if pct > 90:
+        lines.append(f"<!-- umx: hot tier at {pct}% capacity -->")
+
+    md_path = repo_dir / "meta" / "MEMORY.md"
+    md_path.write_text("\n".join(lines) + "\n")
+    if auto_commit:
+        from umx.git_ops import git_add_and_commit
+
+        git_add_and_commit(repo_dir, paths=[md_path], message="umx: update MEMORY.md")

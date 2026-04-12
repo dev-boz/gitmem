@@ -1,383 +1,410 @@
-"""Dream pipeline: Orient → Gather → Consolidate → Prune.
-
-The pipeline may only:
-- extract facts
-- deduplicate facts
-- reweight facts (composite score)
-- prune facts
-- normalise minor formatting
-
-It must NOT:
-- rewrite facts semantically
-- merge facts into narratives
-- reinterpret meaning beyond extraction
-"""
-
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
-from umx.dream.conflict import detect_conflicts, write_conflicts_md
-from umx.dream.decay import apply_time_decay
-from umx.dream.extract import extract_facts_from_text
-from umx.dream.gates import DreamLock, reset_session_count, should_dream
-from umx.dream.gitignore import GitignoreFilter
-from umx.dream.notice import clear_notice, write_dream_log, write_notice
-from umx.dream.providers import LLMClient
+logger = logging.getLogger(__name__)
+
+from umx.config import UMXConfig, load_config
+from umx.conventions import ConventionSet, apply_conventions_to_fact, normalize_fact_text, parse_conventions
+from umx.dream.conflict import facts_conflict, resolve_conflict
+from umx.dream.consolidation import stabilize_facts
+from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts, source_files_to_facts
+from umx.dream.gates import DreamLock, mark_dream_complete, read_dream_state, should_dream
+from umx.dream.gitignore import load_gitignore, route_facts
+from umx.dream.lint import generate_lint_findings, write_lint_report
+from umx.dream.notice import append_notice
+from umx.dream.providers import available_provider_notice
+from umx.git_ops import git_add_and_commit, git_create_branch, git_checkout, git_current_branch
+from umx.governance import PRProposal, generate_l1_pr
+from umx.manifest import rebuild_manifest
 from umx.memory import (
     add_fact,
-    build_memory_md,
-    derive_json,
+    find_fact_by_id,
     load_all_facts,
-    load_topic_facts,
-    read_memory_md,
-    save_topic_facts,
+    save_repository_facts,
     write_memory_md,
 )
-from umx.models import DreamStatus, Fact, Scope, UmxConfig
-from umx.strength import composite_score, should_prune
+from umx.models import ConsolidationStatus, Fact, SourceType, Verification
+from umx.scope import config_path, ensure_repo_structure, find_project_root, project_memory_dir
+from umx.search import injected_without_reference_sessions, rebuild_index, usage_snapshot
+from umx.strength import apply_corroboration, independent_corroboration, should_prune
+from umx.tasks import auto_abandon_tasks
+from umx.tombstones import is_suppressed, load_tombstones
 
-logger = logging.getLogger("umx.dream")
+
+@dataclass(slots=True)
+class DreamResult:
+    status: str
+    added: int = 0
+    pruned: int = 0
+    findings: list[dict[str, str]] = field(default_factory=list)
+    message: str | None = None
+    pr_proposal: PRProposal | None = None
 
 
 class DreamPipeline:
-    """Four-phase dream pipeline for memory consolidation."""
+    def __init__(self, cwd: Path, config: UMXConfig | None = None):
+        self.project_root = find_project_root(cwd)
+        self.repo_dir = project_memory_dir(self.project_root)
+        self.config = config or load_config(config_path())
+        self.conventions = ConventionSet()
+        self.new_fact_ids: set[str] = set()
+        self._gathered_session_ids: list[str] = []
 
-    def __init__(
-        self,
-        project_root: Path,
-        config: UmxConfig | None = None,
-        force: bool = False,
-    ) -> None:
-        self.project_root = project_root.resolve()
-        self.umx_dir = self.project_root / ".umx"
-        self.local_dir = self.umx_dir / "local"
-        self.config = config or UmxConfig()
-        self.force = force
-        self.lock = DreamLock(self.umx_dir)
-        self.gitignore = GitignoreFilter.from_project(self.project_root)
+    def orient(self) -> list[Fact]:
+        ensure_repo_structure(self.repo_dir)
+        self.conventions = parse_conventions(self.repo_dir / "CONVENTIONS.md")
+        facts = load_all_facts(self.repo_dir, include_superseded=True)
+        updated: list[Fact] = []
+        for fact in facts:
+            if fact.source_type == SourceType.GROUND_TRUTH_CODE and fact.code_anchor:
+                if not (self.project_root / fact.code_anchor.path).exists():
+                    updated.append(fact.clone(consolidation_status=ConsolidationStatus.FRAGILE))
+                else:
+                    updated.append(fact)
+            else:
+                updated.append(fact)
+        return updated
 
-        # Pipeline state
-        self.existing_facts: list[Fact] = []
-        self.candidate_facts: list[Fact] = []
-        self.new_facts: list[Fact] = []
-        self.removed_facts: list[Fact] = []
-        self.conflicts: list = []
-        self.status = DreamStatus.FULL
-        self.provider_used = ""
-        self.skipped_sources: list[str] = []
+    def gather(self) -> list[Fact]:
+        candidates = gap_records_to_facts(self.repo_dir)
+        session_candidates = session_records_to_facts(self.repo_dir, config=self.config)
+        self._gathered_session_ids = list(
+            {f.source_session for f in session_candidates}
+        )
+        candidates.extend(session_candidates)
 
-    def run(self) -> DreamStatus:
-        """Execute the full dream pipeline."""
-        if not should_dream(
-            self.umx_dir,
-            force=self.force,
-            time_threshold_hours=self.config.dream_time_hours,
-            session_threshold=self.config.dream_session_threshold,
-        ):
-            logger.info("Dream trigger conditions not met")
-            return DreamStatus.SKIPPED
+        # Extract facts from source files referenced in sessions
+        from umx.sessions import list_sessions
+        session_paths = list_sessions(self.repo_dir)
+        if session_paths:
+            try:
+                source_facts = source_files_to_facts(
+                    self.repo_dir, self.project_root, session_paths,
+                )
+                candidates.extend(source_facts)
+            except Exception:
+                logger.warning("source file extraction failed", exc_info=True)
 
-        if not self.lock.acquire():
-            logger.warning("Could not acquire dream lock")
-            return DreamStatus.FAILED
-
-        try:
-            # Phase 1: Orient
-            self._orient()
-
-            # Phase 2: Gather
-            self._gather()
-
-            # Phase 3: Consolidate
-            self._consolidate()
-
-            # Phase 4: Prune
-            self._prune()
-
-            # Write results
-            self._write_results()
-
-            # Reset session count after successful dream
-            reset_session_count(self.umx_dir)
-
-            return self.status
-
-        except Exception as e:
-            logger.error(f"Dream pipeline failed: {e}")
-            self.status = DreamStatus.FAILED
-            write_dream_log(
-                self.umx_dir,
-                self.status,
-                error=str(e),
-            )
-            return self.status
-
-        finally:
-            self.lock.release()
-
-    def _orient(self) -> None:
-        """Phase 1: Read MEMORY.md, list .umx/ contents, establish baseline."""
-        logger.info("Orient: reading existing memory")
-
-        # Load existing facts from all topic files
-        self.existing_facts = load_all_facts(self.umx_dir, Scope.PROJECT_TEAM)
-
-        # Also load local facts
-        local_facts = load_all_facts(self.local_dir, Scope.PROJECT_LOCAL)
-        self.existing_facts.extend(local_facts)
-
-        logger.info(f"Orient: found {len(self.existing_facts)} existing facts")
-
-    def _gather(self) -> None:
-        """Phase 2: Read native memory (S:4), extract from transcripts (S:2-3).
-
-        Native memory reads require no LLM calls.
-        """
-        logger.info("Gather: collecting from sources")
-
-        # Import adapters
-        from umx.adapters.claude_code import ClaudeCodeAdapter
-        from umx.adapters.aider import AiderAdapter
-        from umx.adapters.generic import GenericAdapter
-
-        # Gather from native tool memory (S:4, no LLM needed)
-        adapters = [ClaudeCodeAdapter(), AiderAdapter(), GenericAdapter()]
-        for adapter in adapters:
+        # Read native tool memory via adapters
+        from umx.adapters import all_adapters
+        for adapter in all_adapters():
             try:
                 native_facts = adapter.read_native_memory(self.project_root)
-                self.candidate_facts.extend(native_facts)
-                logger.info(
-                    f"Gather: {adapter.tool_name} → {len(native_facts)} native facts"
-                )
-            except Exception as e:
-                logger.warning(f"Gather: {adapter.tool_name} failed: {e}")
+                candidates.extend(native_facts)
+            except Exception:
+                logger.warning("adapter %s failed", adapter, exc_info=True)
 
-        # Try LLM extraction from transcripts
-        llm_client = LLMClient(self.config)
-        if llm_client.is_available():
-            try:
-                transcript_facts = self._extract_transcripts(llm_client)
-                self.candidate_facts.extend(transcript_facts)
-            except Exception as e:
-                logger.warning(f"Gather: transcript extraction failed: {e}")
-                self.skipped_sources.append("transcripts")
-                self.status = DreamStatus.PARTIAL
-        else:
-            logger.info("Gather: no LLM available, native-only mode")
-            self.skipped_sources.append("transcripts")
-            if not self.candidate_facts and not self.existing_facts:
-                self.status = DreamStatus.NATIVE_ONLY
-            else:
-                self.status = DreamStatus.PARTIAL
+        if not candidates:
+            append_notice(self.repo_dir, available_provider_notice())
 
-        llm_client.close()
-        logger.info(f"Gather: {len(self.candidate_facts)} candidate facts")
+        # Route gitignored-path facts to local/private scope
+        gitignore_patterns = load_gitignore(self.project_root)
+        if gitignore_patterns:
+            candidates = route_facts(candidates, gitignore_patterns)
 
-    def _extract_transcripts(self, llm_client: LLMClient) -> list[Fact]:
-        """Extract facts from session transcripts using LLM."""
-        facts: list[Fact] = []
+        # Normalize fact text against conventions
+        if self.conventions:
+            candidates = [
+                c.clone(text=normalize_fact_text(c.text, self.conventions))
+                for c in candidates
+            ]
 
-        # Check for AIP event logs
-        events_path = self.project_root / "workspace" / "events.jsonl"
-        if events_path.exists():
-            content = events_path.read_text()
-            extracted = extract_facts_from_text(
-                content,
-                source_tool="aip",
-                topic="general",
-                scope=Scope.PROJECT_TEAM,
-                encoding_strength=3,
-                llm_client=llm_client,
-                config=self.config,
-            )
-            # Route sensitive facts to local
-            for fact in extracted:
-                if self.gitignore.filter_sensitive_facts(fact.text):
-                    fact.scope = Scope.PROJECT_LOCAL
-                facts.append(fact)
+        # Apply entity vocabulary conventions
+        if self.conventions and self.conventions.entity_vocabulary:
+            candidates = [
+                apply_conventions_to_fact(c, self.conventions)
+                for c in candidates
+            ]
 
-        return facts
+        return candidates
 
-    def _consolidate(self) -> None:
-        """Phase 3: Merge candidates against existing facts.
-
-        - Apply corroboration bonus
-        - Resolve conflicts by composite score
-        - Route gitignored facts to local/
-        - Write atomic facts to topic files
-        """
-        logger.info("Consolidate: merging candidates")
-
-        existing_texts = {f.text.lower().strip(): f for f in self.existing_facts}
-        existing_ids = {f.id for f in self.existing_facts}
-
-        for candidate in self.candidate_facts:
-            # Check for duplicate by text
-            key = candidate.text.lower().strip()
-            if key in existing_texts:
-                existing = existing_texts[key]
-                # Corroboration: same fact from different tool
-                if (
-                    candidate.source_tool
-                    and candidate.source_tool != existing.source_tool
-                    and candidate.source_tool not in existing.corroborated_by
-                ):
-                    existing.corroborated_by.append(candidate.source_tool)
-                    if existing.encoding_strength < 4:
-                        existing.encoding_strength = min(
-                            existing.encoding_strength + 1, 4
-                        )
-                    existing.confidence = round(
-                        (existing.confidence + candidate.confidence) / 2, 4
-                    )
+    def consolidate(self, facts: list[Fact], candidates: list[Fact]) -> list[Fact]:
+        tombstones = load_tombstones(self.repo_dir)
+        current = [fact.clone() for fact in facts]
+        for candidate in candidates:
+            if is_suppressed(candidate, tombstones):
                 continue
+            merged = False
+            for index, existing in enumerate(current):
+                if existing.superseded_by is not None:
+                    continue
+                if existing.topic == candidate.topic and existing.text.lower() == candidate.text.lower():
+                    if independent_corroboration(existing, candidate):
+                        updated = apply_corroboration(existing, candidate)
+                        if updated.consolidation_status == ConsolidationStatus.FRAGILE:
+                            updated.consolidation_status = ConsolidationStatus.STABLE
+                        current[index] = updated
+                    merged = True
+                    break
+                if facts_conflict(existing, candidate):
+                    winner, loser = resolve_conflict(existing.clone(), candidate.clone(), config=self.config)
+                    if winner.fact_id == existing.fact_id:
+                        current[index] = winner
+                        current.append(loser)
+                    else:
+                        current[index] = loser
+                        current.append(winner)
+                        self.new_fact_ids.add(winner.fact_id)
+                    merged = True
+                    break
+            if not merged:
+                current.append(candidate)
+                self.new_fact_ids.add(candidate.fact_id)
+        return current
 
-            # Check for duplicate by ID
-            if candidate.id in existing_ids:
-                continue
-
-            # Route sensitive facts
-            if self.gitignore.filter_sensitive_facts(candidate.text):
-                candidate.scope = Scope.PROJECT_LOCAL
-
-            self.new_facts.append(candidate)
-            existing_texts[key] = candidate
-            existing_ids.add(candidate.id)
-
-        # Detect conflicts
-        all_facts = self.existing_facts + self.new_facts
-        self.conflicts = detect_conflicts(all_facts, self.config)
-
-        logger.info(
-            f"Consolidate: {len(self.new_facts)} new, "
-            f"{len(self.conflicts)} conflicts"
+    def lint(self, facts: list[Fact]) -> list[dict[str, str]]:
+        findings = generate_lint_findings(
+            facts,
+            conventions=self.conventions,
+            project_root=self.project_root,
         )
+        write_lint_report(self.repo_dir, findings)
+        return findings
 
-    def _prune(self) -> None:
-        """Phase 4: Remove weak facts, apply decay, rebuild index."""
-        logger.info("Prune: cleaning up")
-
-        all_facts = self.existing_facts + self.new_facts
-
-        # Apply time decay to uncorroborated low-strength facts
-        all_facts = apply_time_decay(all_facts, self.config)
-
-        # Prune facts below threshold
-        kept: list[Fact] = []
-        for fact in all_facts:
-            if should_prune(fact, self.config):
-                self.removed_facts.append(fact)
-            else:
-                kept.append(fact)
-
-        # Deduplicate by text
-        seen_texts: dict[str, Fact] = {}
-        deduped: list[Fact] = []
-        for fact in kept:
-            key = fact.text.lower().strip()
-            if key in seen_texts:
-                existing = seen_texts[key]
-                # Keep the higher-scoring one
-                if composite_score(fact, self.config) > composite_score(
-                    existing, self.config
-                ):
-                    deduped = [f for f in deduped if f.id != existing.id]
-                    deduped.append(fact)
-                    seen_texts[key] = fact
-                    self.removed_facts.append(existing)
-                else:
-                    self.removed_facts.append(fact)
-            else:
-                seen_texts[key] = fact
-                deduped.append(fact)
-
-        # Update internal state
-        self.existing_facts = [
-            f for f in deduped if f.scope != Scope.PROJECT_LOCAL
+    def schema_lock_in_findings(self, candidates: list[Fact]) -> list[dict[str, str]]:
+        if not self.conventions.topics or len(candidates) < 5:
+            return []
+        matched = 0
+        for candidate in candidates:
+            if candidate.topic in self.conventions.topics:
+                matched += 1
+                continue
+            if any(candidate.topic.startswith(f"{topic}/") for topic in self.conventions.topics):
+                matched += 1
+        ratio = matched / max(1, len(candidates))
+        if ratio <= 0.8:
+            return []
+        return [
+            {
+                "kind": "schema-lock-in",
+                "message": (
+                    f"{matched}/{len(candidates)} gathered facts matched existing convention topics; "
+                    "challenge CONVENTIONS.md coverage before the schema hardens further"
+                ),
+            }
         ]
-        local_facts = [f for f in deduped if f.scope == Scope.PROJECT_LOCAL]
 
-        # Write back to topic files
-        self._write_topic_files(self.umx_dir, self.existing_facts)
-        if local_facts:
-            self.local_dir.mkdir(parents=True, exist_ok=True)
-            (self.local_dir / "topics").mkdir(exist_ok=True)
-            self._write_topic_files(self.local_dir, local_facts)
-
-        logger.info(
-            f"Prune: kept {len(deduped)}, removed {len(self.removed_facts)}"
+    def prune(self, facts: list[Fact], now: datetime) -> tuple[list[Fact], int]:
+        usage = usage_snapshot(self.repo_dir)
+        usage_references = {
+            fact_id: row["last_referenced"]
+            for fact_id, row in usage.items()
+            if row["last_referenced"]
+        }
+        facts = auto_abandon_tasks(
+            facts,
+            now,
+            abandon_days=self.config.prune.abandon_days,
+            usage_last_referenced={
+                fact_id: datetime.fromisoformat(value.replace("Z", "+00:00"))
+                for fact_id, value in usage_references.items()
+            },
         )
 
-    def _write_topic_files(self, umx_dir: Path, facts: list[Fact]) -> None:
-        """Group facts by topic and write to topic files.
-
-        Also removes topic files that no longer have any facts (after dedup/prune).
-        """
-        topics: dict[str, list[Fact]] = {}
+        # Citation telemetry demotion
+        uncited_map = {
+            entry["fact_id"]: entry
+            for entry in injected_without_reference_sessions(self.repo_dir, min_sessions=5)
+        }
+        demoted_count = 0
+        demoted_facts: list[Fact] = []
         for fact in facts:
-            topics.setdefault(fact.topic, []).append(fact)
+            if fact.fact_id in uncited_map and fact.encoding_strength > 1:
+                demoted_facts.append(fact.clone(encoding_strength=max(1, fact.encoding_strength - 1)))
+                demoted_count += 1
+            else:
+                demoted_facts.append(fact)
+        facts = demoted_facts
 
-        topics_dir = umx_dir / "topics"
-        topics_dir.mkdir(parents=True, exist_ok=True)
-
-        # Clean up stale topic files
-        for existing_md in topics_dir.glob("*.md"):
-            topic_name = existing_md.stem
-            if topic_name not in topics:
-                existing_md.unlink()
-                json_path = existing_md.with_suffix(".umx.json")
-                if json_path.exists():
-                    json_path.unlink()
-
-        for topic, topic_facts in topics.items():
-            topic_path = topics_dir / f"{topic}.md"
-            save_topic_facts(topic_path, topic, topic_facts)
-            derive_json(topic_path, topic_facts)
-
-    def _write_results(self) -> None:
-        """Write final results: MEMORY.md, conflicts, logs, notices."""
-        now = datetime.now(timezone.utc)
-
-        # Rebuild MEMORY.md
-        content = build_memory_md(
-            self.umx_dir,
-            scope="project_team",
-            session_count=0,
-            last_dream=now.isoformat(),
+        active = []
+        pruned = 0
+        tombstones = load_tombstones(self.repo_dir)
+        for fact in facts:
+            if is_suppressed(fact, tombstones):
+                pruned += 1
+                continue
+            usage_row = usage.get(fact.fact_id)
+            usage_frequency = int(usage_row["cited_count"]) if usage_row is not None else 0
+            if fact.superseded_by is None and should_prune(fact, now, usage_frequency=usage_frequency, config=self.config):
+                pruned += 1
+                continue
+            active.append(fact)
+        stabilized = stabilize_facts(active, self.new_fact_ids, now)
+        save_repository_facts(self.repo_dir, stabilized)
+        write_memory_md(
+            self.repo_dir,
+            [fact for fact in stabilized if fact.superseded_by is None],
+            last_dream=now.isoformat().replace("+00:00", "Z"),
+            session_count=int(read_dream_state(self.repo_dir).get("session_count", 0)),
+            config=self.config,
         )
-        write_memory_md(self.umx_dir, content)
+        rebuild_manifest(self.repo_dir, stabilized, now)
+        rebuild_index(self.repo_dir)
+        clear_gap_records(self.repo_dir)
+        self._demoted_count = demoted_count
+        return stabilized, pruned
 
-        # Write conflicts
-        if self.conflicts:
-            write_conflicts_md(self.umx_dir, self.conflicts)
+    def _commit_to_branch(self, facts: list[Fact], branch_name: str) -> bool:
+        """Save facts to a feature branch instead of main."""
+        original_branch = git_current_branch(self.repo_dir)
+        if not git_create_branch(self.repo_dir, branch_name):
+            return False
+        try:
+            save_repository_facts(self.repo_dir, facts, auto_commit=False)
+            committed = git_add_and_commit(
+                self.repo_dir,
+                message=f"dream(l1): extract {len(facts)} facts",
+            )
+            if not committed:
+                import subprocess
+                subprocess.run(
+                    ["git", "checkout", "--", "."],
+                    cwd=self.repo_dir, capture_output=True,
+                )
+        except Exception:
+            import subprocess
+            subprocess.run(
+                ["git", "checkout", "--", "."],
+                cwd=self.repo_dir, capture_output=True,
+            )
+            committed = False
+        finally:
+            if original_branch:
+                git_checkout(self.repo_dir, original_branch)
+        return committed
 
-        # Write dream log
-        write_dream_log(
-            self.umx_dir,
-            self.status,
-            facts_added=len(self.new_facts),
-            facts_removed=len(self.removed_facts),
-            facts_conflicted=len(self.conflicts),
-            provider=self.provider_used,
-            skipped_sources=self.skipped_sources,
+    def _generate_pr(self, facts: list[Fact], session_ids: list[str]) -> PRProposal:
+        """Create PR proposal for governance review."""
+        return generate_l1_pr(facts, session_ids, self.repo_dir)
+
+    def _push_and_open_pr(self, pr_proposal: PRProposal) -> int | None:
+        """Push branch and open a PR on GitHub. Returns PR number or None."""
+        if not self.config.org:
+            logger.warning("no org configured; skipping PR creation")
+            return None
+        from umx.github_ops import gh_available, push_branch, create_pr
+        if not gh_available():
+            logger.warning("gh CLI not available; skipping PR creation")
+            return None
+        slug = self.repo_dir.name
+        if not push_branch(self.repo_dir, pr_proposal.branch):
+            logger.warning("failed to push branch %s", pr_proposal.branch)
+            return None
+        return create_pr(
+            self.config.org,
+            slug,
+            pr_proposal.branch,
+            pr_proposal.title,
+            pr_proposal.body,
+            labels=pr_proposal.labels,
         )
 
-        # Handle notices
-        if self.status == DreamStatus.FULL:
-            clear_notice(self.umx_dir)
-        elif self.status == DreamStatus.NATIVE_ONLY:
-            write_notice(
-                self.umx_dir,
-                f"Dream ran in native-only mode — all LLM providers unavailable. "
-                f"Run `umx dream --force` to retry.",
+    def _push_sessions_to_main(self) -> bool:
+        """Push main branch for session sync (hybrid/remote mode)."""
+        from umx.git_ops import git_add_and_commit
+        git_add_and_commit(
+            self.repo_dir,
+            message="umx: sync sessions",
+        )
+        if not self.config.org:
+            return False
+        from umx.github_ops import gh_available, push_main
+        if not gh_available():
+            return False
+        return push_main(self.repo_dir)
+
+    def run(self, force: bool = False) -> DreamResult:
+        ensure_repo_structure(self.repo_dir)
+        lock = DreamLock(self.repo_dir)
+        if not should_dream(self.repo_dir, force=force):
+            return DreamResult(status="skipped", message="dream gates not met")
+        if not lock.acquire():
+            return DreamResult(status="skipped", message="dream lock held")
+        try:
+            now = datetime.now(tz=UTC)
+            mode = self.config.dream.mode
+            oriented = self.orient()
+            candidates = self.gather()
+            consolidated = self.consolidate(oriented, candidates)
+            findings = self.lint(consolidated)
+            findings.extend(self.schema_lock_in_findings(candidates))
+            write_lint_report(self.repo_dir, findings)
+
+            pr_proposal = None
+
+            if mode == "remote":
+                # Remote: commit to branch, push, open PR — never write to main
+                new_facts = [f for f in consolidated if f.fact_id in self.new_fact_ids]
+                pr_number = None
+                if new_facts:
+                    pr_proposal = self._generate_pr(new_facts, self._gathered_session_ids)
+                    if self._commit_to_branch(consolidated, pr_proposal.branch):
+                        pr_number = self._push_and_open_pr(pr_proposal)
+                mark_dream_complete(self.repo_dir, now)
+                msg = f"{len(consolidated)} facts on branch"
+                if pr_proposal:
+                    msg += f", PR: {pr_proposal.title}"
+                    if pr_number:
+                        msg += f" (#{pr_number})"
+                return DreamResult(
+                    status="ok",
+                    added=len(self.new_fact_ids),
+                    pruned=0,
+                    findings=findings,
+                    message=msg,
+                    pr_proposal=pr_proposal,
+                )
+
+            if mode == "hybrid":
+                # Hybrid: sessions push to main (append-only), fact changes go through PRs
+                new_facts = [f for f in consolidated if f.fact_id in self.new_fact_ids]
+                final_facts, pruned = self.prune(consolidated, now)
+                pr_number = None
+                if new_facts:
+                    pr_proposal = self._generate_pr(new_facts, self._gathered_session_ids)
+                    if self._commit_to_branch(new_facts, pr_proposal.branch):
+                        pr_number = self._push_and_open_pr(pr_proposal)
+                # Push sessions to main
+                self._push_sessions_to_main()
+                if self._gathered_session_ids:
+                    mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
+                mark_dream_complete(self.repo_dir, now)
+                demoted = getattr(self, "_demoted_count", 0)
+                msg = f"{len(final_facts)} facts retained"
+                if demoted:
+                    msg += f", {demoted} demoted"
+                if pr_proposal:
+                    msg += f", PR: {pr_proposal.title}"
+                    if pr_number:
+                        msg += f" (#{pr_number})"
+                return DreamResult(
+                    status="ok",
+                    added=len(self.new_fact_ids),
+                    pruned=pruned,
+                    findings=findings,
+                    message=msg,
+                    pr_proposal=pr_proposal,
+                )
+
+            # Local mode (default): direct write
+            final_facts, pruned = self.prune(consolidated, now)
+            if self._gathered_session_ids:
+                mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
+            mark_dream_complete(self.repo_dir, now)
+            demoted = getattr(self, "_demoted_count", 0)
+            msg = f"{len(final_facts)} facts retained"
+            if demoted:
+                msg += f", {demoted} demoted"
+            return DreamResult(
+                status="ok",
+                added=len(self.new_fact_ids),
+                pruned=pruned,
+                findings=findings,
+                message=msg,
             )
-        elif self.status == DreamStatus.PARTIAL:
-            pending = ", ".join(self.skipped_sources)
-            write_notice(
-                self.umx_dir,
-                f"Dream partial — skipped: {pending}. "
-                f"Run `umx dream --force` to retry.",
-            )
+        finally:
+            lock.release()

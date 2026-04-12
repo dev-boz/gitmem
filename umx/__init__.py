@@ -1,6 +1,5 @@
-"""umx — Universal Memory Exchange.
+"""UMX local-mode core implementation."""
 
-Tool-agnostic, filesystem-native, zero-infrastructure memory for CLI agents.
-"""
+__all__ = ["__version__"]
 
-__version__ = "0.4.0"
+__version__ = "0.9.1"

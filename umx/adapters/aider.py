@@ -1,85 +1,42 @@
-"""Aider native memory adapter.
-
-Reads from .aider.tags.cache and session logs.
-"""
-
 from __future__ import annotations
 
-import re
-from datetime import datetime, timezone
 from pathlib import Path
 
-from umx.models import Fact, MemoryType, Scope
+from umx.adapters.generic import NativeMemoryAdapter
+from umx.models import Fact
 
 
-class AiderAdapter:
-    """Adapter for Aider's native memory."""
-
-    tool_name = "aider"
+class AiderAdapter(NativeMemoryAdapter):
+    name = "aider"
 
     def read_native_memory(self, project_root: Path) -> list[Fact]:
-        """Read facts from Aider's memory files."""
+        """Read facts from Aider's native memory files.
+
+        Aider stores context in .aider.chat.history.md and may have
+        conventions in .aider.conf.yml or .aiderignore.
+        """
         facts: list[Fact] = []
-
-        # Read .aider.tags.cache
-        tags_cache = project_root / ".aider.tags.cache"
-        if tags_cache.exists():
-            facts.extend(self._read_tags_cache(tags_cache))
-
-        # Read aider chat history
-        chat_history = project_root / ".aider.chat.history.md"
-        if chat_history.exists():
-            facts.extend(self._read_chat_history(chat_history))
-
-        # Read aider input history
-        input_history = project_root / ".aider.input.history"
-        if input_history.exists():
-            facts.extend(self._read_input_history(input_history))
-
+        history = project_root / ".aider.chat.history.md"
+        if history.exists():
+            facts.extend(self._parse_history(history))
         return facts
 
-    def _read_tags_cache(self, path: Path) -> list[Fact]:
-        """Read facts from Aider's tags cache."""
-        # Tags cache is primarily for code navigation, not memory
-        # But can indicate project structure knowledge
-        return []
-
-    def _read_chat_history(self, path: Path) -> list[Fact]:
-        """Extract notable facts from chat history."""
+    def _parse_history(self, path: Path) -> list[Fact]:
         facts: list[Fact] = []
-        now = datetime.now(timezone.utc)
-
         try:
-            content = path.read_text(errors="replace")
-        except OSError:
-            return []
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return facts
 
-        # Look for explicit memory-worthy patterns in assistant responses
-        patterns = [
-            (r"(?:note|remember|important):\s*(.+?)(?:\n|$)", 0.8),
-            (r"(?:configured|set up|using)\s+(.+?)(?:\n|$)", 0.7),
-        ]
-
-        for pattern, confidence in patterns:
-            for match in re.finditer(pattern, content, re.IGNORECASE):
-                text = match.group(1).strip()
-                if 10 < len(text) < 200:
-                    facts.append(Fact(
-                        id=Fact.generate_id(),
-                        text=text,
-                        scope=Scope.PROJECT_TEAM,
-                        topic="general",
-                        encoding_strength=3,
-                        memory_type=MemoryType.EXPLICIT_EPISODIC,
-                        confidence=confidence,
-                        source_tool=self.tool_name,
-                        created=now,
-                    ))
-
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("> "):
+                continue
+            text = stripped[2:].strip()
+            if len(text) < 10 or len(text) > 200:
+                continue
+            # Aider quotes are user instructions — treat as conventions
+            fact = self._make_fact(text, topic="conventions", session="aider-history")
+            if fact:
+                facts.append(fact)
         return facts
-
-    def _read_input_history(self, path: Path) -> list[Fact]:
-        """Extract patterns from input history."""
-        # Input history could reveal common commands/patterns
-        # but is low-strength implicit memory
-        return []

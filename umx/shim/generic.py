@@ -1,28 +1,38 @@
-"""Generic shim for tools without specific shim support.
-
-Writes memory to a standard location.
-"""
-
 from __future__ import annotations
 
 from pathlib import Path
 
-from umx.inject import inject_for_tool
+from umx.inject import build_injection_block
 
 
-def shim_generic(
-    cwd: Path,
-    tool: str,
-    max_tokens: int | None = None,
-) -> Path | None:
-    """Write memory context for any tool.
+def generate_prompt(
+    cwd: Path, tool: str | None = None, max_tokens: int = 4000
+) -> str:
+    """Generate memory injection for any tool.
 
-    Creates .umx/inject/<tool>-context.md.
-    Returns the path to the written file, or None if no content.
+    Can be used as:
+    - Piped into tool: `umx shim generic | tool-name`
+    - Written to file: `umx shim generic --output context.md`
+    - Read programmatically
     """
-    umx_dir = cwd / ".umx" / "inject"
-    output = umx_dir / f"{tool}-context.md"
-    content = inject_for_tool(
-        cwd, tool=tool, max_tokens=max_tokens, output_path=output
-    )
-    return output if content else None
+    return build_injection_block(cwd, tool=tool, max_tokens=max_tokens)
+
+
+def write_context_file(
+    cwd: Path,
+    output_path: Path,
+    tool: str | None = None,
+    max_tokens: int = 4000,
+) -> Path:
+    """Write memory context to a file."""
+    content = generate_prompt(cwd, tool=tool, max_tokens=max_tokens)
+    output_path.write_text(content)
+    return output_path
+
+
+def run(
+    cwd: Path | None = None, tool: str | None = None, max_tokens: int = 4000
+) -> str:
+    """Main entry point for generic shim."""
+    cwd = cwd or Path.cwd()
+    return generate_prompt(cwd, tool=tool, max_tokens=max_tokens)
