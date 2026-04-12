@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="GITMEM.JPG" alt="gitmem header image" />
+  <img src="GITMEM.JPG" alt="gitmem header image" width="369" />
 </p>
 
 # gitmem
