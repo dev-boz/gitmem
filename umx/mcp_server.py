@@ -309,18 +309,32 @@ class UMXMCPServer:
             "metrics": metrics,
         }
 
+    def handle_ping(self, params: dict) -> dict:
+        return {}
+
+    def handle_resources_list(self, params: dict) -> dict:
+        return {"resources": []}
+
+    def handle_prompts_list(self, params: dict) -> dict:
+        return {"prompts": []}
+
     def dispatch(self, request: dict) -> dict | None:
         method = request.get("method", "")
         params = request.get("params", {})
         req_id = request.get("id")
 
-        if method == "notifications/initialized":
+        # Notifications must not be responded to
+        if method.startswith("notifications/"):
             return None
 
         handler = {
             "initialize": self.handle_initialize,
+            "ping": self.handle_ping,
             "tools/list": self.handle_tools_list,
             "tools/call": self.handle_tools_call,
+            # Return empty collections for optional capability methods
+            "resources/list": self.handle_resources_list,
+            "prompts/list": self.handle_prompts_list,
         }.get(method)
 
         if handler is None:

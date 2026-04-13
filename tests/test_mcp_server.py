@@ -309,3 +309,42 @@ class TestJSONRPCErrorHandling:
         })
         assert "result" in response
         assert len(response["result"]["tools"]) == 5
+
+    def test_ping_returns_empty_result(self, server: UMXMCPServer):
+        response = server.dispatch({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "ping",
+            "params": {},
+        })
+        assert "result" in response
+        assert response["result"] == {}
+
+    def test_resources_list_returns_empty(self, server: UMXMCPServer):
+        response = server.dispatch({
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "resources/list",
+            "params": {},
+        })
+        assert "result" in response
+        assert response["result"]["resources"] == []
+
+    def test_prompts_list_returns_empty(self, server: UMXMCPServer):
+        response = server.dispatch({
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "prompts/list",
+            "params": {},
+        })
+        assert "result" in response
+        assert response["result"]["prompts"] == []
+
+    def test_any_notification_returns_none(self, server: UMXMCPServer):
+        for notification in ["notifications/initialized", "notifications/cancelled", "notifications/progress"]:
+            response = server.dispatch({
+                "jsonrpc": "2.0",
+                "method": notification,
+                "params": {},
+            })
+            assert response is None, f"Expected None for {notification}"

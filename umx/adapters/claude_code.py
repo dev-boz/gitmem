@@ -28,6 +28,11 @@ class ClaudeCodeAdapter(NativeMemoryAdapter):
         # User-level Claude config
         claude_home = Path.home() / ".claude"
         if claude_home.is_dir():
+            # Global user-level CLAUDE.md
+            global_claude = claude_home / "CLAUDE.md"
+            if global_claude.exists():
+                candidates.append(global_claude)
+
             # Look for project-specific memory
             for proj_dir in claude_home.glob("projects/*/"):
                 memory_file = proj_dir / "CLAUDE.md"

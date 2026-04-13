@@ -823,6 +823,86 @@ def capture_copilot_cmd(
     click.echo(json.dumps(capture_copilot_session(cwd, target, config=_cfg()), sort_keys=True))
 
 
+@capture_group.command("claude-code")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--file",
+    "session_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Specific Claude Code session JSONL file to import.",
+)
+@click.option(
+    "--source-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override default ~/.claude/projects/ root.",
+)
+@click.option(
+    "--all",
+    "capture_all",
+    is_flag=True,
+    default=False,
+    help="Import all sessions for this project, not just the latest.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def capture_claude_code_cmd(
+    cwd: Path,
+    session_file: Path | None,
+    source_root: Path | None,
+    capture_all: bool,
+    dry_run: bool,
+) -> None:
+    from umx.claude_code_capture import (
+        capture_claude_code_session,
+        latest_claude_code_session_path,
+        list_claude_code_sessions,
+        parse_claude_code_session,
+    )
+
+    root = find_project_root(cwd)
+    if session_file:
+        targets = [session_file]
+    elif capture_all:
+        targets = list_claude_code_sessions(project_root=root, source_root=source_root)
+        if not targets:
+            raise click.ClickException("No Claude Code session files found for this project.")
+    else:
+        target = latest_claude_code_session_path(project_root=root, source_root=source_root)
+        if target is None:
+            raise click.ClickException("No Claude Code session files found for this project.")
+        targets = [target]
+
+    if dry_run:
+        results = []
+        for path in targets:
+            if not path.exists():
+                raise click.ClickException(f"Session file not found: {path}")
+            transcript = parse_claude_code_session(path)
+            results.append(
+                {
+                    "dry_run": True,
+                    "source_file": str(path),
+                    "tool": "claude-code",
+                    "umx_session_id": transcript.umx_session_id,
+                    "events_imported": len(transcript.events),
+                }
+            )
+        click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+        return
+
+    results = []
+    for path in targets:
+        if not path.exists():
+            raise click.ClickException(f"Session file not found: {path}")
+        results.append(capture_claude_code_session(cwd, path, config=_cfg()))
+    if results:
+        from umx.git_ops import git_add_and_commit
+        repo = project_memory_dir(root)
+        git_add_and_commit(repo, message="umx: capture claude-code sessions")
+    click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+
+
 @main.command("search")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--raw", is_flag=True, default=False, help="Search raw session files instead of the fact index.")
