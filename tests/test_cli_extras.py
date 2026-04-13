@@ -5,6 +5,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from umx.aip import main as aip_main, mem_main
 from umx.cli import main
 from umx.memory import add_fact
 from umx.models import (
@@ -87,3 +88,30 @@ def test_cli_rebuild_index_with_embeddings_writes_cache(
     payload = json.loads(cache_path.read_text())
     assert fact.fact_id in payload["facts"]
     assert payload["facts"][fact.fact_id]["embedding"] == [1.0, 0.0, 0.0]
+
+
+def test_aip_mem_namespace_forwards_status(project_dir: Path, project_repo: Path) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(aip_main, ["mem", "status", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert "facts" in payload
+    assert "session_count" in payload
+
+
+def test_aip_mem_entrypoint_forwards_view(project_dir: Path, project_repo: Path) -> None:
+    fact = _make_fact(
+        "document staging rollout steps",
+        topic="deploy",
+        fact_id="01TESTFACT0000000000000802",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(mem_main, ["view", "--cwd", str(project_dir), "--fact", fact.fact_id])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["fact_id"] == fact.fact_id

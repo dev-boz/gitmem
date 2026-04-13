@@ -16,6 +16,7 @@ def test_workflow_templates_cover_l1_and_l2() -> None:
     assert set(templates) == {"l1-dream.yml", "l2-review.yml"}
     assert "umx dream --mode remote --tier l1" in templates["l1-dream.yml"]
     assert "umx dream --mode remote --tier l2 --pr" in templates["l2-review.yml"]
+    assert "type: extraction" in templates["l2-review.yml"]
     assert "type: consolidation" in templates["l2-review.yml"]
 
 

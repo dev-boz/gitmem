@@ -41,6 +41,7 @@ embeddings = [
 [project.scripts]
 umx = "umx.cli:main"
 gitmem = "umx.cli:main"
+aip-mem = "umx.aip:mem_main"
 
 [tool.setuptools.packages.find]
 include = ["umx*"]

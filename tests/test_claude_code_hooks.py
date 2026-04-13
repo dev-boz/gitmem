@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from click.testing import CliRunner
+
+from umx.cli import main
+from umx.memory import add_fact
+from umx.models import (
+    ConsolidationStatus,
+    Fact,
+    MemoryType,
+    Scope,
+    SourceType,
+    Verification,
+)
+from umx.sessions import read_session
+
+
+def _write_claude_session(path: Path, records: list[dict]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    return path
+
+
+def _minimal_claude_records(session_id: str) -> list[dict]:
+    return [
+        {
+            "type": "system",
+            "subtype": "turn_duration",
+            "sessionId": session_id,
+            "cwd": "/tmp/project",
+            "version": "2.1.0",
+            "slug": "test-session",
+            "timestamp": "2026-01-15T10:00:00.000Z",
+        },
+        {
+            "type": "user",
+            "isSidechain": False,
+            "uuid": "u1",
+            "parentUuid": None,
+            "message": {"role": "user", "content": "How do deploys work?"},
+            "timestamp": "2026-01-15T10:00:01.000Z",
+        },
+        {
+            "type": "assistant",
+            "isSidechain": False,
+            "uuid": "a1",
+            "parentUuid": "u1",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Deploys require a smoke check."}],
+            },
+            "timestamp": "2026-01-15T10:00:05.000Z",
+        },
+    ]
+
+
+def test_claude_code_hooks_install_writes_settings(project_dir: Path) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "hooks",
+            "claude-code",
+            "install",
+            "--cwd",
+            str(project_dir),
+            "--scope",
+            "local",
+            "--command",
+            "python -m umx.cli",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    settings_path = Path(payload["installed"])
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert "SessionStart" in settings["hooks"]
+    assert "PreToolUse" in settings["hooks"]
+    assert settings["hooks"]["SessionEnd"][0]["hooks"][0]["command"] == "python -m umx.cli hooks claude-code session-end"
+
+
+def test_claude_code_session_start_hook_returns_additional_context(
+    project_dir: Path,
+) -> None:
+    runner = CliRunner()
+    transcript = _write_claude_session(
+        project_dir / ".claude" / "projects" / "session.jsonl",
+        _minimal_claude_records("abc12345-0000-0000-0000-000000000000"),
+    )
+    payload_path = project_dir / "session-start.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "session_id": "abc12345-0000-0000-0000-000000000000",
+                "transcript_path": str(transcript),
+                "cwd": str(project_dir),
+                "hook_event_name": "SessionStart",
+                "source": "startup",
+                "model": "claude-sonnet-4-6",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        main,
+        ["hooks", "claude-code", "session-start", "--payload-file", str(payload_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "UMX Memory" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_claude_code_pre_tool_hook_returns_additional_context(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    add_fact(
+        project_repo,
+        Fact(
+            fact_id="01TESTFACT0000000000000900",
+            text="deploys require a smoke check",
+            scope=Scope.PROJECT,
+            topic="deploy",
+            encoding_strength=4,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
+            verification=Verification.CORROBORATED,
+            source_type=SourceType.GROUND_TRUTH_CODE,
+            source_tool="codex",
+            source_session="sess-hook-001",
+            consolidation_status=ConsolidationStatus.STABLE,
+        ),
+        auto_commit=False,
+    )
+    payload_path = project_dir / "pre-tool.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "session_id": "abc12345-0000-0000-0000-000000000000",
+                "cwd": str(project_dir),
+                "hook_event_name": "PreToolUse",
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "pytest -q",
+                    "description": "Run test suite",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["hooks", "claude-code", "pre-tool-use", "--payload-file", str(payload_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "UMX Memory" in payload["hookSpecificOutput"]["additionalContext"]
+
+
+def test_claude_code_session_end_hook_imports_transcript(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    runner = CliRunner()
+    transcript = _write_claude_session(
+        project_dir / ".claude" / "projects" / "def67890-0000-0000-0000-000000000000.jsonl",
+        _minimal_claude_records("def67890-0000-0000-0000-000000000000"),
+    )
+    payload_path = project_dir / "session-end.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "session_id": "def67890-0000-0000-0000-000000000000",
+                "transcript_path": str(transcript),
+                "cwd": str(project_dir),
+                "hook_event_name": "SessionEnd",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        main,
+        ["hooks", "claude-code", "session-end", "--payload-file", str(payload_path)],
+    )
+
+    assert result.exit_code == 0, result.output
+    session_path = project_repo / "sessions" / "2026" / "01" / "2026-01-15-claude-code-def67890.jsonl"
+    assert session_path.exists()
+    payload = read_session(session_path)
+    assert payload[0]["_meta"]["tool"] == "claude-code"
+    assert payload[1]["content"] == "How do deploys work?"

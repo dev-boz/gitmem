@@ -19,7 +19,7 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 
 **Your AI tools share a brain, and you can see exactly what's in it.**
 
-> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/OpenCode transcript capture, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, and Claude Code hook-based live capture is still in active development.
+> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/OpenCode transcript capture, Claude Code live-hook install helpers, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, especially remote/hybrid review and provider-backed approval.
 
 Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
@@ -130,6 +130,19 @@ gitmem inject --cwd /path/to/project --prompt "postgres deploy flow"
 # View facts
 gitmem view --cwd /path/to/project --list
 
+# Promote a fact into project or principle memory
+gitmem promote --cwd /path/to/project --fact FACT123 --to project
+gitmem promote --cwd /path/to/project --fact FACT123 --to principle
+
+# Install Claude Code live hooks into project-local settings
+gitmem hooks claude-code install --cwd /path/to/project
+
+# Print the Claude Code hook block instead of writing it
+gitmem hooks claude-code print
+
+# AIP-style compatibility entrypoint
+aip-mem status --cwd /path/to/project
+
 # Start the MCP server
 gitmem mcp
 ```
@@ -161,9 +174,12 @@ Requires `gh` CLI installed and authenticated.
 gitmem init --org your-github-org --mode remote
 gitmem init-project --cwd /path/to/project
 
-# Dream pipeline opens PRs instead of direct-writing
+# Dream pipeline uses branch/PR scaffolding for review flows
 gitmem dream --cwd /path/to/project --force
 # → PR: [dream/l1] ... (#42)
+
+# Review a PR proposal at the experimental L2 tier
+gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
 
 # Sync sessions and facts
 gitmem sync --cwd /path/to/project
@@ -173,9 +189,9 @@ gitmem sync --cwd /path/to/project
 
 | | `local` | `remote` | `hybrid` |
 |---|---|---|---|
-| Facts | direct write | PR only | PR only |
+| Facts | direct write | PR-scaffolded review flow (experimental) | PR-scaffolded review flow (experimental) |
 | Sessions | local | local | push to main |
-| Governance | none | full (experimental) | full (experimental) |
+| Governance | none | L1/L2 scaffolding (experimental) | L1/L2 scaffolding (experimental) |
 | Offline | yes | no | partial |
 | Best for | solo / offline | team / audit | team / fast capture |
 
@@ -183,6 +199,7 @@ gitmem sync --cwd /path/to/project
 
 - **Dream pipeline** — Orient, Gather, Consolidate, Lint, Prune — native/local in this alpha, governance path experimental
 - **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code` / `gitmem capture opencode`, native memory import adapters, hooks, or MCP server
+- **Claude Code live hooks** — project/user install helpers for session-start injection, pre-tool procedures, pre-compact sync, and session-end capture
 - **MCP server** — `gitmem mcp` exposes read/write/search/dream/status tools over stdio
 - **Budget-aware injection** — greedy-packs the most relevant facts into a token budget
 - **Scope hierarchy** — user > tool > project > folder > file — facts injected at the most specific relevant level
@@ -193,12 +210,14 @@ gitmem sync --cwd /path/to/project
 - **Attention refresh** — re-injects facts that have drifted too far from the active cursor in long sessions
 - **Tombstones** — explicit forgetting mechanism that suppresses facts across future dream cycles
 - **Procedures** — reusable playbooks and action rules, matched and injected at pre-tool time
+- **Cross-scope promotion** — move facts into user, project, or principle memory with `gitmem promote --to ...`
+- **Viewer surfaces** — fact inventory, task board/timeline, tombstones, session browser, audit view, manifest/lint/gap panels, and conventions display
 
 ## Alpha coverage
 
 - **First-class transcript capture:** Codex, Copilot CLI, Claude Code, OpenCode
 - **Native memory import adapters:** Claude Code, Copilot instructions, Aider
-- **Integration surfaces:** MCP server, shims, bridge files, search/inject/view
+- **Integration surfaces:** MCP server, Claude Code live hooks, shims, bridge files, search/inject/view, and `aip-mem`
 
 The local-mode loop is in daily use. Remote and hybrid mode are included in alpha for bootstrap, PR scaffolding, and session sync, but that governance path is still the roughest part of the project.
 
@@ -209,15 +228,17 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 ### Working in this alpha
 - Local-mode dream pipeline (extract, consolidate, lint, prune)
 - Codex, Copilot, Claude Code, and OpenCode transcript capture
+- Claude Code live-hook install/export workflow
+- User/project/principle promotion via `gitmem promote --to ...`
 - Native memory import adapters for Claude Code, Copilot instructions, and Aider
-- FTS5 search, budget-aware injection, viewer, shims, bridge files, and MCP server
-- Remote/hybrid bootstrap, PR scaffolding, and session sync (experimental)
+- FTS5 search, budget-aware injection, richer viewer surfaces, shims, bridge files, MCP server, and `aip-mem`
+- Remote/hybrid bootstrap, PR scaffolding, L2 review wiring, and session sync (experimental)
 
 ### Next
-- **Claude Code live hooks** — wire session-start/end hooks into Claude Code for real-time capture (batch capture via `gitmem capture claude-code` works today)
+- **Claude Code live hooks** — broaden coverage beyond the current install helpers (more Claude events, richer relay/telemetry)
 - **Read adapters** — generic CLI and hybrid gather across tools
 - **Extraction quality** — better prompts, golden-test harness, benchmark framework
-- **Provider-backed review** — turn the draft remote/L1/L2 flow into a fully wired path
+- **Provider-backed review** — turn the current remote/L1/L2 scaffolding into a provider-backed path with stronger provenance and merge policy
 
 ### Then: GitHub governance hardening
 - **gitmem backend** — GitHub org bootstrap, push queue, PR pipeline
@@ -227,11 +248,11 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - **GitHub Actions** — workflow templates for automated dream cycles and lint PRs
 
 ### Later
-- Web viewer with strength/scope/conflict filters, supersession timelines, session browser
+- Web viewer with strength/scope/conflict filters, supersession timelines, and edit/confirm/promote actions
 - Cross-project dream and principle promotion
 - Semantic re-ranking (optional embeddings, hybrid search)
 - Schema migration tooling, signed commits, hypothesis branches
-- `aip mem` integration and published spec for third-party adoption
+- deeper `aip mem` runtime integration and published spec for third-party adoption
 
 ## Spec
 

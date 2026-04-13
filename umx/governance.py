@@ -28,18 +28,24 @@ def classify_pr_labels(facts: list[Fact]) -> list[str]:
     """Classify facts into PR label categories per spec §12."""
     labels: set[str] = set()
 
+    has_principle = any(
+        fact.file_path and "principles/topics/" in fact.file_path.as_posix()
+        for fact in facts
+    )
     has_consolidation = any(f.source_type.value == "dream_consolidation" for f in facts)
     has_gap_fill = any("gap" in (f.source_tool or "") for f in facts)
     has_extraction = any(f.source_type.value in ("user_prompt", "tool_output", "ground_truth_code") for f in facts)
 
+    if has_principle:
+        labels.add("type: principle")
     if has_consolidation:
-        labels.add("type:consolidation")
+        labels.add("type: consolidation")
     if has_gap_fill:
-        labels.add("type:gap-fill")
+        labels.add("type: gap-fill")
     if has_extraction:
-        labels.add("type:extraction")
+        labels.add("type: extraction")
     if not labels:
-        labels.add("type:extraction")
+        labels.add("type: extraction")
 
     confidences = [f.confidence for f in facts]
     avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0

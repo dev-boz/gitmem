@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from umx.cli import main
-from umx.config import default_config
+from umx.config import default_config, save_config
 from umx.conventions import ConventionSet
 from umx.dream.pipeline import DreamPipeline
 from umx.governance import (
@@ -19,6 +19,7 @@ from umx.governance import (
     generate_l1_pr,
     generate_l2_review,
 )
+from umx.memory import add_fact
 from umx.models import (
     ConsolidationStatus,
     Fact,
@@ -27,6 +28,7 @@ from umx.models import (
     SourceType,
     Verification,
 )
+from umx.scope import config_path
 
 
 def _make_fact(
@@ -199,8 +201,8 @@ def test_classify_pr_labels() -> None:
         _make_fact(source_type=SourceType.USER_PROMPT, confidence=0.8),
     ]
     labels = classify_pr_labels(facts)
-    assert "type:consolidation" in labels
-    assert "type:extraction" in labels
+    assert "type: consolidation" in labels
+    assert "type: extraction" in labels
     assert "confidence:high" in labels
     assert "impact:local" in labels
 
@@ -320,6 +322,168 @@ def test_dream_remote_branch_excludes_session_history(
         check=True,
     )
     assert status.stdout.strip() == ""
+
+
+def test_dream_l2_review_approves_and_merges(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit
+
+    remote = tmp_path / "review-approve.git"
+    _connect_origin(project_repo, remote)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "checkout", "-b", "dream/l1/review-approve"],
+        capture_output=True,
+        check=True,
+    )
+    add_fact(
+        project_repo,
+        _make_fact(
+            fact_id="01TESTL2APPROVE000000001",
+            text="deploys require a smoke check before release",
+            topic="general",
+            source_type=SourceType.GROUND_TRUTH_CODE,
+        ),
+        auto_commit=False,
+    )
+    git_add_and_commit(project_repo, message="review candidate")
+
+    merged: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        "umx.github_ops.merge_pr",
+        lambda org, repo, pr, method="squash": merged.append((org, repo, pr)) or True,
+    )
+    monkeypatch.setattr("umx.github_ops.comment_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.github_ops.close_pr", lambda *args, **kwargs: False)
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--mode", "remote", "--tier", "l2", "--pr", "7"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["action"] == "approve"
+    assert merged == [("memory-org", project_repo.name, 7)]
+
+
+def test_dream_l2_review_rejects_and_closes(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit
+
+    remote = tmp_path / "review-reject.git"
+    _connect_origin(project_repo, remote)
+    (project_repo / "CONVENTIONS.md").write_text(
+        "# Project Conventions\n\n## Topic taxonomy\n- architecture: allowed topic\n"
+    )
+    git_add_and_commit(project_repo, message="tighten conventions")
+    subprocess.run(
+        ["git", "-C", str(project_repo), "checkout", "-b", "dream/l1/review-reject"],
+        capture_output=True,
+        check=True,
+    )
+    add_fact(
+        project_repo,
+        _make_fact(
+            fact_id="01TESTL2REJECT000000001",
+            text="queue depth alerts route to pagerduty",
+            topic="ops",
+            source_type=SourceType.GROUND_TRUTH_CODE,
+        ),
+        auto_commit=False,
+    )
+    git_add_and_commit(project_repo, message="reject candidate")
+
+    closed: list[tuple[str, str, int, str | None]] = []
+    monkeypatch.setattr("umx.github_ops.merge_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.github_ops.comment_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "umx.github_ops.close_pr",
+        lambda org, repo, pr, comment=None: closed.append((org, repo, pr, comment)) or True,
+    )
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--mode", "remote", "--tier", "l2", "--pr", "8"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["action"] == "reject"
+    assert closed
+    assert closed[0][0:3] == ("memory-org", project_repo.name, 8)
+    assert "Convention violations" in payload["reason"]
+
+
+def test_dream_l2_review_escalates_and_comments(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit
+
+    remote = tmp_path / "review-escalate.git"
+    _connect_origin(project_repo, remote)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "checkout", "-b", "dream/l1/review-escalate"],
+        capture_output=True,
+        check=True,
+    )
+    add_fact(
+        project_repo,
+        _make_fact(
+            fact_id="01TESTL2ESCALATE0000001",
+            text="production postgres runs on 5434",
+            topic="general",
+            source_type=SourceType.GROUND_TRUTH_CODE,
+            conflicts_with=["FACT-OLD-0001"],
+        ),
+        auto_commit=False,
+    )
+    git_add_and_commit(project_repo, message="escalate candidate")
+
+    commented: list[tuple[str, str, int, str]] = []
+    monkeypatch.setattr("umx.github_ops.merge_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.github_ops.close_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        "umx.github_ops.comment_pr",
+        lambda org, repo, pr, body: commented.append((org, repo, pr, body)) or True,
+    )
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--mode", "remote", "--tier", "l2", "--pr", "9"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "ok"
+    assert payload["action"] == "escalate"
+    assert commented
+    assert commented[0][0:3] == ("memory-org", project_repo.name, 9)
+    assert "contradictions" in payload["reason"]
 
 
 def test_dream_hybrid_pushes_sessions_but_not_facts_to_main(

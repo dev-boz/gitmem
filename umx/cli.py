@@ -208,6 +208,11 @@ def dream_cmd(
         cfg.dream.mode = mode
     if tier == "l2" and pr_number is None:
         raise click.UsageError("--tier l2 requires --pr <number>")
+    if tier == "l2":
+        assert pr_number is not None
+        output = DreamPipeline(cwd, config=cfg).review_pr(pr_number)
+        click.echo(json.dumps(output, sort_keys=True))
+        return
     result = DreamPipeline(cwd, config=cfg).run(force=force)
     output = {
         "status": result.status,
@@ -359,26 +364,62 @@ def forget_cmd(cwd: Path, fact_id: str | None, topic: str | None) -> None:
 @main.command("promote")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--fact", "fact_id", required=True)
-@click.option("--to", "destination", required=True)
+@click.option(
+    "--to",
+    "destination",
+    type=click.Choice(["user", "project", "principle"]),
+    required=True,
+)
 def promote_cmd(cwd: Path, fact_id: str, destination: str) -> None:
+    from umx.memory import add_fact, remove_fact, target_path_for_fact, topic_path
+
     repo = project_memory_dir(cwd)
-    fact = remove_fact(repo, fact_id)
+    fact = find_fact_by_id(repo, fact_id)
     if not fact:
         raise click.ClickException(f"fact not found: {fact_id}")
-    if destination == "user":
+    if destination == "project":
+        if fact.scope == Scope.PROJECT and fact.file_path == target_path_for_fact(repo, fact.clone(scope=Scope.PROJECT, file_path=None)):
+            raise click.ClickException(f"fact already in project scope: {fact.fact_id}")
+        promoted = fact.clone(scope=Scope.PROJECT, file_path=None, repo=repo.name)
+        target_repo = repo
+        target_path = target_path_for_fact(target_repo, promoted)
+        kind = "facts"
+    elif destination == "principle":
+        target_repo = repo
+        promoted = fact.clone(file_path=None, repo=repo.name)
+        target_path = topic_path(target_repo, promoted.topic, kind="principles")
+        kind = "principles"
+        if fact.file_path == target_path:
+            raise click.ClickException(f"fact already in principles: {fact.fact_id}")
+    else:
         target_repo = user_memory_dir()
         target_repo.mkdir(parents=True, exist_ok=True)
-        add_path = target_repo / "facts" / "topics" / f"{fact.topic}.md"
-        from umx.memory import add_fact
+        promoted = fact.clone(scope=Scope.USER, file_path=None, repo=target_repo.name)
+        target_path = target_path_for_fact(target_repo, promoted)
+        kind = "facts"
 
-        add_fact(
-            target_repo,
-            fact.clone(scope=Scope.USER, file_path=add_path, repo=target_repo.name),
-        )
-        _commit_repo(repo, f"umx: promote {fact.fact_id} to user")
-        click.echo(f"{fact.fact_id} -> user")
-        return
-    raise click.ClickException(f"unsupported destination: {destination}")
+    if target_repo == repo:
+        removed = remove_fact(repo, fact_id)
+        if removed is None:
+            raise click.ClickException(f"failed to remove source fact during promotion: {fact_id}")
+        try:
+            add_fact(target_repo, promoted, kind=kind, auto_commit=False)
+        except Exception as exc:
+            add_fact(repo, fact, auto_commit=False)
+            raise click.ClickException(str(exc)) from exc
+        _commit_repo(repo, f"umx: promote {fact.fact_id} to {destination}")
+    else:
+        try:
+            add_fact(target_repo, promoted, kind=kind, auto_commit=False)
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        removed = remove_fact(repo, fact_id)
+        if removed is None:
+            remove_fact(target_repo, fact_id)
+            raise click.ClickException(f"failed to remove source fact during promotion: {fact_id}")
+        _commit_repo(target_repo, f"umx: promote {fact.fact_id} to {destination}")
+        _commit_repo(repo, f"umx: promote {fact.fact_id} to {destination}")
+    click.echo(f"{fact.fact_id} -> {destination}")
 
 
 @main.command("confirm")
@@ -614,6 +655,81 @@ def shim_group() -> None:
 @main.group("bridge")
 def bridge_group() -> None:
     """Legacy project-repo bridge operations."""
+
+
+@main.group("hooks")
+def hooks_group() -> None:
+    """Hook integration helpers."""
+
+
+@hooks_group.group("claude-code")
+def hooks_claude_code_group() -> None:
+    """Claude Code live hook workflow helpers."""
+
+
+def _emit_hook_response(payload: dict | None) -> None:
+    if payload:
+        click.echo(json.dumps(payload, sort_keys=True))
+
+
+@hooks_claude_code_group.command("print")
+@click.option("--command", "command_prefix", default="umx")
+def hooks_claude_code_print_cmd(command_prefix: str) -> None:
+    from umx.claude_code_hooks import claude_code_hook_config
+
+    click.echo(json.dumps(claude_code_hook_config(command_prefix), indent=2, sort_keys=True))
+
+
+@hooks_claude_code_group.command("install")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--scope",
+    type=click.Choice(["user", "project", "local"]),
+    default="local",
+    show_default=True,
+)
+@click.option("--command", "command_prefix", default="umx")
+def hooks_claude_code_install_cmd(cwd: Path, scope: str, command_prefix: str) -> None:
+    from umx.claude_code_hooks import install_claude_code_hooks
+
+    settings_path = install_claude_code_hooks(
+        cwd,
+        scope=scope,
+        command_prefix=command_prefix,
+    )
+    click.echo(json.dumps({"installed": str(settings_path), "scope": scope}, sort_keys=True))
+
+
+@hooks_claude_code_group.command("session-start")
+@click.option("--payload-file", type=click.Path(path_type=Path), default=None)
+def hooks_claude_code_session_start_cmd(payload_file: Path | None) -> None:
+    from umx.claude_code_hooks import read_hook_payload, session_start_response
+
+    _emit_hook_response(session_start_response(read_hook_payload(payload_file)))
+
+
+@hooks_claude_code_group.command("pre-tool-use")
+@click.option("--payload-file", type=click.Path(path_type=Path), default=None)
+def hooks_claude_code_pre_tool_use_cmd(payload_file: Path | None) -> None:
+    from umx.claude_code_hooks import pre_tool_use_response, read_hook_payload
+
+    _emit_hook_response(pre_tool_use_response(read_hook_payload(payload_file)))
+
+
+@hooks_claude_code_group.command("pre-compact")
+@click.option("--payload-file", type=click.Path(path_type=Path), default=None)
+def hooks_claude_code_pre_compact_cmd(payload_file: Path | None) -> None:
+    from umx.claude_code_hooks import pre_compact_response, read_hook_payload
+
+    pre_compact_response(read_hook_payload(payload_file))
+
+
+@hooks_claude_code_group.command("session-end")
+@click.option("--payload-file", type=click.Path(path_type=Path), default=None)
+def hooks_claude_code_session_end_cmd(payload_file: Path | None) -> None:
+    from umx.claude_code_hooks import read_hook_payload, session_end_response
+
+    session_end_response(read_hook_payload(payload_file))
 
 
 @bridge_group.command("sync")

@@ -28,12 +28,13 @@ from umx.git_ops import (
     git_ref_exists,
     git_restore_path,
 )
-from umx.governance import PRProposal, generate_l1_pr
+from umx.governance import PRProposal, classify_pr_labels, generate_l1_pr, generate_l2_review
 from umx.manifest import rebuild_manifest
 from umx.memory import (
     add_fact,
     find_fact_by_id,
     load_all_facts,
+    read_fact_file,
     save_repository_facts,
     write_memory_md,
 )
@@ -335,6 +336,97 @@ class DreamPipeline:
         if not gh_available():
             return False
         return push_main(self.repo_dir)
+
+    def _review_candidate_paths(self, base_ref: str = "origin/main") -> list[Path]:
+        paths: list[Path] = []
+        for path in diff_paths_against_ref(self.repo_dir, base_ref):
+            if not path.exists() or path.suffix != ".md":
+                continue
+            relative = path.relative_to(self.repo_dir).as_posix()
+            if relative.startswith(("facts/topics/", "episodic/topics/", "principles/topics/")):
+                paths.append(path)
+        return paths
+
+    def review_pr(self, pr_number: int) -> dict[str, object]:
+        if self.config.dream.mode not in ("remote", "hybrid"):
+            raise RuntimeError("L2 review is only available in remote or hybrid mode")
+        if not self.config.org:
+            raise RuntimeError("L2 review requires config.org to be set")
+
+        ensure_repo_structure(self.repo_dir)
+        self.conventions = parse_conventions(self.repo_dir / "CONVENTIONS.md")
+
+        candidate_paths = self._review_candidate_paths()
+        candidate_facts: list[Fact] = []
+        for path in candidate_paths:
+            candidate_facts.extend(read_fact_file(path, repo_dir=self.repo_dir))
+
+        if not candidate_facts:
+            return {
+                "status": "skipped",
+                "action": "skip",
+                "reason": "no governed fact changes detected",
+                "pr_number": pr_number,
+                "files_changed": [],
+                "labels": [],
+                "violations": [],
+            }
+
+        proposal = PRProposal(
+            title=f"[dream/l2] Review PR #{pr_number}",
+            body="",
+            branch=git_current_branch(self.repo_dir) or "",
+            labels=classify_pr_labels(candidate_facts),
+            files_changed=[path.relative_to(self.repo_dir).as_posix() for path in candidate_paths],
+        )
+        decision = generate_l2_review(
+            proposal,
+            self.conventions,
+            candidate_facts,
+            new_facts=candidate_facts,
+        )
+
+        from umx.github_ops import close_pr, comment_pr, merge_pr
+
+        repo_name = self.repo_dir.name
+        action = str(decision["action"])
+        reason = str(decision["reason"])
+
+        if action == "approve":
+            ok = merge_pr(self.config.org, repo_name, pr_number)
+            status = "ok" if ok else "error"
+            if not ok:
+                reason = f"failed to merge PR #{pr_number}"
+        elif action == "reject":
+            ok = close_pr(
+                self.config.org,
+                repo_name,
+                pr_number,
+                comment=f"L2 review rejected PR #{pr_number}: {reason}",
+            )
+            status = "ok" if ok else "error"
+            if not ok:
+                reason = f"failed to close PR #{pr_number}"
+        else:
+            ok = comment_pr(
+                self.config.org,
+                repo_name,
+                pr_number,
+                f"L2 review escalated PR #{pr_number}: {reason}",
+            )
+            status = "ok" if ok else "error"
+            if not ok:
+                reason = f"failed to comment on PR #{pr_number}"
+
+        return {
+            "status": status,
+            "action": action,
+            "reason": reason,
+            "pr_number": pr_number,
+            "files_changed": proposal.files_changed,
+            "labels": proposal.labels,
+            "violations": list(decision.get("violations", [])),
+        }
 
     def run(self, force: bool = False) -> DreamResult:
         ensure_repo_structure(self.repo_dir)

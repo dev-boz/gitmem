@@ -209,6 +209,38 @@ def test_pre_compact_nothing_to_commit(
     assert result["pushed"] is False
 
 
+def test_pre_compact_remote_only_syncs_sessions(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    git_init(project_repo)
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    save_config(config_path(), cfg)
+
+    sessions_dir = project_repo / "sessions" / "2026" / "01"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions_dir / "2026-01-15-live.jsonl"
+    session_file.write_text('{"_meta": {"session_id": "2026-01-15-live"}}\n')
+
+    facts_dir = project_repo / "facts" / "topics"
+    facts_dir.mkdir(parents=True, exist_ok=True)
+    fact_file = facts_dir / "deploy.md"
+    fact_file.write_text("# deploy\n\n## Facts\n- [S:3|V:sr] stale fact <!-- umx:{\"conf\":1.0,\"cr\":\"2026-01-15T00:00:00Z\",\"cs\":\"fragile\",\"id\":\"FACTSYNC001\",\"src\":\"codex\",\"ss\":\"sess-1\",\"st\":\"llm_inference\",\"v\":\"self-reported\",\"xby\":\"test\"} -->\n")
+
+    with patch("umx.hooks.pre_compact.git_add_and_commit", return_value=True) as mock_commit, patch(
+        "umx.hooks.pre_compact.git_push", return_value=True
+    ) as mock_push:
+        result = pre_compact_run(cwd=project_dir)
+
+    assert result["committed"] is True
+    assert result["pushed"] is True
+    paths = mock_commit.call_args.kwargs["paths"]
+    assert session_file in paths
+    assert fact_file not in paths
+    mock_push.assert_called_once_with(project_repo)
+
+
 # --- post_tool_use ---
 
 

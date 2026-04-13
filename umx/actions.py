@@ -67,6 +67,7 @@ L2_WORKFLOW_TEMPLATE = dedent(
       review:
         runs-on: ubuntu-latest
         if: >-
+          contains(github.event.pull_request.labels.*.name, 'type: extraction') ||
           contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
           contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
           contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||

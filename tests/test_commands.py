@@ -199,6 +199,85 @@ def test_import_dry_run(project_dir: Path, project_repo: Path) -> None:
     assert len(adapter_facts) == 0
 
 
+# ── promotion tests ──────────────────────────────────────────────
+
+
+def test_promote_to_project_moves_fact_into_project_scope(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact(
+        "FACT_PROMOTE_PROJECT",
+        "staging deploy docs live under docs/deploy",
+        topic="deploy",
+        scope=Scope.FOLDER,
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "project"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == f"{fact.fact_id} -> project"
+
+    facts = load_all_facts(project_repo, include_superseded=False)
+    promoted = next(item for item in facts if item.fact_id == fact.fact_id)
+    assert promoted.scope == Scope.PROJECT
+    assert promoted.file_path is not None
+    assert promoted.file_path.relative_to(project_repo).as_posix() == "facts/topics/deploy.md"
+
+
+def test_promote_to_principle_moves_fact_into_principles(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact(
+        "FACT_PROMOTE_PRINCIPLE",
+        "prefer additive migrations over destructive rewrites",
+        topic="migrations",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "principle"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == f"{fact.fact_id} -> principle"
+
+    facts = load_all_facts(project_repo, include_superseded=False)
+    promoted = next(item for item in facts if item.fact_id == fact.fact_id)
+    assert promoted.file_path is not None
+    assert promoted.file_path.relative_to(project_repo).as_posix() == "principles/topics/migrations.md"
+
+
+def test_promote_invalid_destination_leaves_source_fact_untouched(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact(
+        "FACT_PROMOTE_INVALID",
+        "feature flags live in settings.toml",
+        topic="config",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "invalid"],
+    )
+
+    assert result.exit_code != 0
+    facts = load_all_facts(project_repo, include_superseded=False)
+    assert any(item.fact_id == fact.fact_id for item in facts)
+
+
 # ── purge tests ──────────────────────────────────────────────────
 
 

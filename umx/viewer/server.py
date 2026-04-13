@@ -58,16 +58,31 @@ def _summary_card(label: str, value: str) -> str:
     )
 
 
+def _display_path(path: Path | None, *roots: Path) -> str:
+    if path is None:
+        return ""
+    for root in roots:
+        try:
+            return path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return str(path)
+
+
 def _build_html(cwd: Path) -> str:
+    from umx.audit import audit_report
+    from umx.config import load_config
     from umx.dream.gates import read_dream_state
     from umx.memory import load_all_facts
-    from umx.scope import project_memory_dir, user_memory_dir
+    from umx.scope import config_path, project_memory_dir, user_memory_dir
     from umx.search import session_replay
     from umx.sessions import iter_session_payloads
+    from umx.tombstones import load_tombstones
 
     repo = project_memory_dir(cwd)
     user_repo = user_memory_dir()
     state = read_dream_state(repo)
+    cfg = load_config(config_path())
     project_facts = load_all_facts(repo, include_superseded=False) if repo.exists() else []
     user_facts = load_all_facts(user_repo, include_superseded=False) if user_repo.exists() else []
     facts = sorted(
@@ -83,6 +98,8 @@ def _build_html(cwd: Path) -> str:
     manifest = _load_json(repo / "meta" / "manifest.json", {"topics": {}, "uncertainty_hotspots": [], "knowledge_gaps": []})
     gaps = _gap_rows(repo)
     lint_rows = _lint_rows(repo)
+    tombstones = [item for item in load_tombstones(repo) if not item.expired()] if repo.exists() else []
+    audit = audit_report(repo, cfg) if repo.exists() else {"total_facts": 0, "total_sessions": 0, "sessions_with_derived_facts": 0, "source_types": {}}
 
     topics: dict[str, list] = {}
     for fact in facts:
@@ -106,8 +123,11 @@ def _build_html(cwd: Path) -> str:
         f"<td>{html.escape(fact.topic)}</td>"
         f"<td>{fact.encoding_strength}</td>"
         f"<td>{html.escape(fact.verification.value)}</td>"
+        f"<td>{html.escape(fact.consolidation_status.value)}</td>"
+        f"<td>{html.escape(fact.task_status.value if fact.task_status else '')}</td>"
         f"<td>{html.escape(fact.source_type.value)}</td>"
         f"<td>{html.escape(fact.source_session)}</td>"
+        f"<td>{html.escape(_display_path(fact.file_path, repo, user_repo))}</td>"
         f"<td><code>{html.escape(fact.fact_id)}</code></td>"
         f"<td>{html.escape(fact.text)}</td>"
         "</tr>"
@@ -136,6 +156,36 @@ def _build_html(cwd: Path) -> str:
             key=lambda fact: fact.created,
         )
     )
+
+    task_board_html = "<div class='board'>" + "".join(
+        "<div class='board-column'>"
+        f"<h3>{html.escape(status.title())} ({len(status_facts)})</h3>"
+        + (
+            "<ul>"
+            + "".join(
+                "<li>"
+                f"<code>{html.escape(fact.fact_id)}</code> "
+                f"{html.escape(fact.text)}"
+                "</li>"
+                for fact in status_facts
+            )
+            + "</ul>"
+            if status_facts
+            else "<p>No facts.</p>"
+        )
+        + "</div>"
+        for status, status_facts in (
+            (
+                status,
+                sorted(
+                    [fact for fact in facts if fact.task_status and fact.task_status.value == status],
+                    key=lambda fact: fact.created,
+                    reverse=True,
+                ),
+            )
+            for status in ("open", "blocked", "resolved", "abandoned")
+        )
+    ) + "</div>"
 
     manifest_html = (
         "<div class='split'>"
@@ -183,6 +233,78 @@ def _build_html(cwd: Path) -> str:
         "<ul>" + "".join(f"<li>{html.escape(row)}</li>" for row in lint_rows) + "</ul>"
         if lint_rows
         else "<p>No lint findings.</p>"
+    )
+
+    tombstone_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(item.fact_id or '')}</td>"
+        f"<td>{html.escape(item.match or '')}</td>"
+        f"<td>{html.escape(item.reason)}</td>"
+        f"<td>{html.escape(item.author)}</td>"
+        f"<td>{html.escape(item.created)}</td>"
+        f"<td>{html.escape(item.expires_at or '')}</td>"
+        f"<td>{html.escape(', '.join(item.suppress_from))}</td>"
+        "</tr>"
+        for item in tombstones
+    )
+
+    audit_source_rows = "".join(
+        "<tr>"
+        f"<td>{html.escape(source_type)}</td>"
+        f"<td>{count}</td>"
+        "</tr>"
+        for source_type, count in sorted(audit.get("source_types", {}).items())
+    )
+
+    audit_fact_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(fact.fact_id)}</code></td>"
+        f"<td>{html.escape(fact.topic)}</td>"
+        f"<td>{html.escape(fact.scope.value)}</td>"
+        f"<td>{html.escape(fact.source_session)}</td>"
+        f"<td>{html.escape(fact.provenance.extracted_by)}</td>"
+        f"<td>{html.escape(fact.provenance.approval_tier or '')}</td>"
+        f"<td>{html.escape(fact.provenance.pr or '')}</td>"
+        f"<td>{html.escape(_display_path(fact.file_path, repo, user_repo))}</td>"
+        "</tr>"
+        for fact in sorted(facts, key=lambda fact: (fact.created, fact.fact_id), reverse=True)
+    )
+
+    def _session_sort_key(entry: tuple[str, list[dict]]) -> tuple[str, str]:
+        session_id, payload = entry
+        meta = dict(payload[0].get("_meta", {})) if payload and "_meta" in payload[0] else {}
+        return str(meta.get("started", "")), session_id
+
+    session_browser_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(session_id)}</code></td>"
+        f"<td>{html.escape(str(meta.get('tool', '')))}</td>"
+        f"<td>{html.escape(str(meta.get('machine', '')))}</td>"
+        f"<td>{html.escape(str(meta.get('source', '')))}</td>"
+        f"<td>{html.escape(str(meta.get('started', '')))}</td>"
+        f"<td>{len(events)}</td>"
+        f"<td>{html.escape(snippet)}</td>"
+        "</tr>"
+        for session_id, payload in sorted(sessions, key=_session_sort_key, reverse=True)
+        for meta, events, snippet in [(
+            dict(payload[0].get("_meta", {})) if payload and "_meta" in payload[0] else {},
+            [event for event in payload if "_meta" not in event],
+            next(
+                (
+                    str(event.get("content", ""))[:120]
+                    for event in payload
+                    if "_meta" not in event and str(event.get("content", "")).strip()
+                ),
+                "",
+            ),
+        )]
+    )
+
+    conventions_path = repo / "CONVENTIONS.md"
+    conventions_html = (
+        f"<pre class='viewer-pre'>{html.escape(conventions_path.read_text())}</pre>"
+        if conventions_path.exists()
+        else "<p>No project conventions file found.</p>"
     )
 
     replay_html = ""
@@ -255,6 +377,9 @@ def _build_html(cwd: Path) -> str:
   .card-value {{ font-size: 28px; margin-top: 6px; }}
   .section {{ background: rgba(255, 250, 242, 0.92); border: 1px solid var(--line); border-radius: 18px; padding: 18px; margin-top: 16px; }}
   .split {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; }}
+  .board {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }}
+  .board-column {{ background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }}
+  .board-column ul {{ margin: 0; padding-left: 1.1rem; }}
   table {{ border-collapse: collapse; width: 100%; margin: 1em 0; background: white; }}
   th, td {{ border: 1px solid var(--line); padding: 0.45em 0.55em; text-align: left; vertical-align: top; }}
   th {{ background: #f1e6d5; }}
@@ -262,6 +387,7 @@ def _build_html(cwd: Path) -> str:
   h1, h2, h3, h4 {{ margin-top: 0; }}
   .meta {{ color: var(--muted); margin-left: 0.5rem; font-size: 0.92em; }}
   .fact-text {{ font-weight: 600; }}
+  .viewer-pre {{ white-space: pre-wrap; overflow-x: auto; background: white; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }}
 </style>
 </head><body><div class="page">
 <div class="hero">
@@ -272,18 +398,32 @@ def _build_html(cwd: Path) -> str:
 {_summary_card("User Facts", str(len(user_facts)))}
 {_summary_card("Sessions", str(len(sessions)))}
 {_summary_card("Open Tasks", str(len([fact for fact in facts if fact.task_status is not None and fact.task_status.value in ('open', 'blocked')])))}
+{_summary_card("Tombstones", str(len(tombstones)))}
 {_summary_card("Last Dream", str(state.get('last_dream', 'never')))}
 </div>
 </div>
 <div class="section"><h2>Fact Inventory</h2>
-{('<table><tr><th>Scope</th><th>Topic</th><th>S</th><th>Verification</th><th>Source</th><th>Session</th><th>ID</th><th>Text</th></tr>' + fact_rows + '</table>') if fact_rows else '<p>No facts found.</p>'}
+{('<table><tr><th>Scope</th><th>Topic</th><th>S</th><th>Verification</th><th>State</th><th>Task</th><th>Source</th><th>Session</th><th>File</th><th>ID</th><th>Text</th></tr>' + fact_rows + '</table>') if fact_rows else '<p>No facts found.</p>'}
 </div>
 <div class="section"><h2>Manifest Coverage</h2>{manifest_html}</div>
 <div class="section"><h2>Topic Narratives</h2>{topic_html if topic_html else '<p>No facts found.</p>'}</div>
 <div class="section"><h2>Conflict Matrix</h2>{('<table><tr><th>ID</th><th>Topic</th><th>Conflicts With</th></tr>' + conflict_rows + '</table>') if conflict_rows else '<p>No active conflicts.</p>'}</div>
+<div class="section"><h2>Task Board</h2>{task_board_html}</div>
 <div class="section"><h2>Task Timeline</h2>{('<table><tr><th>Date</th><th>Scope</th><th>Status</th><th>Task</th></tr>' + task_rows + '</table>') if task_rows else '<p>No task facts found.</p>'}</div>
+<div class="section"><h2>Tombstones</h2>{('<table><tr><th>Fact ID</th><th>Match</th><th>Reason</th><th>Author</th><th>Created</th><th>Expires</th><th>Suppress From</th></tr>' + tombstone_rows + '</table>') if tombstone_rows else '<p>No active tombstones.</p>'}</div>
+<div class="section"><h2>Audit View</h2>
+<div class="cards">
+{_summary_card("Audit Facts", str(audit.get('total_facts', 0)))}
+{_summary_card("Audit Sessions", str(audit.get('total_sessions', 0)))}
+{_summary_card("Derived Sessions", str(audit.get('sessions_with_derived_facts', 0)))}
+</div>
+{('<table><tr><th>Source Type</th><th>Count</th></tr>' + audit_source_rows + '</table>') if audit_source_rows else '<p>No audit source breakdown yet.</p>'}
+{('<table><tr><th>ID</th><th>Topic</th><th>Scope</th><th>Session</th><th>Extracted By</th><th>Tier</th><th>PR</th><th>File</th></tr>' + audit_fact_rows + '</table>') if audit_fact_rows else '<p>No facts available for audit.</p>'}
+</div>
+<div class="section"><h2>Session Browser</h2>{('<table><tr><th>Session</th><th>Tool</th><th>Machine</th><th>Source</th><th>Started</th><th>Events</th><th>Preview</th></tr>' + session_browser_rows + '</table>') if session_browser_rows else '<p>No sessions recorded yet.</p>'}</div>
 <div class="section"><h2>Gap Proposals</h2>{gap_html}</div>
 <div class="section"><h2>Lint Report</h2>{lint_html}</div>
+<div class="section"><h2>Conventions</h2>{conventions_html}</div>
 <div class="section"><h2>Session Replay</h2>{replay_html if replay_html else '<p>No replay telemetry yet.</p>'}</div>
 </div></body></html>"""
 
