@@ -74,7 +74,12 @@ def main() -> None:
 
 @main.command("init")
 @click.option("--org", default=None)
-@click.option("--mode", "init_mode", type=click.Choice(["local", "remote", "hybrid"]), default="local")
+@click.option(
+    "--mode",
+    "init_mode",
+    type=click.Choice(["local", "remote", "hybrid"]),
+    default="local",
+)
 def init_cmd(org: str | None, init_mode: str) -> None:
     config = default_config()
     config.org = org
@@ -84,6 +89,7 @@ def init_cmd(org: str | None, init_mode: str) -> None:
 
     if init_mode in ("remote", "hybrid") and org:
         from umx.github_ops import gh_available, ensure_repo, set_remote
+
         if not gh_available():
             click.echo("warning: gh CLI not available; skipping remote setup")
         else:
@@ -106,7 +112,13 @@ def init_project_cmd(cwd: Path, slug: str | None) -> None:
 
     cfg = _cfg()
     if cfg.dream.mode in ("remote", "hybrid") and cfg.org:
-        from umx.github_ops import gh_available, ensure_repo, set_remote, deploy_workflows
+        from umx.github_ops import (
+            gh_available,
+            ensure_repo,
+            set_remote,
+            deploy_workflows,
+        )
+
         if not gh_available():
             click.echo("warning: gh CLI not available; skipping remote setup")
         else:
@@ -143,7 +155,11 @@ def inject_cmd(
     max_tokens: int,
 ) -> None:
     if session_id:
-        observed_text = " ".join(part for part in [tool or "", command_text or "", prompt or "", *files] if part)
+        observed_text = " ".join(
+            part
+            for part in [tool or "", command_text or "", prompt or "", *files]
+            if part
+        )
         advance_session_state(
             project_memory_dir(cwd),
             session_id,
@@ -181,8 +197,12 @@ def collect_cmd(cwd: Path) -> None:
 @click.option("--force", is_flag=True, default=False)
 @click.option("--mode", type=click.Choice(["local", "remote", "hybrid"]), default=None)
 @click.option("--tier", type=click.Choice(["l1", "l2"]), default=None)
-@click.option("--pr", "pr_number", type=int, default=None, help="PR number for L2 review")
-def dream_cmd(cwd: Path, force: bool, mode: str | None, tier: str | None, pr_number: int | None) -> None:
+@click.option(
+    "--pr", "pr_number", type=int, default=None, help="PR number for L2 review"
+)
+def dream_cmd(
+    cwd: Path, force: bool, mode: str | None, tier: str | None, pr_number: int | None
+) -> None:
     cfg = _cfg()
     if mode:
         cfg.dream.mode = mode
@@ -211,7 +231,9 @@ def dream_cmd(cwd: Path, force: bool, mode: str | None, tier: str | None, pr_num
 @click.option("--min-strength", type=int, default=1)
 @click.option("--fact", "fact_id", default=None)
 @click.option("--list", "list_only", is_flag=True, default=False)
-def view_cmd(cwd: Path, min_strength: int, fact_id: str | None, list_only: bool) -> None:
+def view_cmd(
+    cwd: Path, min_strength: int, fact_id: str | None, list_only: bool
+) -> None:
     repo = project_memory_dir(cwd)
     if fact_id:
         fact = find_fact_by_id(repo, fact_id)
@@ -349,7 +371,10 @@ def promote_cmd(cwd: Path, fact_id: str, destination: str) -> None:
         add_path = target_repo / "facts" / "topics" / f"{fact.topic}.md"
         from umx.memory import add_fact
 
-        add_fact(target_repo, fact.clone(scope=Scope.USER, file_path=add_path, repo=target_repo.name))
+        add_fact(
+            target_repo,
+            fact.clone(scope=Scope.USER, file_path=add_path, repo=target_repo.name),
+        )
         _commit_repo(repo, f"umx: promote {fact.fact_id} to user")
         click.echo(f"{fact.fact_id} -> user")
         return
@@ -388,7 +413,10 @@ def history_cmd(cwd: Path, fact_id: str) -> None:
 @click.option("--include-abandoned", is_flag=True, default=False)
 def resume_cmd(cwd: Path, include_abandoned: bool) -> None:
     repo = project_memory_dir(cwd)
-    for fact in open_tasks(load_all_facts(repo, include_superseded=False), include_abandoned=include_abandoned):
+    for fact in open_tasks(
+        load_all_facts(repo, include_superseded=False),
+        include_abandoned=include_abandoned,
+    ):
         click.echo(f"{fact.fact_id} [{fact.task_status.value}] {fact.text}")
 
 
@@ -465,12 +493,16 @@ def sync_cmd(cwd: Path) -> None:
 
 @main.command("setup-remote")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-@click.option("--mode", "new_mode", type=click.Choice(["remote", "hybrid"]), default="hybrid")
+@click.option(
+    "--mode", "new_mode", type=click.Choice(["remote", "hybrid"]), default="hybrid"
+)
 def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
     """Connect an existing project to a GitHub memory repo."""
     cfg = _cfg()
     if not cfg.org:
-        raise click.ClickException("no org configured; run 'umx init --org <org> --mode remote' first")
+        raise click.ClickException(
+            "no org configured; run 'umx init --org <org> --mode remote' first"
+        )
 
     from umx.github_ops import gh_available, ensure_repo, set_remote, deploy_workflows
 
@@ -510,9 +542,14 @@ def purge_cmd(cwd: Path, session_id: str, dry_run: bool) -> None:
         count = 0
         for path in iter_fact_files(repo):
             for fact in read_fact_file(path, repo_dir=repo):
-                if fact.source_session == session_id or session_id in fact.provenance.sessions:
+                if (
+                    fact.source_session == session_id
+                    or session_id in fact.provenance.sessions
+                ):
                     count += 1
-        click.echo(json.dumps({"dry_run": True, "facts_would_remove": count}, sort_keys=True))
+        click.echo(
+            json.dumps({"dry_run": True, "facts_would_remove": count}, sort_keys=True)
+        )
     else:
         result = purge_session(repo, session_id)
         if result["session_removed"] or result["facts_removed"]:
@@ -587,7 +624,9 @@ def bridge_sync_cmd(cwd: Path, targets: tuple[str]) -> None:
 
     root = find_project_root(cwd)
     repo = project_memory_dir(cwd)
-    written = write_bridge(root, repo, config=_cfg(), target_files=list(targets) or None)
+    written = write_bridge(
+        root, repo, config=_cfg(), target_files=list(targets) or None
+    )
     click.echo(json.dumps([str(path) for path in written], sort_keys=True))
 
 
@@ -607,7 +646,9 @@ def bridge_remove_cmd(cwd: Path, targets: tuple[str]) -> None:
 @click.option("--target", "targets", multiple=True)
 @click.option("--topic", default="legacy-bridge")
 @click.option("--dry-run", is_flag=True, default=False)
-def bridge_import_cmd(cwd: Path, targets: tuple[str], topic: str, dry_run: bool) -> None:
+def bridge_import_cmd(
+    cwd: Path, targets: tuple[str], topic: str, dry_run: bool
+) -> None:
     from umx.bridge import import_bridge_facts
     from umx.memory import add_fact
 
@@ -624,7 +665,9 @@ def bridge_import_cmd(cwd: Path, targets: tuple[str], topic: str, dry_run: bool)
             add_fact(repo, fact, auto_commit=False)
         if imported:
             _commit_repo(repo, f"umx: import bridge facts to {topic}")
-    click.echo(json.dumps({"dry_run": dry_run, "imported": len(imported)}, sort_keys=True))
+    click.echo(
+        json.dumps({"dry_run": dry_run, "imported": len(imported)}, sort_keys=True)
+    )
 
 
 @shim_group.command("aider")
@@ -646,11 +689,15 @@ def shim_aider_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
 @click.option("--tool", default=None)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
 @click.option("--max-tokens", type=int, default=4000)
-def shim_generic_cmd(cwd: Path, tool: str | None, output: Path | None, max_tokens: int) -> None:
+def shim_generic_cmd(
+    cwd: Path, tool: str | None, output: Path | None, max_tokens: int
+) -> None:
     from umx.shim.generic import generate_prompt, write_context_file
 
     if output:
-        path = write_context_file(cwd, output_path=output, tool=tool, max_tokens=max_tokens)
+        path = write_context_file(
+            cwd, output_path=output, tool=tool, max_tokens=max_tokens
+        )
         click.echo(str(path))
     else:
         click.echo(generate_prompt(cwd, tool=tool, max_tokens=max_tokens), nl=False)
@@ -665,7 +712,9 @@ def secret_group() -> None:
 @click.argument("key")
 def secret_get(key: str) -> None:
     if "/" in key or "\\" in key or key.startswith("."):
-        raise click.ClickException("Invalid secret key: must not contain path separators or start with '.'")
+        raise click.ClickException(
+            "Invalid secret key: must not contain path separators or start with '.'"
+        )
     path = get_umx_home() / "user" / "local" / "secret" / key
     click.echo(path.read_text() if path.exists() else "", nl=False)
 
@@ -675,7 +724,9 @@ def secret_get(key: str) -> None:
 @click.argument("value")
 def secret_set(key: str, value: str) -> None:
     if "/" in key or "\\" in key or key.startswith("."):
-        raise click.ClickException("Invalid secret key: must not contain path separators or start with '.'")
+        raise click.ClickException(
+            "Invalid secret key: must not contain path separators or start with '.'"
+        )
     path = get_umx_home() / "user" / "local" / "secret" / key
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(value)
@@ -684,7 +735,11 @@ def secret_set(key: str, value: str) -> None:
 
 @main.command("import")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-@click.option("--adapter", type=click.Choice(["claude-code", "copilot", "aider", "generic"]), required=True)
+@click.option(
+    "--adapter",
+    type=click.Choice(["claude-code", "copilot", "aider", "generic"]),
+    required=True,
+)
 @click.option("--dry-run", is_flag=True, default=False)
 def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
     from umx.adapters import get_adapter_by_name
@@ -695,7 +750,9 @@ def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
     adapter_inst = get_adapter_by_name(adapter)
     facts = adapter_inst.read_native_memory(root)
     if dry_run:
-        click.echo(json.dumps({"dry_run": True, "facts_found": len(facts)}, sort_keys=True))
+        click.echo(
+            json.dumps({"dry_run": True, "facts_found": len(facts)}, sort_keys=True)
+        )
     else:
         for fact in facts:
             add_fact(repo, fact, auto_commit=False)
@@ -708,6 +765,7 @@ def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
 def mcp_cmd() -> None:
     """Start MCP server (stdio transport)."""
     from umx.mcp_server import run
+
     run()
 
 
@@ -766,7 +824,9 @@ def capture_codex_cmd(
         )
         return
 
-    click.echo(json.dumps(capture_codex_rollout(cwd, target, config=_cfg()), sort_keys=True))
+    click.echo(
+        json.dumps(capture_codex_rollout(cwd, target, config=_cfg()), sort_keys=True)
+    )
 
 
 @capture_group.command("copilot")
@@ -820,7 +880,9 @@ def capture_copilot_cmd(
         )
         return
 
-    click.echo(json.dumps(capture_copilot_session(cwd, target, config=_cfg()), sort_keys=True))
+    click.echo(
+        json.dumps(capture_copilot_session(cwd, target, config=_cfg()), sort_keys=True)
+    )
 
 
 @capture_group.command("claude-code")
@@ -866,11 +928,17 @@ def capture_claude_code_cmd(
     elif capture_all:
         targets = list_claude_code_sessions(project_root=root, source_root=source_root)
         if not targets:
-            raise click.ClickException("No Claude Code session files found for this project.")
+            raise click.ClickException(
+                "No Claude Code session files found for this project."
+            )
     else:
-        target = latest_claude_code_session_path(project_root=root, source_root=source_root)
+        target = latest_claude_code_session_path(
+            project_root=root, source_root=source_root
+        )
         if target is None:
-            raise click.ClickException("No Claude Code session files found for this project.")
+            raise click.ClickException(
+                "No Claude Code session files found for this project."
+            )
         targets = [target]
 
     if dry_run:
@@ -898,14 +966,181 @@ def capture_claude_code_cmd(
         results.append(capture_claude_code_session(cwd, path, config=_cfg()))
     if results:
         from umx.git_ops import git_add_and_commit
+
         repo = project_memory_dir(root)
         git_add_and_commit(repo, message="umx: capture claude-code sessions")
     click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
 
 
+@capture_group.command("gemini")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--file",
+    "session_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Specific Gemini session JSON file to import.",
+)
+@click.option(
+    "--source-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override default ~/.gemini/ root.",
+)
+@click.option(
+    "--all",
+    "capture_all",
+    is_flag=True,
+    default=False,
+    help="Import all sessions for this project, not just the latest.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def capture_gemini_cmd(
+    cwd: Path,
+    session_file: Path | None,
+    source_root: Path | None,
+    capture_all: bool,
+    dry_run: bool,
+) -> None:
+    from umx.gemini_capture import (
+        capture_gemini_session,
+        latest_gemini_session_path,
+        list_gemini_sessions,
+        parse_gemini_session,
+    )
+
+    root = find_project_root(cwd)
+    if session_file:
+        targets = [session_file]
+    elif capture_all:
+        targets = list_gemini_sessions(project_root=root, source_root=source_root)
+        if not targets:
+            raise click.ClickException("No Gemini session files found for this project.")
+    else:
+        target = latest_gemini_session_path(project_root=root, source_root=source_root)
+        if target is None:
+            raise click.ClickException("No Gemini session files found for this project.")
+        targets = [target]
+
+    if dry_run:
+        results = []
+        for path in targets:
+            if not path.exists():
+                raise click.ClickException(f"Session file not found: {path}")
+            transcript = parse_gemini_session(path)
+            results.append(
+                {
+                    "dry_run": True,
+                    "source_file": str(path),
+                    "tool": "gemini",
+                    "umx_session_id": transcript.umx_session_id,
+                    "events_imported": len(transcript.events),
+                }
+            )
+        click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+        return
+
+    results = []
+    for path in targets:
+        results.append(capture_gemini_session(cwd, path, config=_cfg()))
+    if results:
+        from umx.git_ops import git_add_and_commit
+
+        repo = project_memory_dir(root)
+        git_add_and_commit(repo, message="umx: capture gemini sessions")
+    click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+
+
+@capture_group.command("opencode")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--db",
+    "db_path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="OpenCode SQLite DB path. Defaults to ~/.local/share/opencode/opencode.db.",
+)
+@click.option(
+    "--session-id",
+    default=None,
+    help="Specific OpenCode session ID to import.",
+)
+@click.option(
+    "--all",
+    "capture_all",
+    is_flag=True,
+    default=False,
+    help="Import all sessions from the OpenCode DB.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def capture_opencode_cmd(
+    cwd: Path,
+    db_path: Path | None,
+    session_id: str | None,
+    capture_all: bool,
+    dry_run: bool,
+) -> None:
+    from umx.opencode_capture import (
+        capture_opencode_session,
+        latest_opencode_session,
+        list_opencode_sessions,
+    )
+
+    root = find_project_root(cwd)
+    if db_path is not None and not db_path.exists():
+        raise click.ClickException(f"OpenCode DB not found: {db_path}")
+
+    if session_id:
+        candidates = list_opencode_sessions(source_root=db_path)
+        targets = [
+            session for session in candidates if session.session_id == session_id
+        ]
+        if not targets:
+            raise click.ClickException(f"OpenCode session not found: {session_id}")
+    elif capture_all:
+        targets = list_opencode_sessions(source_root=db_path)
+        if not targets:
+            raise click.ClickException("No OpenCode sessions found.")
+    else:
+        target = latest_opencode_session(project_root=root, source_root=db_path)
+        if target is None:
+            raise click.ClickException("No OpenCode sessions found for this project.")
+        targets = [target]
+
+    if dry_run:
+        results = []
+        for session in targets:
+            results.append(
+                {
+                    "dry_run": True,
+                    "source_session_id": session.session_id,
+                    "tool": "opencode",
+                    "umx_session_id": session.umx_session_id,
+                    "events_imported": len(session.events),
+                }
+            )
+        click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+        return
+
+    results = []
+    for session in targets:
+        results.append(capture_opencode_session(cwd, session, config=_cfg()))
+    if results:
+        from umx.git_ops import git_add_and_commit
+
+        repo = project_memory_dir(root)
+        git_add_and_commit(repo, message="umx: capture opencode sessions")
+    click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+
+
 @main.command("search")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-@click.option("--raw", is_flag=True, default=False, help="Search raw session files instead of the fact index.")
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="Search raw session files instead of the fact index.",
+)
 @click.argument("query")
 def search_cmd(cwd: Path, raw: bool, query: str) -> None:
     repo = project_memory_dir(cwd)

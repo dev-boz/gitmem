@@ -19,7 +19,7 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 
 **Your AI tools share a brain, and you can see exactly what's in it.**
 
-> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code transcript capture, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, and Claude Code hook-based live capture is still in active development.
+> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/OpenCode transcript capture, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, and Claude Code hook-based live capture is still in active development.
 
 Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
@@ -115,6 +115,8 @@ gitmem capture codex --cwd /path/to/project
 gitmem capture copilot --cwd /path/to/project
 gitmem capture claude-code --cwd /path/to/project
 gitmem capture claude-code --cwd /path/to/project --all   # import all sessions, not just latest
+gitmem capture gemini --cwd /path/to/project
+gitmem capture opencode --cwd /path/to/project
 
 # Run the dream pipeline (extract, consolidate, lint, prune)
 gitmem dream --cwd /path/to/project --force
@@ -139,6 +141,8 @@ gitmem mcp
 - `gitmem capture codex` imports existing Codex rollout JSONL files from `~/.codex` or a file you pass explicitly.
 - `gitmem capture copilot` imports existing Copilot `events.jsonl` session logs from `~/.copilot/session-state/` or a file you pass explicitly.
 - `gitmem capture claude-code` imports Claude Code session JSONL files from `~/.claude/projects/<hash>/` for the current project. Pass `--all` to import every session rather than just the latest; pass `--file` to target a specific file.
+- `gitmem capture gemini` imports Gemini CLI session JSON files from `~/.gemini/tmp/<slug>/chats/`. It looks up the project slug in `~/.gemini/projects.json` based on the current directory.
+- `gitmem capture opencode` imports OpenCode sessions from `~/.local/share/opencode/opencode.db`. It defaults to the latest session for the current project; pass `--all` to import everything or `--session-id` to target one session.
 - The tool reads files and hook outputs you point it at. It is not doing network interception or replacing the underlying CLI.
 
 ## Privacy and provider status
@@ -178,7 +182,7 @@ gitmem sync --cwd /path/to/project
 ## Features
 
 - **Dream pipeline** — Orient, Gather, Consolidate, Lint, Prune — native/local in this alpha, governance path experimental
-- **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code`, native memory import adapters, hooks, or MCP server
+- **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code` / `gitmem capture opencode`, native memory import adapters, hooks, or MCP server
 - **MCP server** — `gitmem mcp` exposes read/write/search/dream/status tools over stdio
 - **Budget-aware injection** — greedy-packs the most relevant facts into a token budget
 - **Scope hierarchy** — user > tool > project > folder > file — facts injected at the most specific relevant level
@@ -192,7 +196,7 @@ gitmem sync --cwd /path/to/project
 
 ## Alpha coverage
 
-- **First-class transcript capture:** Codex, Copilot CLI, Claude Code
+- **First-class transcript capture:** Codex, Copilot CLI, Claude Code, OpenCode
 - **Native memory import adapters:** Claude Code, Copilot instructions, Aider
 - **Integration surfaces:** MCP server, shims, bridge files, search/inject/view
 
@@ -204,7 +208,7 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 
 ### Working in this alpha
 - Local-mode dream pipeline (extract, consolidate, lint, prune)
-- Codex, Copilot, and Claude Code transcript capture
+- Codex, Copilot, Claude Code, and OpenCode transcript capture
 - Native memory import adapters for Claude Code, Copilot instructions, and Aider
 - FTS5 search, budget-aware injection, viewer, shims, bridge files, and MCP server
 - Remote/hybrid bootstrap, PR scaffolding, and session sync (experimental)
@@ -239,7 +243,7 @@ The full specification — memory model, encoding strength taxonomy, dream pipel
 pytest -q
 
 # Focused test suites
-pytest -q tests/test_codex_capture.py tests/test_copilot_capture.py tests/test_claude_code_capture.py tests/test_golden_extraction.py
+pytest -q tests/test_codex_capture.py tests/test_copilot_capture.py tests/test_claude_code_capture.py tests/test_opencode_capture.py tests/test_golden_extraction.py
 pytest -q tests/test_mcp_server.py tests/test_security.py tests/test_governance.py
 ```
 
