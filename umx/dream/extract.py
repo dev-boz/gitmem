@@ -98,10 +98,31 @@ _LOW_SIGNAL_PHRASES = (
     "dogfood pass",
     "next pass",
     "next session",
+    "focused slices are clean",
+    "session-extract candidates",
     "in progress",
     "still running",
     "still moving",
     "so far",
+)
+
+_FIRST_PERSON_PROGRESS_PATTERN = re.compile(
+    r"\b(?:i['’]m|i am)\s+"
+    r"(?:picking|collecting|leaving|reading|verifying|checking|inspecting|looking"
+    r"|moving|waiting|measuring|tuning|locking|running|starting|continuing"
+    r"|focusing|shifting)\b"
+    r"|\b(?:i['’]ll|i will)\s+"
+    r"(?:pick|collect|leave|read|verify|check|inspect|look|move|wait|measure"
+    r"|tune|lock|run|start|continue|focus|shift)\b",
+    re.IGNORECASE,
+)
+
+_OPERATIONAL_STATUS_PATTERNS = (
+    re.compile(r"\bstill\s+(?:going|running|empty|pending)\b", re.IGNORECASE),
+    re.compile(r"\bin the background\b", re.IGNORECASE),
+    re.compile(r"\bsuite is green\b", re.IGNORECASE),
+    re.compile(r"^that means\b", re.IGNORECASE),
+    re.compile(r"^if\b.*\bneeds?\s+work\b", re.IGNORECASE),
 )
 
 _VERB_PATTERN = re.compile(
@@ -130,6 +151,12 @@ _TOPIC_SKIP_WORDS = {
 }
 
 
+def _looks_operational_status(sentence: str) -> bool:
+    if _FIRST_PERSON_PROGRESS_PATTERN.search(sentence):
+        return True
+    return any(pattern.search(sentence) for pattern in _OPERATIONAL_STATUS_PATTERNS)
+
+
 def _looks_factual(sentence: str) -> bool:
     stripped = sentence.strip()
     lowered = stripped.lower()
@@ -144,6 +171,8 @@ def _looks_factual(sentence: str) -> bool:
     if stripped.endswith("?"):
         return False
     if any(phrase in lowered for phrase in _LOW_SIGNAL_PHRASES):
+        return False
+    if _looks_operational_status(stripped):
         return False
     return bool(_VERB_PATTERN.search(stripped))
 

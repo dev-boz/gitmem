@@ -1,6 +1,6 @@
 # Dogfooding Tests Results Changes
 
-Updated: 2026-04-12
+Updated: 2026-04-13
 
 ## Purpose
 
@@ -184,6 +184,46 @@ For each entry, capture:
   a clean temp virtualenv successfully ran `pip install -e /home/dinkum/projects/gitmem` and `python -m umx.cli --help`, importing `/home/dinkum/projects/gitmem/umx/cli.py` and exposing the current CLI including `capture`.
 - Follow-up:
   For alpha release prep, verify the install/run story end-to-end, keep the scope statement blunt about local-only support, and only then decide whether the next calibration pass should be more extraction work or retrieval precision.
+
+### 2026-04-13 — Progress-Only Codex Commentary No Longer Produces Session Facts
+
+- Test name:
+  `live codex progress-commentary extraction tightening`
+- Environment:
+  workspace code in `/home/dinkum/projects/gitmem`; focused extractor verification against live rollout `/home/dinkum/.codex/sessions/2026/04/13/rollout-2026-04-13T13-34-47-019d84e7-f3c1-7c23-bfbd-dd6583d6adb1.jsonl`; hermetic temp homes at `/tmp/gitmem-dogfood-verify-S9QjRp` and `/tmp/gitmem-dogfood-final-JQJA7V`
+- Input / scenario:
+  Used the current live Codex rollout from this session as a reproduction case. First checked `session_records_to_facts` directly against the imported assistant commentary, then re-ran a full local-mode `capture codex` -> `dream --force` cycle in a fresh temp `UMX_HOME`.
+- Observed result:
+  Before the tightening, direct session extraction still produced low-value candidates from pure progress commentary, including lines such as:
+  `The focused test run is still going in the background`
+  and
+  `The hermetic capture imported the live rollout and, as expected, view --list is still empty before dream finishes`.
+
+  After the change, direct extraction on the same live rollout returned `0` session facts. In the final hermetic pass, `capture codex` imported `21` events from the live rollout and `dream --force` retained `0` facts.
+- Judgment:
+  This is the behavior the local alpha needs for live Codex dogfooding. Operational status chatter from the agent itself should not enter long-term memory just because it contains verbs and project nouns.
+- Change made:
+  Tightened [umx/dream/extract.py](/home/dinkum/projects/gitmem/umx/dream/extract.py) so session extraction now rejects:
+  - first-person operational-progress phrasing such as `I’m reading ...` / `I’ll shift ...`
+  - live-status sentences such as `still going`, `still empty`, `suite is green`, and similar extractor-internal commentary
+
+  Added regression coverage in [tests/test_dream.py](/home/dinkum/projects/gitmem/tests/test_dream.py) for a progress-only Codex session and refreshed the golden mixed-noise fixture under [tests/fixtures/golden_extraction/codex_procedural_noise](/home/dinkum/projects/gitmem/tests/fixtures/golden_extraction/codex_procedural_noise).
+- Verification:
+  Focused verification:
+  `pytest -q tests/test_dream.py tests/test_golden_extraction.py tests/test_codex_capture.py tests/test_source_extraction.py`
+  passed with `27 passed in 18.66s`.
+
+  Direct live-rollout extractor verification:
+  latest rollout parsed with `events: 20`, `facts: 0`.
+
+  Manual hermetic verification:
+  `capture codex` imported `21` events from the live rollout and `dream --force` returned `0 facts retained`.
+
+  Full verification:
+  `pytest -q`
+  passed with `294 passed in 173.57s`.
+- Follow-up:
+  Keep using real local rollouts as the extraction benchmark. The next worthwhile calibration pass should target any remaining status-like memory that survives a live dogfood run, not synthetic edge cases in isolation.
 
 ## Current Themes
 

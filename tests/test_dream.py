@@ -66,6 +66,38 @@ def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) ->
     assert "2026-01-15-abc123" in state.get("last_gathered_sessions", [])
 
 
+def test_session_gather_ignores_progress_only_codex_commentary(
+    project_dir: Path, project_repo: Path
+) -> None:
+    write_session(
+        project_repo,
+        meta={"session_id": "2026-04-13-codex-progress-only"},
+        events=[
+            {
+                "role": "assistant",
+                "content": (
+                    "The focused test run is still going in the background. "
+                    "While that runs I’m reading `umx/dream/extract.py`, because "
+                    "that’s where the current Codex noise problem will be decided. "
+                    "The focused suite is green. "
+                    "If that generates stored facts after `dream`, the filter still "
+                    "needs work. "
+                    "The hermetic capture imported the live rollout and, as expected, "
+                    "`view --list` is still empty before `dream` finishes. "
+                    "The focused slices are clean and the real April 13 rollout now "
+                    "produces zero session-extract candidates before consolidation. "
+                    "That means the problem is narrower now, so I’m looking for "
+                    "remaining edge cases rather than broad suppression."
+                ),
+            },
+        ],
+    )
+
+    facts = session_records_to_facts(project_repo)
+
+    assert facts == []
+
+
 def test_gap_fact_stays_fragile_first_cycle_then_stabilizes(project_dir: Path, project_repo: Path) -> None:
     emit_gap_signal(
         project_repo,

@@ -23,7 +23,9 @@
   ],
   "forbidden_substrings": [
     "capture code is in",
-    "full test suite is green",
-    "CLI now exposes"
+    "CLI now exposes",
+    "still going in the background",
+    "focused suite is green",
+    "filter still needs work"
   ]
 }
