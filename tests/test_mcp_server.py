@@ -171,11 +171,18 @@ class TestStatus:
         import json
         data = json.loads(result["content"][0]["text"])
         assert "fact_count" in data
+        assert "facts" in data
+        assert "tombstones" in data
         assert "session_count" in data
+        assert "pending_session_count" in data
         assert "last_dream" in data
+        assert "processing" in data
+        assert "git" in data
         assert "hot_tier_tokens" in data
         assert "hot_tier_max" in data
         assert "hot_tier_pct" in data
+        assert "ok" in data
+        assert "flags" in data
         assert "metrics" in data
         assert data["fact_count"] >= 1
 

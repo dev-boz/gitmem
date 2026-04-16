@@ -14,7 +14,7 @@
       "consolidation_status": "fragile",
       "confidence": 0.5,
       "provenance": {
-        "extracted_by": "dream-gather",
+        "extracted_by": "native:session-heuristic",
         "sessions": [
           "2026-04-11-golden-noise"
         ]

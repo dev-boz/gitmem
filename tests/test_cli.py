@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from umx.config import default_config, save_config
 from umx.cli import main
 from umx.scope import config_path, project_memory_dir
+from umx.sessions import write_session
 
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
@@ -23,6 +24,12 @@ def test_cli_init_and_status(project_dir, umx_home) -> None:
     assert status.exit_code == 0
     payload = json.loads(status.output)
     assert payload["slug"] == "demo"
+    assert "fact_count" in payload
+    assert "tombstones" in payload
+    assert "pending_session_count" in payload
+    assert "ok" in payload
+    assert "flags" in payload
+    assert "guidance" in payload
 
 
 def test_cli_inject_outputs_memory_block(project_dir, project_repo, user_repo) -> None:
@@ -97,6 +104,7 @@ def test_cli_view_fact_and_health(project_dir, project_repo) -> None:
     health = json.loads(health_result.output)
     assert "metrics" in health
     assert "flags" in health
+    assert "guidance" in health
 
 
 def test_cli_view_launches_viewer_by_default(project_dir, project_repo) -> None:
@@ -124,6 +132,49 @@ def test_cli_status_remains_json_when_hot_tier_warns(project_dir, project_repo, 
     assert result.exit_code == 0
     payload = json.loads(result.output)
     assert payload["metrics"]["hot_tier_utilisation"]["status"] == "warn"
+    assert payload["ok"] is False
+    assert any("Hot tier utilisation" in flag for flag in payload["flags"])
+    assert any(item["metric"] == "hot_tier_utilisation" for item in payload["advice"])
+    assert payload["guidance"] == payload["advice"]
+    assert any("prompt budget" in item["why_it_matters"] for item in payload["guidance"])
+
+
+def test_cli_status_counts_session_files_and_preserves_pending_counter(project_dir, project_repo) -> None:
+    write_session(
+        project_repo,
+        {"session_id": "2026-04-16-status", "tool": "cursor"},
+        [{"role": "assistant", "content": "health surfaces stay aligned"}],
+        auto_commit=False,
+    )
+    (project_repo / "meta" / "dream-state.json").write_text(
+        json.dumps({"last_dream": None, "session_count": 7}, sort_keys=True) + "\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["session_count"] == 1
+    assert payload["pending_session_count"] == 7
+
+
+def test_cli_status_surfaces_git_signing_config(project_dir, umx_home) -> None:
+    cfg = default_config()
+    cfg.git.sign_commits = True
+    cfg.git.require_signed_commits = True
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["git"] == {
+        "enabled": True,
+        "sign_commits": True,
+        "require_signed_commits": True,
+    }
 
 
 def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path) -> None:
@@ -168,3 +219,119 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
         check=True,
     )
     assert "bootstrap remote project memory" in log.stdout
+
+
+def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path) -> None:
+    remote = tmp_path / "user-memory.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ):
+        result = runner.invoke(main, ["init", "--org", "memory-org", "--mode", "remote"])
+
+    assert result.exit_code == 0, result.output
+    assert (user_repo / ".github" / "workflows" / "l1-dream.yml").exists()
+    assert (user_repo / ".github" / "workflows" / "l2-review.yml").exists()
+
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+
+
+def test_cli_doctor_surfaces_git_signing_config(umx_home) -> None:
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["git_signing"] == {
+        "enabled": True,
+        "sign_commits": False,
+        "require_signed_commits": True,
+    }
+    assert "guidance" in payload["health"]
+
+
+def test_cli_init_project_surfaces_git_init_commit_failure(project_dir) -> None:
+    from umx.git_ops import GitCommitError, GitCommitResult
+
+    runner = CliRunner()
+    failure = GitCommitError(
+        "git init commit failed: gpg failed to sign the data",
+        GitCommitResult.failed_result(returncode=128, stderr="gpg failed to sign the data"),
+    )
+
+    with patch("umx.cli.init_project_memory", side_effect=failure):
+        result = runner.invoke(main, ["init-project", "--cwd", str(project_dir)])
+
+    assert result.exit_code != 0
+    assert "git init commit failed: gpg failed to sign the data" in result.output
+
+
+def test_cli_setup_remote_blocks_unsafe_bootstrap(project_dir, project_repo, tmp_path) -> None:
+    from umx.git_ops import git_add_and_commit
+
+    cfg = default_config()
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    fact_path = project_repo / "facts" / "topics" / "deploy.md"
+    fact_path.parent.mkdir(parents=True, exist_ok=True)
+    fact_path.write_text("# deploy\n\n## Facts\n- aws key AKIA1234567890ABCDEF\n")
+    git_add_and_commit(project_repo, message="unsafe bootstrap")
+
+    remote = tmp_path / "unsafe-bootstrap.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code != 0
+    assert "push safety blocked" in result.output
+
+
+def test_cli_sync_returns_nonzero_when_push_fails(project_dir, project_repo, tmp_path, monkeypatch) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "sync-push-fails.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "remote", "add", "origin", str(remote)],
+        capture_output=True,
+        check=True,
+    )
+    git_add_and_commit(project_repo, message="sync push fail baseline")
+    git_push(project_repo)
+
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "remote"
+    save_config(config_path(), cfg)
+
+    sessions_dir = project_repo / "sessions" / "2026" / "01"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "2026-01-15-sync-fail.jsonl").write_text('{"_meta":{"session_id":"2026-01-15-sync-fail"}}\n')
+
+    monkeypatch.setattr("umx.git_ops.git_pull_rebase", lambda *args, **kwargs: True)
+    monkeypatch.setattr("umx.git_ops.git_push", lambda *args, **kwargs: False)
+
+    result = CliRunner().invoke(main, ["sync", "--cwd", str(project_dir)])
+
+    assert result.exit_code != 0
+    assert "push failed" in result.output

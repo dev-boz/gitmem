@@ -12,6 +12,15 @@ from umx.memory import load_all_facts, read_memory_md
 from umx.models import SourceType, Verification, parse_datetime
 from umx.search import ensure_usage_db, usage_path
 
+HEALTH_METRIC_LABELS = {
+    "injection_precision": "Injection precision",
+    "fact_churn_rate": "Fact churn rate",
+    "contradiction_rate": "Contradiction rate",
+    "entrenchment_index": "Entrenchment index",
+    "hot_tier_utilisation": "Hot tier utilisation",
+    "staleness_ratio": "Staleness ratio",
+}
+
 
 def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
@@ -134,16 +143,8 @@ def compute_metrics(repo_dir: Path, config: UMXConfig | None = None) -> dict[str
 
 
 def health_flags(metrics: dict[str, dict[str, Any]]) -> list[str]:
-    labels = {
-        "injection_precision": "Injection precision",
-        "fact_churn_rate": "Fact churn rate",
-        "contradiction_rate": "Contradiction rate",
-        "entrenchment_index": "Entrenchment index",
-        "hot_tier_utilisation": "Hot tier utilisation",
-        "staleness_ratio": "Staleness ratio",
-    }
     flags: list[str] = []
     for key, metric in metrics.items():
         if metric["status"] == "warn":
-            flags.append(f"{labels.get(key, key)} out of range: {metric['signal']}")
+            flags.append(f"{HEALTH_METRIC_LABELS.get(key, key)} out of range: {metric['signal']}")
     return flags

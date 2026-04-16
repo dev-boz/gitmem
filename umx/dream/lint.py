@@ -4,20 +4,32 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from umx.conventions import ConventionSet, validate_fact
-from umx.models import SourceType
 from umx.dream.conflict import facts_conflict
 from umx.models import Fact
+from umx.models import SourceType
+from umx.scope import find_orphaned_scoped_memory
 
 
 def generate_lint_findings(
     facts: list[Fact],
     *,
     conventions: ConventionSet,
+    repo_dir: Path,
     project_root: Path,
 ) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     reverify_cutoff = datetime.now(tz=UTC) - timedelta(days=90)
     by_id = {fact.fact_id: fact for fact in facts}
+    for orphan in find_orphaned_scoped_memory(repo_dir, project_root):
+        findings.append(
+            {
+                "kind": "orphaned-scope",
+                "message": (
+                    f"{orphan.memory_path} targets missing {orphan.scope_kind} path "
+                    f"{orphan.scoped_path}"
+                ),
+            }
+        )
     for fact in facts:
         for issue in validate_fact(fact, conventions, all_facts=facts):
             findings.append({"kind": "convention", "message": f"{fact.fact_id}: {issue}"})

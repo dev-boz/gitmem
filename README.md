@@ -32,7 +32,7 @@ gitmem takes that idea and builds it for the multi-tool coding workflow:
 - **Git-native history** where the wiki has none — every fact change is a commit, every correction is traceable
 - **PR-based governance** where the wiki has no review mechanism — cheap models propose facts, SotA models filter, humans resolve ambiguity
 - **Encoding strength and provenance** where the wiki treats all knowledge equally — a fact read from source code outranks an LLM's guess, always
-- **Multi-agent support** where the wiki is single-user — Claude Code, Codex, Copilot, Aider, Gemini CLI all read and write the same memory
+- **Multi-agent support** where the wiki is single-user — Claude Code, Codex, Copilot, Gemini CLI, and shim/manual-collect tools like Aider can share the same memory even when their live write paths differ
 - **Cognitive science taxonomy** where the wiki has flat pages — episodic vs semantic memory, interference-based conflict resolution, cue-dependent retrieval
 
 The wiki pattern is the right intuition. gitmem adds the engineering: governance, history, provenance, and multi-agent coordination.
@@ -117,6 +117,8 @@ gitmem capture claude-code --cwd /path/to/project
 gitmem capture claude-code --cwd /path/to/project --all   # import all sessions, not just latest
 gitmem capture gemini --cwd /path/to/project
 gitmem capture opencode --cwd /path/to/project
+gitmem collect --cwd /path/to/project --tool aider --file ./aider-session.txt
+cat ./cursor-session.txt | gitmem collect --cwd /path/to/project --tool cursor
 
 # Run the dream pipeline (extract, consolidate, lint, prune)
 gitmem dream --cwd /path/to/project --force
@@ -129,6 +131,17 @@ gitmem inject --cwd /path/to/project --prompt "postgres deploy flow"
 
 # View facts
 gitmem view --cwd /path/to/project --list
+
+# Inspect overall memory health
+gitmem status --cwd /path/to/project
+gitmem health --cwd /path/to/project
+gitmem doctor --cwd /path/to/project
+gitmem doctor --cwd /path/to/project --fix
+gitmem audit --cwd /path/to/project --cross-project
+gitmem audit --cwd /path/to/project --cross-project --proposal-key "shared deploy checklist lives in docs/runbooks"  # read-only proposal preview only
+gitmem propose --cwd /path/to/project --cross-project --proposal-key "shared deploy checklist lives in docs/runbooks"  # local proposal branch + commit only
+gitmem propose --cwd /path/to/project --cross-project --proposal-key "shared deploy checklist lives in docs/runbooks" --push  # push proposal branch to origin only
+gitmem propose --cwd /path/to/project --cross-project --proposal-key "shared deploy checklist lives in docs/runbooks" --open-pr  # open a PR for an already-pushed proposal branch
 
 # Promote a fact into project or principle memory
 gitmem promote --cwd /path/to/project --fact FACT123 --to project
@@ -149,6 +162,22 @@ gitmem mcp
 
 `umx` remains as a compatibility alias for existing setups.
 
+## Optional signed commits
+
+gitmem leaves commit signing off by default.
+
+If you want gitmem/umx commits to use your existing Git signing setup, add this to `~/.umx/config.yaml`:
+
+```yaml
+git:
+  sign_commits: true
+  require_signed_commits: false
+```
+
+- `sign_commits: true` asks gitmem to run `git commit -S`.
+- `require_signed_commits: true` makes commit failures fatal instead of silently continuing when signing is expected.
+- Tests and local defaults do **not** require signing keys.
+
 ## How capture works
 
 - `gitmem capture codex` imports existing Codex rollout JSONL files from `~/.codex` or a file you pass explicitly.
@@ -156,6 +185,9 @@ gitmem mcp
 - `gitmem capture claude-code` imports Claude Code session JSONL files from `~/.claude/projects/<hash>/` for the current project. Pass `--all` to import every session rather than just the latest; pass `--file` to target a specific file.
 - `gitmem capture gemini` imports Gemini CLI session JSON files from `~/.gemini/tmp/<slug>/chats/`. It looks up the project slug in `~/.gemini/projects.json` based on the current directory.
 - `gitmem capture opencode` imports OpenCode sessions from `~/.local/share/opencode/opencode.db`. It defaults to the latest session for the current project; pass `--all` to import everything or `--session-id` to target one session.
+- `gitmem capture amp` imports Amp CLI thread JSON files from `~/.local/share/amp/threads/`. It defaults to the latest thread for the current project; pass `--all` to import every matching thread or `--thread-id` / `--file` to target one explicitly.
+- `gitmem collect` stores manual or wrapper-exported sessions for tools without a native capture adapter yet. Use plain text for a single captured turn or `--format jsonl` to preserve multi-event records.
+- Qodo, Cursor, Jules, and similar third-party CLIs are currently **shim/manual-collect surfaces**, not native transcript capture backends. Their shims inject memory; `collect` is the honest path for saving exported transcripts today.
 - The tool reads files and hook outputs you point it at. It is not doing network interception or replacing the underlying CLI.
 
 ## Privacy and provider status
@@ -181,7 +213,7 @@ gitmem dream --cwd /path/to/project --force
 # Review a PR proposal at the experimental L2 tier
 gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
 
-# Sync sessions and facts
+# Sync session history on main (fact changes still go through Dream PR branches)
 gitmem sync --cwd /path/to/project
 ```
 
@@ -190,7 +222,7 @@ gitmem sync --cwd /path/to/project
 | | `local` | `remote` | `hybrid` |
 |---|---|---|---|
 | Facts | direct write | PR-scaffolded review flow (experimental) | PR-scaffolded review flow (experimental) |
-| Sessions | local | local | push to main |
+| Sessions | local | explicit sync/hooks to main | explicit sync/hooks to main |
 | Governance | none | L1/L2 scaffolding (experimental) | L1/L2 scaffolding (experimental) |
 | Offline | yes | no | partial |
 | Best for | solo / offline | team / audit | team / fast capture |
@@ -198,7 +230,7 @@ gitmem sync --cwd /path/to/project
 ## Features
 
 - **Dream pipeline** — Orient, Gather, Consolidate, Lint, Prune — native/local in this alpha, governance path experimental
-- **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code` / `gitmem capture opencode`, native memory import adapters, hooks, or MCP server
+- **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code` / `gitmem capture gemini` / `gitmem capture opencode` / `gitmem capture amp`, native memory import adapters, hooks, or MCP server
 - **Claude Code live hooks** — project/user install helpers for session-start injection, pre-tool procedures, pre-compact sync, and session-end capture
 - **MCP server** — `gitmem mcp` exposes read/write/search/dream/status tools over stdio
 - **Budget-aware injection** — greedy-packs the most relevant facts into a token budget
@@ -215,9 +247,9 @@ gitmem sync --cwd /path/to/project
 
 ## Alpha coverage
 
-- **First-class transcript capture:** Codex, Copilot CLI, Claude Code, OpenCode
+- **First-class transcript capture:** Codex, Copilot CLI, Claude Code, Gemini CLI, OpenCode, Amp
 - **Native memory import adapters:** Claude Code, Copilot instructions, Aider
-- **Integration surfaces:** MCP server, Claude Code live hooks, shims, bridge files, search/inject/view, and `aip-mem`
+- **Integration surfaces:** MCP server, Claude Code live hooks, shims (including Amp/Qodo/Cursor/Jules), bridge files, search/inject/view, and `aip-mem`
 
 The local-mode loop is in daily use. Remote and hybrid mode are included in alpha for bootstrap, PR scaffolding, and session sync, but that governance path is still the roughest part of the project.
 
@@ -227,9 +259,14 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 
 ### Working in this alpha
 - Local-mode dream pipeline (extract, consolidate, lint, prune)
-- Codex, Copilot, Claude Code, and OpenCode transcript capture
+- Codex, Copilot, Claude Code, Gemini, OpenCode, and Amp transcript capture
 - Claude Code live-hook install/export workflow
 - User/project/principle promotion via `gitmem promote --to ...`
+- Cross-project audit via `gitmem audit --cross-project` to surface repeated project facts that may merit user-memory promotion
+- Cross-project proposal preview via `gitmem audit --cross-project --proposal-key ...` (read-only preview with preserved evidence and target-topic resolution)
+- Local cross-project proposal materialization via `gitmem propose --cross-project --proposal-key ...` (creates a local `proposal/...` branch in the user repo with one additive commit)
+- Remote cross-project proposal branch push via `gitmem propose --cross-project --proposal-key ... --push` (pushes only the `proposal/...` branch after confirming local `main` exactly matches `origin/main`)
+- Explicit cross-project PR open via `gitmem propose --cross-project --proposal-key ... --open-pr` (opens a PR only for an already-pushed proposal branch)
 - Native memory import adapters for Claude Code, Copilot instructions, and Aider
 - FTS5 search, budget-aware injection, richer viewer surfaces, shims, bridge files, MCP server, and `aip-mem`
 - Remote/hybrid bootstrap, PR scaffolding, L2 review wiring, and session sync (experimental)

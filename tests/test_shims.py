@@ -166,3 +166,39 @@ def test_cli_shim_generic_with_tool(project_dir, project_repo, user_repo) -> Non
     result = runner.invoke(main, ["shim", "generic", "--cwd", str(project_dir), "--tool", "amp"])
     assert result.exit_code == 0
     assert "# UMX Memory" in result.output
+
+
+def test_cli_shim_amp(project_dir, project_repo, user_repo) -> None:
+    _add_sample_fact(project_repo, text="amp uses repo-local context")
+    runner = CliRunner()
+    result = runner.invoke(main, ["shim", "amp", "--cwd", str(project_dir)])
+    assert result.exit_code == 0
+    assert "# UMX Memory" in result.output
+    assert "amp uses repo-local context" in result.output
+
+
+def test_cli_shim_qodo(project_dir, project_repo, user_repo) -> None:
+    _add_sample_fact(project_repo, text="qodo can consume injected context")
+    runner = CliRunner()
+    result = runner.invoke(main, ["shim", "qodo", "--cwd", str(project_dir)])
+    assert result.exit_code == 0
+    assert "# UMX Memory" in result.output
+    assert "qodo can consume injected context" in result.output
+
+
+def test_cli_shim_cursor(project_dir, project_repo, user_repo) -> None:
+    _add_sample_fact(project_repo, text="cursor shim uses generic injection")
+    runner = CliRunner()
+    result = runner.invoke(main, ["shim", "cursor", "--cwd", str(project_dir)])
+    assert result.exit_code == 0
+    assert "# UMX Memory" in result.output
+    assert "cursor shim uses generic injection" in result.output
+
+
+def test_cli_shim_jules(project_dir, project_repo, user_repo) -> None:
+    _add_sample_fact(project_repo, text="jules shim is available even before install")
+    runner = CliRunner()
+    result = runner.invoke(main, ["shim", "jules", "--cwd", str(project_dir)])
+    assert result.exit_code == 0
+    assert "# UMX Memory" in result.output
+    assert "jules shim is available even before install" in result.output

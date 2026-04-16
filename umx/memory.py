@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from umx.config import UMXConfig, default_config, load_config
+from umx.inline_metadata import parse_inline_metadata, serialize_inline_metadata
 from umx.identity import generate_fact_id
 from umx.models import (
+    AppliesTo,
     CodeAnchor,
     ConsolidationStatus,
     Fact,
@@ -19,7 +21,9 @@ from umx.models import (
     Verification,
     fact_from_dict,
     parse_datetime,
+    utcnow,
 )
+from umx.schema import CURRENT_SCHEMA_VERSION
 
 
 VERIFICATION_SHORT = {
@@ -30,6 +34,20 @@ VERIFICATION_SHORT = {
 }
 VERIFICATION_LONG = {value: key for key, value in VERIFICATION_SHORT.items()}
 FACT_PREFIX_RE = re.compile(r"^\[S:(?P<strength>\d+)\|V:(?P<verification>[a-z-]+)\]\s*")
+
+
+def _auto_commit_or_raise(repo_dir: Path, *, paths: list[Path] | None = None, message: str) -> None:
+    from umx.git_ops import git_add_and_commit, git_commit_failure_message
+    from umx.scope import config_path
+
+    result = git_add_and_commit(
+        repo_dir,
+        paths=paths,
+        message=message,
+        config=load_config(config_path()),
+    )
+    if result.failed:
+        raise RuntimeError(git_commit_failure_message(result, context="commit failed"))
 
 
 def _kind_scope_memory_type(path: Path, repo_dir: Path) -> tuple[Scope, MemoryType, str]:
@@ -70,6 +88,7 @@ def _compact_metadata(fact: Fact) -> dict[str, Any]:
         "id": fact.fact_id,
         "conf": round(fact.confidence, 4),
         "cort": list(fact.corroborated_by_tools),
+        "corf": list(fact.corroborated_by_facts),
         "src": fact.source_tool,
         "xby": fact.provenance.extracted_by,
         "ss": fact.source_session,
@@ -78,8 +97,6 @@ def _compact_metadata(fact: Fact) -> dict[str, Any]:
         "v": fact.verification.value,
         "cs": fact.consolidation_status.value,
     }
-    if fact.corroborated_by_facts:
-        data["corf"] = list(fact.corroborated_by_facts)
     if fact.provenance.pr:
         data["pr"] = fact.provenance.pr
     if fact.provenance.approved_by:
@@ -105,7 +122,7 @@ def _compact_metadata(fact: Fact) -> dict[str, Any]:
 
 def format_fact_line(fact: Fact) -> str:
     verification = VERIFICATION_SHORT.get(fact.verification, fact.verification.value)
-    metadata = json.dumps(_compact_metadata(fact), sort_keys=True, separators=(",", ":"))
+    metadata = serialize_inline_metadata(_compact_metadata(fact))
     return f"- [S:{fact.encoding_strength}|V:{verification}] {fact.text} <!-- umx:{metadata} -->"
 
 
@@ -153,12 +170,7 @@ def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
     if not stripped.startswith("- "):
         return None
     content = stripped[2:].strip()
-    if "<!-- umx:" in content:
-        text_part, comment = content.split("<!-- umx:", 1)
-        metadata = json.loads(comment.rsplit("-->", 1)[0].strip())
-    else:
-        text_part = content
-        metadata = {}
+    text_part, metadata = parse_inline_metadata(content)
 
     prefix = FACT_PREFIX_RE.match(text_part)
     if prefix:
@@ -196,7 +208,9 @@ def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
             metadata.get("cs", ConsolidationStatus.STABLE.value if strength >= 5 else ConsolidationStatus.FRAGILE.value)
         ),
         task_status=TaskStatus(metadata["ts"]) if metadata.get("ts") else None,
+        created=parse_datetime(metadata.get("cr")) or utcnow(),
         expires_at=parse_datetime(metadata.get("ex")),
+        applies_to=AppliesTo.from_dict(metadata.get("at")),
         provenance=Provenance(
             extracted_by=metadata.get("xby", "manual"),
             approved_by=metadata.get("aby"),
@@ -218,11 +232,26 @@ def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
     return fact
 
 
-def read_fact_file(path: Path, repo_dir: Path, normalize: bool = True) -> list[Fact]:
+def _parse_fact_lines(path: Path, repo_dir: Path) -> list[Fact]:
+    return [
+        fact
+        for line in path.read_text().splitlines()
+        if (fact := parse_fact_line(line, repo_dir=repo_dir, path=path))
+    ]
+
+
+def read_fact_file(
+    path: Path,
+    repo_dir: Path,
+    normalize: bool = True,
+    *,
+    use_cache: bool = True,
+) -> list[Fact]:
     if not path.exists():
         return []
-    lines = path.read_text().splitlines()
-    parsed = [fact for line in lines if (fact := parse_fact_line(line, repo_dir=repo_dir, path=path))]
+    parsed = _parse_fact_lines(path, repo_dir)
+    if not use_cache:
+        return parsed
     cache = _load_cache(path)
     cached_facts = cache.get("facts", {})
     rewritten: list[Fact] = []
@@ -274,26 +303,73 @@ def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
     _save_cache(path, ordered)
 
 
-def add_fact(repo_dir: Path, fact: Fact, kind: str = "facts", *, auto_commit: bool = True) -> Path:
+def add_fact(
+    repo_dir: Path,
+    fact: Fact,
+    kind: str = "facts",
+    *,
+    auto_commit: bool = True,
+    normalize: bool = True,
+) -> Path:
     path = target_path_for_fact(repo_dir, fact)
     if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
         path = topic_path(repo_dir, fact.topic, kind="episodic")
     elif fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
         path = topic_path(repo_dir, fact.topic, kind=kind)
-    facts = read_fact_file(path, repo_dir=repo_dir)
+    facts = read_fact_file(path, repo_dir=repo_dir, normalize=normalize)
     facts.append(fact.clone(repo=repo_dir.name, file_path=path))
     write_fact_file(path, facts, repo_dir=repo_dir)
     if auto_commit:
-        from umx.git_ops import git_add_and_commit
-
-        git_add_and_commit(repo_dir, paths=[path, cache_path_for(path)], message=f"umx: add fact to {path.stem}")
+        _auto_commit_or_raise(
+            repo_dir,
+            paths=[path, cache_path_for(path)],
+            message=f"umx: add fact to {path.stem}",
+        )
     return path
 
 
-def load_all_facts(repo_dir: Path, include_superseded: bool = True) -> list[Fact]:
+def append_fact_preserving_existing(
+    repo_dir: Path,
+    fact: Fact,
+    kind: str = "facts",
+) -> Path:
+    path = target_path_for_fact(repo_dir, fact)
+    if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
+        path = topic_path(repo_dir, fact.topic, kind="episodic")
+    elif fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
+        path = topic_path(repo_dir, fact.topic, kind=kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    materialized = fact.clone(repo=repo_dir.name, file_path=path)
+    current = path.read_text() if path.exists() else ""
+    existing_facts = _parse_fact_lines(path, repo_dir) if current else []
+    if current:
+        separator = "" if current.endswith("\n") else "\n"
+        path.write_text(f"{current}{separator}{format_fact_line(materialized)}\n")
+    else:
+        path.write_text(
+            f"# {path.stem}\n\n## Facts\n{format_fact_line(materialized)}\n"
+        )
+    _save_cache(path, [*existing_facts, materialized])
+    return path
+
+
+def load_all_facts(
+    repo_dir: Path,
+    include_superseded: bool = True,
+    *,
+    normalize: bool = True,
+    use_cache: bool = True,
+) -> list[Fact]:
     facts: list[Fact] = []
     for path in iter_fact_files(repo_dir):
-        facts.extend(read_fact_file(path, repo_dir=repo_dir))
+        facts.extend(
+            read_fact_file(
+                path,
+                repo_dir=repo_dir,
+                normalize=normalize,
+                use_cache=use_cache,
+            )
+        )
     if include_superseded:
         return facts
     return [fact for fact in facts if fact.superseded_by is None]
@@ -383,9 +459,7 @@ def save_repository_facts(repo_dir: Path, facts: list[Fact], *, auto_commit: boo
     for path, path_facts in grouped.items():
         write_fact_file(path, path_facts, repo_dir=repo_dir)
     if auto_commit:
-        from umx.git_ops import git_add_and_commit
-
-        git_add_and_commit(repo_dir, message="umx: save repository facts")
+        _auto_commit_or_raise(repo_dir, message="umx: save repository facts")
 
 
 def read_memory_md(repo_dir: Path) -> str:
@@ -403,6 +477,8 @@ def write_memory_md(
     *,
     last_dream: str | None = None,
     session_count: int | None = None,
+    dream_provider: str | None = None,
+    dream_partial: bool = False,
     config: UMXConfig | None = None,
     auto_commit: bool = True,
 ) -> None:
@@ -478,14 +554,20 @@ def write_memory_md(
     lines = [
         "# umx memory index",
         "scope: project",
-        "schema_version: 2",
+        f"schema_version: {CURRENT_SCHEMA_VERSION}",
         f"last_dream: {last_dream or 'never'}",
         f"session_count: {session_count or 0}",
+    ]
+    if dream_provider:
+        lines.append(f"dream_provider: {dream_provider}")
+    if dream_partial:
+        lines.append("dream_status: partial")
+    lines.extend([
         "",
         "## Index",
         "| Topic | File | Updated | Avg strength | Facts |",
         "|---|---|---|---:|---:|",
-    ]
+    ])
 
     sorted_topics = sorted(topic_stats.items())
     total_topics = len(sorted_topics)
@@ -518,6 +600,4 @@ def write_memory_md(
     md_path = repo_dir / "meta" / "MEMORY.md"
     md_path.write_text("\n".join(lines) + "\n")
     if auto_commit:
-        from umx.git_ops import git_add_and_commit
-
-        git_add_and_commit(repo_dir, paths=[md_path], message="umx: update MEMORY.md")
+        _auto_commit_or_raise(repo_dir, paths=[md_path], message="umx: update MEMORY.md")

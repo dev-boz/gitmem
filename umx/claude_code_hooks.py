@@ -8,7 +8,7 @@ from typing import Any
 
 from umx.claude_code_capture import capture_claude_code_session, parse_claude_code_session
 from umx.config import load_config
-from umx.git_ops import git_add_and_commit
+from umx.git_ops import git_add_and_commit, git_commit_failure_message
 from umx.hooks.pre_compact import run as pre_compact_hook
 from umx.hooks.pre_tool_use import run as pre_tool_use_hook
 from umx.hooks.session_end import run as session_end_hook
@@ -219,11 +219,14 @@ def session_end_response(payload: dict[str, Any]) -> None:
     cfg = load_config(config_path())
     result = capture_claude_code_session(cwd, Path(transcript_path), config=cfg)
     repo = project_memory_dir(find_project_root(cwd))
-    git_add_and_commit(
+    commit_result = git_add_and_commit(
         repo,
         paths=[Path(result["session_file"])],
         message=f"umx: capture claude-code session {result['umx_session_id']}",
+        config=cfg,
     )
+    if commit_result.failed:
+        raise RuntimeError(git_commit_failure_message(commit_result, context="commit failed"))
     session_end_hook(
         cwd=cwd,
         session_id=result["umx_session_id"],

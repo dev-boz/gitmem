@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,7 +9,7 @@ import pytest
 
 from umx.config import default_config, save_config
 from umx.dream.gates import increment_session_count, read_dream_state
-from umx.git_ops import git_add_and_commit, git_init
+from umx.git_ops import GitCommitResult, git_add_and_commit, git_init
 from umx.hooks import dispatch_hook
 from umx.hooks.assistant_output import run as assistant_output_run
 from umx.hooks.post_tool_use import run as post_tool_use_run
@@ -228,7 +229,12 @@ def test_pre_compact_remote_only_syncs_sessions(
     fact_file = facts_dir / "deploy.md"
     fact_file.write_text("# deploy\n\n## Facts\n- [S:3|V:sr] stale fact <!-- umx:{\"conf\":1.0,\"cr\":\"2026-01-15T00:00:00Z\",\"cs\":\"fragile\",\"id\":\"FACTSYNC001\",\"src\":\"codex\",\"ss\":\"sess-1\",\"st\":\"llm_inference\",\"v\":\"self-reported\",\"xby\":\"test\"} -->\n")
 
-    with patch("umx.hooks.pre_compact.git_add_and_commit", return_value=True) as mock_commit, patch(
+    with patch(
+        "umx.hooks.pre_compact.git_add_and_commit",
+        return_value=GitCommitResult.committed_result(),
+    ) as mock_commit, patch(
+        "umx.hooks.pre_compact.git_fetch", return_value=True
+    ), patch("umx.hooks.pre_compact.assert_push_safe", return_value=None), patch(
         "umx.hooks.pre_compact.git_push", return_value=True
     ) as mock_push:
         result = pre_compact_run(cwd=project_dir)
@@ -239,6 +245,44 @@ def test_pre_compact_remote_only_syncs_sessions(
     assert session_file in paths
     assert fact_file not in paths
     mock_push.assert_called_once_with(project_repo)
+
+
+def test_pre_compact_remote_blocks_raw_session_push(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    from umx.git_ops import git_push
+
+    git_init(project_repo)
+    remote = tmp_path / "pre-compact-raw.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "remote", "add", "origin", str(remote)],
+        capture_output=True,
+        check=True,
+    )
+    git_add_and_commit(project_repo, message="pre-compact baseline")
+    git_push(project_repo)
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.sessions.redaction = "none"
+    save_config(config_path(), cfg)
+
+    sessions_dir = project_repo / "sessions" / "2026" / "01"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_file = sessions_dir / "2026-01-15-unsafe.jsonl"
+    session_file.write_text('{"_meta": {"session_id": "2026-01-15-unsafe"}, "content": "raw"}\n')
+
+    with patch("umx.hooks.pre_compact.git_push", return_value=True) as mock_push:
+        result = pre_compact_run(cwd=project_dir)
+
+    assert result["committed"] is True
+    assert result["pushed"] is False
+    assert "raw-session-push" in (result["error"] or "")
+    mock_push.assert_not_called()
+    assert session_file.exists()
 
 
 # --- post_tool_use ---

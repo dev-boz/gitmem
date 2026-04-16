@@ -12,6 +12,7 @@ from umx.config import UMXConfig, load_config
 from umx.memory import iter_fact_files, load_all_facts, read_fact_file
 from umx.models import fact_from_dict
 from umx.scope import config_path
+from umx.schema import CURRENT_SCHEMA_VERSION
 from umx.search_semantic import ensure_embeddings, rerank_candidates
 from umx.sessions import iter_session_payloads, list_sessions, read_session
 
@@ -296,7 +297,8 @@ def rebuild_index(
     for fact in facts:
         _insert_fact(conn, fact, repo_dir)
     conn.execute(
-        "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', '2')"
+        "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
+        (str(CURRENT_SCHEMA_VERSION),),
     )
     _store_file_hashes(conn, _compute_file_hashes(repo_dir))
     conn.commit()

@@ -15,6 +15,7 @@ from umx.models import (
     SourceType,
     Verification,
 )
+from umx.redaction import redact_candidate_fact_text
 
 
 START_MARKER = "<!-- umx-start: do not edit manually -->"
@@ -133,7 +134,7 @@ def import_bridge_facts(
             match = BRIDGE_LINE_RE.match(raw_line)
             if not match:
                 continue
-            fact_text = match.group("text").strip()
+            fact_text = redact_candidate_fact_text(match.group("text").strip(), config)
             if not fact_text or fact_text in seen_text:
                 continue
             seen_text.add(fact_text)

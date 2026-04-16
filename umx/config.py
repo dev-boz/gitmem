@@ -94,6 +94,12 @@ class BridgeConfig:
 
 
 @dataclass(slots=True)
+class GitConfig:
+    sign_commits: bool = False
+    require_signed_commits: bool = False
+
+
+@dataclass(slots=True)
 class TrustWeights:
     strength: float = 1.0
     corroboration: float = 0.4
@@ -140,6 +146,7 @@ class UMXConfig:
     inject: InjectConfig = field(default_factory=InjectConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
+    git: GitConfig = field(default_factory=GitConfig)
     weights: WeightConfig = field(default_factory=WeightConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -169,6 +176,7 @@ NESTED_TYPES: dict[type[Any], dict[str, type[Any]]] = {
         "inject": InjectConfig,
         "search": SearchConfig,
         "bridge": BridgeConfig,
+        "git": GitConfig,
         "weights": WeightConfig,
     },
     SessionsConfig: {"retention": RetentionConfig},

@@ -5,7 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from umx.config import load_config
-from umx.git_ops import changed_paths, git_add_and_commit, git_push
+from umx.git_ops import (
+    changed_paths,
+    git_add_and_commit,
+    git_commit_failure_message,
+    git_fetch,
+    git_push,
+)
+from umx.push_safety import PushSafetyError, assert_push_safe
 from umx.scope import config_path, find_project_root, project_memory_dir
 
 logger = logging.getLogger(__name__)
@@ -15,7 +22,7 @@ def run(
     cwd: Path,
     session_id: str | None = None,
 ) -> dict[str, Any]:
-    result: dict[str, Any] = {"committed": False, "pushed": False}
+    result: dict[str, Any] = {"committed": False, "pushed": False, "error": None}
 
     try:
         root = find_project_root(cwd)
@@ -41,24 +48,44 @@ def run(
                     repo_dir,
                     paths=session_paths,
                     message="umx: pre-compact session sync",
+                    config=cfg,
                 )
                 if session_paths
-                else False
+                else None
             )
         else:
             committed = git_add_and_commit(
                 repo_dir,
                 message="umx: pre-compact emergency sync",
+                config=cfg,
             )
-        result["committed"] = committed
+        if committed is not None and committed.failed:
+            result["error"] = git_commit_failure_message(committed, context="commit failed")
+            return result
+        result["committed"] = bool(committed and committed.committed)
     except Exception:
         logger.debug("pre_compact: commit failed", exc_info=True)
 
     # Push if remote/hybrid mode
     try:
         if mode in ("remote", "hybrid") and result["committed"]:
+            if not git_fetch(repo_dir):
+                result["error"] = "fetch failed"
+                return result
+            assert_push_safe(
+                repo_dir,
+                project_root=root,
+                base_ref="origin/main",
+                branch="main",
+                config=cfg,
+                include_bridge=True,
+            )
             pushed = git_push(repo_dir)
             result["pushed"] = pushed
+            if not pushed:
+                result["error"] = "push failed"
+    except PushSafetyError as exc:
+        result["error"] = str(exc)
     except Exception:
         logger.debug("pre_compact: push failed", exc_info=True)
 

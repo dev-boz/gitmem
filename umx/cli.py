@@ -6,15 +6,26 @@ from pathlib import Path
 import click
 
 from umx.budget import estimate_tokens
+from umx.calibration import build_calibration_advice
+from umx.collect import collect_session, parse_meta_pairs, summarize_collected_session
 from umx.config import default_config, load_config, save_config
 from umx.doctor import run_doctor
-from umx.dream.gates import increment_session_count, read_dream_state
+from umx.dream.gates import read_dream_state
 from umx.dream.pipeline import DreamPipeline
+from umx.dream.processing import summarize_processing_log
 from umx.inject import inject_for_tool
 from umx.manifest import manifest_path
 from umx.metrics import compute_metrics, health_flags
 from umx.memory import find_fact_by_id, load_all_facts, remove_fact, replace_fact
 from umx.models import ConsolidationStatus, Scope, SourceType, Verification
+from umx.push_safety import PushSafetyError, assert_push_safe
+from umx.governance import (
+    direct_fact_write_error,
+    filter_governed_fact_paths,
+    filter_non_operational_sync_paths,
+    is_governed_mode,
+    session_sync_error,
+)
 from umx.search import advance_session_state
 from umx.scope import (
     config_path,
@@ -32,28 +43,75 @@ from umx.sessions import generate_session_id
 from umx.supersession import walk_history
 from umx.tasks import open_tasks
 from umx.tombstones import forget_fact, forget_topic, load_tombstones
+from umx.status import build_status_payload
 
 
 def _cfg():
     return load_config(config_path())
 
 
-def _commit_repo(repo: Path, message: str) -> bool:
-    from umx.git_ops import git_add_and_commit
-
-    return git_add_and_commit(repo, message=message)
+_SESSION_SWEEP_SUBCOMMANDS = frozenset({"collect", "dream", "sync", "capture"})
 
 
-def _bootstrap_remote_repo(repo: Path, message: str) -> None:
+def _require_direct_fact_write_allowed(operation: str) -> None:
+    cfg = _cfg()
+    if is_governed_mode(cfg.dream.mode):
+        raise click.ClickException(
+            direct_fact_write_error(cfg.dream.mode, operation)
+        )
+
+
+def _commit_repo(repo: Path, message: str, *, allow_governed: bool = False) -> bool:
+    from umx.git_ops import changed_paths, git_add_and_commit, git_commit_failure_message
+
+    cfg = _cfg()
+    if not allow_governed:
+        if is_governed_mode(cfg.dream.mode):
+            governed_paths = filter_governed_fact_paths(changed_paths(repo), repo)
+            if governed_paths:
+                raise click.ClickException(
+                    direct_fact_write_error(cfg.dream.mode, "this command")
+                )
+
+    result = git_add_and_commit(repo, message=message, config=cfg)
+    if result.failed:
+        raise click.ClickException(
+            git_commit_failure_message(result, context="commit failed")
+        )
+    return result.committed
+
+
+def _bootstrap_remote_repo(
+    repo: Path,
+    message: str,
+    *,
+    project_root: Path | None = None,
+    config=None,
+) -> None:
     from umx.git_ops import git_push
 
-    _commit_repo(repo, message)
-    git_push(repo, branch="main", set_upstream=True)
+    _commit_repo(repo, message, allow_governed=True)
+    try:
+        assert_push_safe(
+            repo,
+            project_root=project_root,
+            base_ref=None,
+            branch="main",
+            config=config or _cfg(),
+            include_bridge=project_root is not None,
+        )
+    except PushSafetyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not git_push(repo, branch="main", set_upstream=True):
+        raise click.ClickException("push failed")
 
 
 @click.group()
-def main() -> None:
+@click.pass_context
+def main(ctx: click.Context) -> None:
     """UMX CLI."""
+    if ctx.invoked_subcommand not in _SESSION_SWEEP_SUBCOMMANDS:
+        return
     try:
         from umx.git_ops import safety_sweep
         from umx.scope import get_umx_home
@@ -81,21 +139,32 @@ def main() -> None:
     default="local",
 )
 def init_cmd(org: str | None, init_mode: str) -> None:
+    from umx.git_ops import GitCommitError
+
     config = default_config()
     config.org = org
     config.dream.mode = init_mode
-    home = init_local_umx(org)
+    try:
+        home = init_local_umx(org)
+    except GitCommitError as exc:
+        raise click.ClickException(str(exc)) from exc
     save_config(config_path(), config)
 
     if init_mode in ("remote", "hybrid") and org:
-        from umx.github_ops import gh_available, ensure_repo, set_remote
+        from umx.github_ops import deploy_workflows, gh_available, ensure_repo, set_remote
 
         if not gh_available():
             click.echo("warning: gh CLI not available; skipping remote setup")
         else:
             url = ensure_repo(org, "umx-user", private=True)
             set_remote(home / "user", url)
-            _bootstrap_remote_repo(home / "user", "umx: bootstrap remote user memory")
+            if init_mode == "remote":
+                deploy_workflows(home / "user")
+            _bootstrap_remote_repo(
+                home / "user",
+                "umx: bootstrap remote user memory",
+                config=config,
+            )
             click.echo(f"remote: {url}")
 
     click.echo(str(home))
@@ -105,10 +174,15 @@ def init_cmd(org: str | None, init_mode: str) -> None:
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--slug", default=None)
 def init_project_cmd(cwd: Path, slug: str | None) -> None:
+    from umx.git_ops import GitCommitError
+
     root = find_project_root(cwd)
     if slug:
         (root / ".umx-project").write_text(f"{slug}\n")
-    repo = init_project_memory(root, write_marker=True)
+    try:
+        repo = init_project_memory(root, write_marker=True)
+    except GitCommitError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     cfg = _cfg()
     if cfg.dream.mode in ("remote", "hybrid") and cfg.org:
@@ -127,7 +201,12 @@ def init_project_cmd(cwd: Path, slug: str | None) -> None:
             set_remote(repo, url)
             if cfg.dream.mode == "remote":
                 deploy_workflows(repo)
-            _bootstrap_remote_repo(repo, "umx: bootstrap remote project memory")
+            _bootstrap_remote_repo(
+                repo,
+                "umx: bootstrap remote project memory",
+                project_root=root,
+                config=cfg,
+            )
             click.echo(f"remote: {url}")
 
     click.echo(str(repo))
@@ -186,10 +265,89 @@ def inject_cmd(
 
 @main.command("collect")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-def collect_cmd(cwd: Path) -> None:
-    repo = project_memory_dir(cwd)
-    count = increment_session_count(repo)
-    click.echo(f"session_count={count}")
+@click.option("--tool", required=True, help="Tool name for the collected session.")
+@click.option(
+    "--file",
+    "input_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Transcript or JSONL input file. Defaults to stdin.",
+)
+@click.option(
+    "--format",
+    "input_format",
+    type=click.Choice(["auto", "text", "jsonl"]),
+    default="auto",
+    show_default=True,
+)
+@click.option(
+    "--role",
+    "default_role",
+    type=click.Choice(["assistant", "tool_result", "user"]),
+    default="assistant",
+    show_default=True,
+    help="Fallback role for plain text input or JSONL records missing a role.",
+)
+@click.option("--session-id", default=None, help="Override the collected session ID.")
+@click.option(
+    "--meta",
+    "meta_pairs",
+    multiple=True,
+    help="Extra metadata entries as key=value pairs.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def collect_cmd(
+    cwd: Path,
+    tool: str,
+    input_file: Path | None,
+    input_format: str,
+    default_role: str,
+    session_id: str | None,
+    meta_pairs: tuple[str, ...],
+    dry_run: bool,
+) -> None:
+    try:
+        resolved_file = input_file
+        stdin_text = ""
+        if resolved_file is None:
+            default_file = cwd / "workspace" / "events.jsonl"
+            if default_file.exists():
+                resolved_file = default_file
+            else:
+                stdin_text = click.get_text_stream("stdin").read()
+        if resolved_file is not None:
+            if not resolved_file.exists():
+                raise click.ClickException(f"Collect input file not found: {resolved_file}")
+            raw_text = resolved_file.read_text(encoding="utf-8")
+        else:
+            raw_text = stdin_text
+        extra_meta = parse_meta_pairs(meta_pairs)
+        if dry_run:
+            payload = summarize_collected_session(
+                cwd,
+                raw_text,
+                tool=tool,
+                input_format=input_format,
+                default_role=default_role,
+                session_id=session_id,
+                extra_meta=extra_meta,
+                source_file=resolved_file,
+            )
+        else:
+            payload = collect_session(
+                cwd,
+                raw_text,
+                tool=tool,
+                input_format=input_format,
+                default_role=default_role,
+                session_id=session_id,
+                extra_meta=extra_meta,
+                source_file=resolved_file,
+                config=_cfg(),
+            )
+    except (RuntimeError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload, sort_keys=True))
 
 
 @main.command("dream")
@@ -200,17 +358,28 @@ def collect_cmd(cwd: Path) -> None:
 @click.option(
     "--pr", "pr_number", type=int, default=None, help="PR number for L2 review"
 )
+@click.option("--head-sha", default=None, help="Expected PR head commit SHA for L2 review")
 def dream_cmd(
-    cwd: Path, force: bool, mode: str | None, tier: str | None, pr_number: int | None
+    cwd: Path,
+    force: bool,
+    mode: str | None,
+    tier: str | None,
+    pr_number: int | None,
+    head_sha: str | None,
 ) -> None:
     cfg = _cfg()
     if mode:
         cfg.dream.mode = mode
     if tier == "l2" and pr_number is None:
         raise click.UsageError("--tier l2 requires --pr <number>")
+    if head_sha and tier != "l2":
+        raise click.UsageError("--head-sha requires --tier l2")
     if tier == "l2":
         assert pr_number is not None
-        output = DreamPipeline(cwd, config=cfg).review_pr(pr_number)
+        output = DreamPipeline(cwd, config=cfg).review_pr(
+            pr_number,
+            expected_head_sha=head_sha,
+        )
         click.echo(json.dumps(output, sort_keys=True))
         return
     result = DreamPipeline(cwd, config=cfg).run(force=force)
@@ -283,26 +452,7 @@ def tui_cmd(cwd: Path) -> None:
 @main.command("status")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 def status_cmd(cwd: Path) -> None:
-    repo = project_memory_dir(cwd)
-    state = read_dream_state(repo)
-    facts = load_all_facts(repo, include_superseded=False) if repo.exists() else []
-    cfg = _cfg()
-    metrics = compute_metrics(repo, cfg)
-    hot_metric = metrics["hot_tier_utilisation"]["value"]
-    hot_tokens = int(round(hot_metric * cfg.memory.hot_tier_max_tokens))
-    output = {
-        "slug": discover_project_slug(cwd),
-        "repo": str(repo),
-        "facts": len(facts),
-        "tombstones": len(load_tombstones(repo)) if repo.exists() else 0,
-        "session_count": state.get("session_count", 0),
-        "last_dream": state.get("last_dream"),
-        "hot_tier_tokens": hot_tokens,
-        "hot_tier_max": cfg.memory.hot_tier_max_tokens,
-        "hot_tier_pct": int(round(hot_metric * 100)),
-        "metrics": metrics,
-    }
-    click.echo(json.dumps(output, sort_keys=True))
+    click.echo(json.dumps(build_status_payload(cwd), sort_keys=True))
 
 
 @main.command("health")
@@ -311,12 +461,15 @@ def health_cmd(cwd: Path) -> None:
     repo = project_memory_dir(cwd)
     metrics = compute_metrics(repo, _cfg())
     flags = health_flags(metrics)
+    advice = build_calibration_advice(metrics, flags)
     click.echo(
         json.dumps(
             {
                 "repo": str(repo),
                 "ok": len(flags) == 0,
                 "flags": flags,
+                "advice": advice,
+                "guidance": advice,
                 "metrics": metrics,
             },
             sort_keys=True,
@@ -345,18 +498,19 @@ def gaps_cmd(cwd: Path) -> None:
 @click.option("--fact", "fact_id", default=None)
 @click.option("--topic", default=None)
 def forget_cmd(cwd: Path, fact_id: str | None, topic: str | None) -> None:
-    repo = project_memory_dir(cwd)
+    from umx.fact_actions import forget_fact_action, forget_topic_action
+
     if fact_id:
-        removed = forget_fact(repo, fact_id)
-        if removed:
-            _commit_repo(repo, f"umx: forget {removed.fact_id}")
-        click.echo(removed.fact_id if removed else "")
+        result = forget_fact_action(cwd, fact_id)
+        if not result.ok and result.message:
+            raise click.ClickException(result.message)
+        click.echo(result.message)
         return
     if topic:
-        removed = forget_topic(repo, topic)
-        if removed:
-            _commit_repo(repo, f"umx: forget topic {topic}")
-        click.echo(str(len(removed)))
+        result = forget_topic_action(cwd, topic)
+        if not result.ok:
+            raise click.ClickException(result.message)
+        click.echo(result.message)
         return
     raise click.UsageError("pass --fact or --topic")
 
@@ -371,73 +525,24 @@ def forget_cmd(cwd: Path, fact_id: str | None, topic: str | None) -> None:
     required=True,
 )
 def promote_cmd(cwd: Path, fact_id: str, destination: str) -> None:
-    from umx.memory import add_fact, remove_fact, target_path_for_fact, topic_path
+    from umx.fact_actions import promote_fact_action
 
-    repo = project_memory_dir(cwd)
-    fact = find_fact_by_id(repo, fact_id)
-    if not fact:
-        raise click.ClickException(f"fact not found: {fact_id}")
-    if destination == "project":
-        if fact.scope == Scope.PROJECT and fact.file_path == target_path_for_fact(repo, fact.clone(scope=Scope.PROJECT, file_path=None)):
-            raise click.ClickException(f"fact already in project scope: {fact.fact_id}")
-        promoted = fact.clone(scope=Scope.PROJECT, file_path=None, repo=repo.name)
-        target_repo = repo
-        target_path = target_path_for_fact(target_repo, promoted)
-        kind = "facts"
-    elif destination == "principle":
-        target_repo = repo
-        promoted = fact.clone(file_path=None, repo=repo.name)
-        target_path = topic_path(target_repo, promoted.topic, kind="principles")
-        kind = "principles"
-        if fact.file_path == target_path:
-            raise click.ClickException(f"fact already in principles: {fact.fact_id}")
-    else:
-        target_repo = user_memory_dir()
-        target_repo.mkdir(parents=True, exist_ok=True)
-        promoted = fact.clone(scope=Scope.USER, file_path=None, repo=target_repo.name)
-        target_path = target_path_for_fact(target_repo, promoted)
-        kind = "facts"
-
-    if target_repo == repo:
-        removed = remove_fact(repo, fact_id)
-        if removed is None:
-            raise click.ClickException(f"failed to remove source fact during promotion: {fact_id}")
-        try:
-            add_fact(target_repo, promoted, kind=kind, auto_commit=False)
-        except Exception as exc:
-            add_fact(repo, fact, auto_commit=False)
-            raise click.ClickException(str(exc)) from exc
-        _commit_repo(repo, f"umx: promote {fact.fact_id} to {destination}")
-    else:
-        try:
-            add_fact(target_repo, promoted, kind=kind, auto_commit=False)
-        except Exception as exc:
-            raise click.ClickException(str(exc)) from exc
-        removed = remove_fact(repo, fact_id)
-        if removed is None:
-            remove_fact(target_repo, fact_id)
-            raise click.ClickException(f"failed to remove source fact during promotion: {fact_id}")
-        _commit_repo(target_repo, f"umx: promote {fact.fact_id} to {destination}")
-        _commit_repo(repo, f"umx: promote {fact.fact_id} to {destination}")
-    click.echo(f"{fact.fact_id} -> {destination}")
+    result = promote_fact_action(cwd, fact_id, destination)
+    if not result.ok:
+        raise click.ClickException(result.message)
+    click.echo(result.message)
 
 
 @main.command("confirm")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--fact", "fact_id", required=True)
 def confirm_cmd(cwd: Path, fact_id: str) -> None:
-    repo = project_memory_dir(cwd)
-    fact = find_fact_by_id(repo, fact_id)
-    if not fact:
-        raise click.ClickException(f"fact not found: {fact_id}")
-    updated = fact.clone(
-        encoding_strength=5,
-        verification=Verification.HUMAN_CONFIRMED,
-        consolidation_status=ConsolidationStatus.STABLE,
-    )
-    replace_fact(repo, updated)
-    _commit_repo(repo, f"umx: confirm {updated.fact_id}")
-    click.echo(updated.fact_id)
+    from umx.fact_actions import confirm_fact_action
+
+    result = confirm_fact_action(cwd, fact_id)
+    if not result.ok:
+        raise click.ClickException(result.message)
+    click.echo(result.message)
 
 
 @main.command("history")
@@ -474,24 +579,57 @@ def meta_cmd(cwd: Path, topic: str) -> None:
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--dry-run", is_flag=True, default=False)
 def merge_cmd(cwd: Path, dry_run: bool) -> None:
-    from umx.merge import merge_all
+    from umx.fact_actions import merge_conflicts_action
 
-    repo = project_memory_dir(cwd)
-    results = merge_all(repo, _cfg(), dry_run=dry_run)
-    if not dry_run and results:
-        _commit_repo(repo, "umx: merge conflicts")
-    click.echo(json.dumps(results, sort_keys=True))
+    result = merge_conflicts_action(cwd, dry_run=dry_run)
+    if not result.ok:
+        raise click.ClickException(result.message)
+    click.echo(json.dumps(result.results, sort_keys=True))
 
 
 @main.command("audit")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--rederive", is_flag=True, default=False)
+@click.option("--cross-project", is_flag=True, default=False)
+@click.option("--proposal-key")
 @click.option("--session", "session_ids", multiple=True)
-def audit_cmd(cwd: Path, rederive: bool, session_ids: tuple[str]) -> None:
+def audit_cmd(
+    cwd: Path,
+    rederive: bool,
+    cross_project: bool,
+    proposal_key: str | None,
+    session_ids: tuple[str],
+) -> None:
     from umx.audit import audit_report, compare_derived, rederive_from_sessions
+    from umx.cross_project import build_cross_project_promotion_report, cross_project_audit_report
 
-    repo = project_memory_dir(cwd)
     cfg = _cfg()
+    if proposal_key and not cross_project:
+        raise click.ClickException("--proposal-key requires --cross-project")
+    if proposal_key and rederive:
+        raise click.ClickException("--proposal-key cannot be combined with --rederive")
+    if proposal_key and session_ids:
+        raise click.ClickException("--proposal-key cannot be combined with --session")
+    if cross_project and rederive:
+        raise click.ClickException("--cross-project cannot be combined with --rederive")
+    if cross_project and session_ids:
+        raise click.ClickException("--cross-project cannot be combined with --session")
+    if cross_project:
+        try:
+            report = (
+                build_cross_project_promotion_report(
+                    get_umx_home(),
+                    cfg,
+                    candidate_key=proposal_key,
+                )
+                if proposal_key
+                else cross_project_audit_report(get_umx_home(), cfg)
+            )
+        except LookupError as exc:
+            raise click.ClickException(f"cross-project candidate not found: {exc.args[0]}") from exc
+        click.echo(json.dumps(report, sort_keys=True))
+        return
+    repo = project_memory_dir(cwd)
     if rederive:
         ids = list(session_ids) if session_ids else None
         rederived = rederive_from_sessions(repo, session_ids=ids, config=cfg)
@@ -503,6 +641,61 @@ def audit_cmd(cwd: Path, rederive: bool, session_ids: tuple[str]) -> None:
         click.echo(json.dumps(report, sort_keys=True))
 
 
+@main.command("propose")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--cross-project", is_flag=True, default=False)
+@click.option("--proposal-key")
+@click.option("--push", is_flag=True, default=False)
+@click.option("--open-pr", is_flag=True, default=False)
+def propose_cmd(
+    cwd: Path,
+    cross_project: bool,
+    proposal_key: str | None,
+    push: bool,
+    open_pr: bool,
+) -> None:
+    from umx.cross_project import (
+        materialize_and_push_cross_project_promotion_branch,
+        materialize_cross_project_promotion_branch,
+        open_cross_project_promotion_pull_request,
+    )
+
+    _ = cwd
+    if not cross_project:
+        raise click.ClickException("--cross-project is required for propose")
+    if not proposal_key:
+        raise click.ClickException("--proposal-key is required for propose")
+    if push and open_pr:
+        raise click.ClickException("--push and --open-pr are separate steps; push first, then open the PR")
+    try:
+        result = (
+            open_cross_project_promotion_pull_request(
+                get_umx_home(),
+                _cfg(),
+                candidate_key=proposal_key,
+            )
+            if open_pr
+            else materialize_and_push_cross_project_promotion_branch(
+                get_umx_home(),
+                _cfg(),
+                candidate_key=proposal_key,
+            )
+            if push
+            else materialize_cross_project_promotion_branch(
+                get_umx_home(),
+                _cfg(),
+                candidate_key=proposal_key,
+            )
+        )
+    except LookupError as exc:
+        raise click.ClickException(
+            f"cross-project candidate not found: {exc.args[0]}"
+        ) from exc
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(result, sort_keys=True))
+
+
 @main.command("sync")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 def sync_cmd(cwd: Path) -> None:
@@ -512,7 +705,17 @@ def sync_cmd(cwd: Path) -> None:
         click.echo("local mode: nothing to sync")
         return
 
-    from umx.git_ops import git_fetch, git_pull_rebase, git_push, git_remote_url
+    from umx.git_ops import (
+        changed_paths,
+        diff_committed_paths_against_ref,
+        git_add_and_commit,
+        git_commit_failure_message,
+        git_current_branch,
+        git_fetch,
+        git_pull_rebase,
+        git_push,
+        git_remote_url,
+    )
 
     repo = project_memory_dir(cwd)
     remote = git_remote_url(repo)
@@ -520,15 +723,53 @@ def sync_cmd(cwd: Path) -> None:
         click.echo("no remote configured; run 'umx setup-remote' first")
         return
 
+    pending = changed_paths(repo)
+    if is_governed_mode(mode):
+        current_branch = git_current_branch(repo)
+        if current_branch != "main":
+            raise click.ClickException(
+                f"{mode} mode sync must run from main; current branch is {current_branch or 'detached'}"
+            )
+        blocked = filter_non_operational_sync_paths(pending, repo)
+        if blocked:
+            raise click.ClickException(session_sync_error(mode, repo, blocked))
+        session_paths = [path for path in pending if path not in blocked]
+        if session_paths:
+            commit_result = git_add_and_commit(
+                repo,
+                paths=session_paths,
+                message="umx: sync sessions",
+                config=cfg,
+            )
+            if commit_result.failed:
+                raise click.ClickException(
+                    git_commit_failure_message(commit_result, context="commit failed")
+                )
+
     if not git_fetch(repo):
-        click.echo("fetch failed")
-        return
+        raise click.ClickException("fetch failed")
+    if is_governed_mode(mode):
+        blocked_committed = filter_non_operational_sync_paths(
+            diff_committed_paths_against_ref(repo, "origin/main"),
+            repo,
+        )
+        if blocked_committed:
+            raise click.ClickException(session_sync_error(mode, repo, blocked_committed))
     if not git_pull_rebase(repo):
-        click.echo("pull --rebase failed")
-        return
+        raise click.ClickException("pull --rebase failed")
+    try:
+        assert_push_safe(
+            repo,
+            project_root=find_project_root(cwd),
+            base_ref="origin/main",
+            branch="main",
+            config=cfg,
+            include_bridge=True,
+        )
+    except PushSafetyError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not git_push(repo):
-        click.echo("push failed")
-        return
+        raise click.ClickException("push failed")
     click.echo(f"synced with {remote}")
 
 
@@ -563,7 +804,12 @@ def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
     cfg.dream.mode = new_mode
     save_config(config_path(), cfg)
 
-    _bootstrap_remote_repo(repo, "umx: bootstrap remote project memory")
+    _bootstrap_remote_repo(
+        repo,
+        "umx: bootstrap remote project memory",
+        project_root=root,
+        config=cfg,
+    )
 
     click.echo(f"mode: {new_mode}")
     click.echo(f"remote: {url}")
@@ -577,6 +823,8 @@ def purge_cmd(cwd: Path, session_id: str, dry_run: bool) -> None:
     from umx.purge import purge_session
 
     repo = project_memory_dir(cwd)
+    if not dry_run:
+        _require_direct_fact_write_allowed("umx purge")
     if dry_run:
         from umx.memory import iter_fact_files, read_fact_file
 
@@ -634,6 +882,7 @@ def init_actions_cmd(target_dir: Path) -> None:
 @click.option("--to", "new_path", required=True)
 def migrate_scope_cmd(cwd: Path, old_path: str, new_path: str) -> None:
     repo = project_memory_dir(cwd)
+    _require_direct_fact_write_allowed("umx migrate-scope")
     old = repo / old_path
     new = repo / new_path
     new.parent.mkdir(parents=True, exist_ok=True)
@@ -643,8 +892,10 @@ def migrate_scope_cmd(cwd: Path, old_path: str, new_path: str) -> None:
 
 
 @main.command("doctor")
-def doctor_cmd() -> None:
-    click.echo(json.dumps(run_doctor(), sort_keys=True))
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--fix", is_flag=True, default=False)
+def doctor_cmd(cwd: Path, fix: bool) -> None:
+    click.echo(json.dumps(run_doctor(cwd, fix=fix), sort_keys=True))
 
 
 @main.group("shim")
@@ -670,6 +921,24 @@ def hooks_claude_code_group() -> None:
 def _emit_hook_response(payload: dict | None) -> None:
     if payload:
         click.echo(json.dumps(payload, sort_keys=True))
+
+
+def _run_generic_shim(
+    cwd: Path,
+    output: Path | None,
+    max_tokens: int,
+    *,
+    tool: str | None = None,
+) -> None:
+    from umx.shim.generic import generate_prompt, write_context_file
+
+    if output:
+        path = write_context_file(
+            cwd, output_path=output, tool=tool, max_tokens=max_tokens
+        )
+        click.echo(str(path))
+    else:
+        click.echo(generate_prompt(cwd, tool=tool, max_tokens=max_tokens), nl=False)
 
 
 @hooks_claude_code_group.command("print")
@@ -770,6 +1039,8 @@ def bridge_import_cmd(
 
     root = find_project_root(cwd)
     repo = project_memory_dir(cwd)
+    if not dry_run:
+        _require_direct_fact_write_allowed("umx bridge import")
     imported = import_bridge_facts(
         root,
         config=_cfg(),
@@ -808,15 +1079,39 @@ def shim_aider_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
 def shim_generic_cmd(
     cwd: Path, tool: str | None, output: Path | None, max_tokens: int
 ) -> None:
-    from umx.shim.generic import generate_prompt, write_context_file
+    _run_generic_shim(cwd, output, max_tokens, tool=tool)
 
-    if output:
-        path = write_context_file(
-            cwd, output_path=output, tool=tool, max_tokens=max_tokens
-        )
-        click.echo(str(path))
-    else:
-        click.echo(generate_prompt(cwd, tool=tool, max_tokens=max_tokens), nl=False)
+
+@shim_group.command("amp")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option("--max-tokens", type=int, default=4000)
+def shim_amp_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+    _run_generic_shim(cwd, output, max_tokens, tool="amp")
+
+
+@shim_group.command("cursor")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option("--max-tokens", type=int, default=4000)
+def shim_cursor_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+    _run_generic_shim(cwd, output, max_tokens, tool="cursor")
+
+
+@shim_group.command("jules")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option("--max-tokens", type=int, default=4000)
+def shim_jules_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+    _run_generic_shim(cwd, output, max_tokens, tool="jules")
+
+
+@shim_group.command("qodo")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+@click.option("--max-tokens", type=int, default=4000)
+def shim_qodo_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+    _run_generic_shim(cwd, output, max_tokens, tool="qodo")
 
 
 @main.group("secret")
@@ -863,6 +1158,8 @@ def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
 
     root = find_project_root(cwd)
     repo = project_memory_dir(cwd)
+    if not dry_run:
+        _require_direct_fact_write_allowed("umx import")
     adapter_inst = get_adapter_by_name(adapter)
     facts = adapter_inst.read_native_memory(root)
     if dry_run:
@@ -1076,15 +1373,24 @@ def capture_claude_code_cmd(
         return
 
     results = []
+    cfg = _cfg()
     for path in targets:
         if not path.exists():
             raise click.ClickException(f"Session file not found: {path}")
-        results.append(capture_claude_code_session(cwd, path, config=_cfg()))
+        results.append(capture_claude_code_session(cwd, path, config=cfg))
     if results:
-        from umx.git_ops import git_add_and_commit
+        from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
         repo = project_memory_dir(root)
-        git_add_and_commit(repo, message="umx: capture claude-code sessions")
+        commit_result = git_add_and_commit(
+            repo,
+            message="umx: capture claude-code sessions",
+            config=cfg,
+        )
+        if commit_result.failed:
+            raise click.ClickException(
+                git_commit_failure_message(commit_result, context="commit failed")
+            )
     click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
 
 
@@ -1157,13 +1463,22 @@ def capture_gemini_cmd(
         return
 
     results = []
+    cfg = _cfg()
     for path in targets:
-        results.append(capture_gemini_session(cwd, path, config=_cfg()))
+        results.append(capture_gemini_session(cwd, path, config=cfg))
     if results:
-        from umx.git_ops import git_add_and_commit
+        from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
         repo = project_memory_dir(root)
-        git_add_and_commit(repo, message="umx: capture gemini sessions")
+        commit_result = git_add_and_commit(
+            repo,
+            message="umx: capture gemini sessions",
+            config=cfg,
+        )
+        if commit_result.failed:
+            raise click.ClickException(
+                git_commit_failure_message(commit_result, context="commit failed")
+            )
     click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
 
 
@@ -1239,13 +1554,123 @@ def capture_opencode_cmd(
         return
 
     results = []
+    cfg = _cfg()
     for session in targets:
-        results.append(capture_opencode_session(cwd, session, config=_cfg()))
+        results.append(capture_opencode_session(cwd, session, config=cfg))
     if results:
-        from umx.git_ops import git_add_and_commit
+        from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
         repo = project_memory_dir(root)
-        git_add_and_commit(repo, message="umx: capture opencode sessions")
+        commit_result = git_add_and_commit(
+            repo,
+            message="umx: capture opencode sessions",
+            config=cfg,
+        )
+        if commit_result.failed:
+            raise click.ClickException(
+                git_commit_failure_message(commit_result, context="commit failed")
+            )
+    click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+
+
+@capture_group.command("amp")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--file",
+    "thread_file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Specific Amp thread JSON file to import.",
+)
+@click.option(
+    "--source-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Override default ~/.local/share/amp/ root.",
+)
+@click.option(
+    "--thread-id",
+    default=None,
+    help="Specific Amp thread ID to import.",
+)
+@click.option(
+    "--all",
+    "capture_all",
+    is_flag=True,
+    default=False,
+    help="Import all Amp threads for this project, not just the latest.",
+)
+@click.option("--dry-run", is_flag=True, default=False)
+def capture_amp_cmd(
+    cwd: Path,
+    thread_file: Path | None,
+    source_root: Path | None,
+    thread_id: str | None,
+    capture_all: bool,
+    dry_run: bool,
+) -> None:
+    from umx.amp_capture import (
+        capture_amp_thread,
+        latest_amp_thread_path,
+        list_amp_threads,
+        parse_amp_thread,
+    )
+
+    root = find_project_root(cwd)
+    if thread_file:
+        targets = [thread_file]
+    elif thread_id:
+        candidates = list_amp_threads(source_root=source_root)
+        targets = [path for path in candidates if path.stem == thread_id]
+        if not targets:
+            raise click.ClickException(f"Amp thread not found: {thread_id}")
+    elif capture_all:
+        targets = list_amp_threads(project_root=root, source_root=source_root)
+        if not targets:
+            raise click.ClickException("No Amp thread files found for this project.")
+    else:
+        target = latest_amp_thread_path(project_root=root, source_root=source_root)
+        if target is None:
+            raise click.ClickException("No Amp thread files found for this project.")
+        targets = [target]
+
+    if dry_run:
+        results = []
+        for path in targets:
+            if not path.exists():
+                raise click.ClickException(f"Thread file not found: {path}")
+            transcript = parse_amp_thread(path)
+            results.append(
+                {
+                    "dry_run": True,
+                    "source_file": str(path),
+                    "tool": "amp",
+                    "umx_session_id": transcript.umx_session_id,
+                    "events_imported": len(transcript.events),
+                }
+            )
+        click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
+        return
+
+    results = []
+    cfg = _cfg()
+    for path in targets:
+        if not path.exists():
+            raise click.ClickException(f"Thread file not found: {path}")
+        results.append(capture_amp_thread(cwd, path, config=cfg))
+    if results:
+        from umx.git_ops import git_add_and_commit, git_commit_failure_message
+
+        repo = project_memory_dir(root)
+        commit_result = git_add_and_commit(
+            repo,
+            message="umx: capture amp sessions",
+            config=cfg,
+        )
+        if commit_result.failed:
+            raise click.ClickException(
+                git_commit_failure_message(commit_result, context="commit failed")
+            )
     click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
 
 

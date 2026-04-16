@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-from umx.config import UMXConfig, default_config
+from umx.config import UMXConfig, default_config, load_config
 from umx.identity import generate_fact_id
 from umx.redaction import RedactionError, redact_jsonl_lines
 from umx.scope import ensure_repo_structure
@@ -99,9 +99,17 @@ def write_session(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(line, sort_keys=True) for line in redacted) + "\n")
     if auto_commit:
-        from umx.git_ops import git_add_and_commit
+        from umx.git_ops import git_add_and_commit, git_commit_failure_message
+        from umx.scope import config_path
 
-        git_add_and_commit(repo_dir, paths=[path], message=f"umx: session {session_id}")
+        result = git_add_and_commit(
+            repo_dir,
+            paths=[path],
+            message=f"umx: session {session_id}",
+            config=load_config(config_path()),
+        )
+        if result.failed:
+            raise RuntimeError(git_commit_failure_message(result, context="commit failed"))
     return path
 
 

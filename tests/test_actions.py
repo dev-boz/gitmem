@@ -16,8 +16,23 @@ def test_workflow_templates_cover_l1_and_l2() -> None:
     assert set(templates) == {"l1-dream.yml", "l2-review.yml"}
     assert "umx dream --mode remote --tier l1" in templates["l1-dream.yml"]
     assert "umx dream --mode remote --tier l2 --pr" in templates["l2-review.yml"]
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in templates["l1-dream.yml"]
+    assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in templates["l2-review.yml"]
+    assert "python -m pip install umx" in templates["l1-dream.yml"]
+    assert "python -m pip install umx" in templates["l2-review.yml"]
     assert "type: extraction" in templates["l2-review.yml"]
     assert "type: consolidation" in templates["l2-review.yml"]
+    assert "type: promotion" in templates["l2-review.yml"]
+    assert "fetch-depth: 0" in templates["l2-review.yml"]
+    assert "github.event.pull_request.head.sha" in templates["l2-review.yml"]
+    assert "Prepare PR head branch" in templates["l2-review.yml"]
+    assert 'PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}' in templates["l2-review.yml"]
+    assert 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' in templates["l2-review.yml"]
+    assert 'git checkout -B "$PR_HEAD_REF" "$PR_HEAD_SHA"' in templates["l2-review.yml"]
+    assert "--head-sha ${{ github.event.pull_request.head.sha }}" in templates["l2-review.yml"]
+    assert "contents: write" in templates["l2-review.yml"]
+    assert "issues: write" in templates["l2-review.yml"]
+    assert "GH_TOKEN: ${{ github.token }}" in templates["l2-review.yml"]
 
 
 def test_write_workflow_templates_creates_files(tmp_path: Path) -> None:

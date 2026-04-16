@@ -5,11 +5,39 @@ from pathlib import Path
 from umx.dream.extract import mark_sessions_gathered, session_records_to_facts
 from umx.dream.gates import read_dream_state
 from umx.dream.pipeline import DreamPipeline
+from umx.dream.processing import read_processing_log, start_processing_run
 from umx.inject import emit_gap_signal
 from umx.memory import find_fact_by_id, load_all_facts
 from umx.models import ConsolidationStatus, MemoryType, Scope, SourceType, Verification
 from umx.sessions import write_session
 from umx.tombstones import forget_fact
+
+
+def test_available_provider_notice_reports_detected_backends(monkeypatch) -> None:
+    from umx.dream import providers
+
+    monkeypatch.setattr(
+        providers,
+        "detected_capture_backends",
+        lambda home=None: ["codex", "amp"],
+    )
+    monkeypatch.setattr(
+        providers,
+        "detected_external_dream_agents",
+        lambda which=None: ["amp", "qodo"],
+    )
+    monkeypatch.setattr(
+        providers,
+        "missing_external_dream_agents",
+        lambda which=None: ["jules"],
+    )
+
+    notice = providers.available_provider_notice()
+
+    assert "native-only dream" in notice
+    assert "Detected local capture sources: codex, amp." in notice
+    assert "Detected external dream-agent CLIs: amp, qodo." in notice
+    assert "Not installed here: jules." in notice
 
 
 def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) -> None:
@@ -44,7 +72,7 @@ def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) ->
         assert fact.source_session == "2026-01-15-abc123"
         assert fact.scope == Scope.PROJECT
         assert fact.memory_type == MemoryType.IMPLICIT
-        assert fact.provenance.extracted_by == "dream-gather"
+        assert fact.provenance.extracted_by == "native:session-heuristic"
         assert "2026-01-15-abc123" in fact.provenance.sessions
 
     # "Let me check the config" should be filtered out
@@ -66,12 +94,34 @@ def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) ->
     assert "2026-01-15-abc123" in state.get("last_gathered_sessions", [])
 
 
+def test_dream_run_records_processing_lifecycle(project_dir: Path, project_repo: Path) -> None:
+    result = DreamPipeline(project_dir).run(force=True)
+
+    assert result.status == "ok"
+    records = read_processing_log(project_repo)
+    assert [record["event"] for record in records] == ["started", "completed"]
+    assert records[-1]["status"] == "completed"
+
+
+def test_dream_run_skips_when_processing_is_active(project_dir: Path, project_repo: Path) -> None:
+    start_processing_run(project_repo, mode="local", force=True, branch="main")
+
+    result = DreamPipeline(project_dir).run(force=True)
+
+    assert result.status == "skipped"
+    assert result.message == "dream processing held"
+
+
 def test_session_gather_ignores_progress_only_codex_commentary(
     project_dir: Path, project_repo: Path
 ) -> None:
     write_session(
         project_repo,
-        meta={"session_id": "2026-04-13-codex-progress-only"},
+        meta={
+            "session_id": "2026-04-13-codex-progress-only",
+            "tool": "codex",
+            "source": "codex-rollout",
+        },
         events=[
             {
                 "role": "assistant",
@@ -96,6 +146,68 @@ def test_session_gather_ignores_progress_only_codex_commentary(
     facts = session_records_to_facts(project_repo)
 
     assert facts == []
+
+
+def test_session_gather_ignores_codex_git_workflow_meta(
+    project_dir: Path, project_repo: Path
+) -> None:
+    write_session(
+        project_repo,
+        meta={
+            "session_id": "2026-04-13-codex-git-meta",
+            "tool": "codex",
+            "source": "codex-rollout",
+        },
+        events=[
+            {
+                "role": "assistant",
+                "content": (
+                    "Only the full-suite tail is left before I update "
+                    "`dogfooding_tests_results_changes.md`. "
+                    "If this repo is still pinned to a bot identity from earlier "
+                    "work, I’ll stop rather than push under the wrong author. "
+                    "The repo is using the normal `dev-boz <byronwarnich@gmail.com>` "
+                    "identity, so I’m staging only the five files I changed and "
+                    "creating a single commit for this extractor tightening. "
+                    "The commit is created as `26129aa`. "
+                    "It’s a stricter check than the earlier snapshot. "
+                    "`BOT_CONTRIBUTOR_NOTES.md` were left untouched."
+                ),
+            },
+        ],
+    )
+
+    facts = session_records_to_facts(project_repo)
+
+    assert facts == []
+
+
+def test_session_gather_preserves_concrete_codex_fact(
+    project_dir: Path, project_repo: Path
+) -> None:
+    write_session(
+        project_repo,
+        meta={
+            "session_id": "2026-04-13-codex-concrete-fact",
+            "tool": "codex",
+            "source": "codex-rollout",
+        },
+        events=[
+            {
+                "role": "assistant",
+                "content": (
+                    "The CLI supports both gitmem and umx commands. "
+                    "The commit is created as `26129aa`."
+                ),
+            },
+        ],
+    )
+
+    facts = session_records_to_facts(project_repo)
+    texts = [fact.text for fact in facts]
+
+    assert "The CLI supports both gitmem and umx commands" in texts
+    assert all("commit is created as" not in text.lower() for text in texts)
 
 
 def test_gap_fact_stays_fragile_first_cycle_then_stabilizes(project_dir: Path, project_repo: Path) -> None:

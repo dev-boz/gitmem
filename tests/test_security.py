@@ -42,6 +42,7 @@ def test_gitignore_includes_jsonl(tmp_path: Path) -> None:
     content = (repo / ".gitignore").read_text()
     assert "meta/*.jsonl" in content
     assert "!meta/tombstones.jsonl" in content
+    assert "!meta/processing.jsonl" in content
 
 
 def test_project_secret_excluded_from_injection(project_dir: Path, project_repo: Path, user_repo: Path) -> None:

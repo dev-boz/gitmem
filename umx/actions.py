@@ -3,9 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 from textwrap import dedent
 
+from umx.governance import GOVERNANCE_REVIEW_TRIGGER_LABELS
 
+
+CHECKOUT_ACTION = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"  # v4.2.2
 L1_WORKFLOW_NAME = "l1-dream.yml"
 L2_WORKFLOW_NAME = "l2-review.yml"
+
+
+def _l2_review_condition() -> str:
+    return " ||\n          ".join(
+        f"contains(github.event.pull_request.labels.*.name, '{label}')"
+        for label in GOVERNANCE_REVIEW_TRIGGER_LABELS
+    )
 
 
 L1_WORKFLOW_TEMPLATE = dedent(
@@ -21,6 +31,7 @@ L1_WORKFLOW_TEMPLATE = dedent(
 
     permissions:
       contents: write
+      issues: write
       pull-requests: write
 
     concurrency:
@@ -31,16 +42,16 @@ L1_WORKFLOW_TEMPLATE = dedent(
       dream:
         runs-on: ubuntu-latest
         steps:
-          - uses: actions/checkout@v4
+          - uses: __CHECKOUT_ACTION__
           - name: Install umx
-            run: python -m pip install .
+            run: python -m pip install umx
           - name: Run L1 dream
             run: umx dream --mode remote --tier l1
             env:
               UMX_PROVIDER: groq
               GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
     """
-)
+).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION)
 
 
 L2_WORKFLOW_TEMPLATE = dedent(
@@ -56,7 +67,8 @@ L2_WORKFLOW_TEMPLATE = dedent(
           - main
 
     permissions:
-      contents: read
+      contents: write
+      issues: write
       pull-requests: write
 
     concurrency:
@@ -67,23 +79,26 @@ L2_WORKFLOW_TEMPLATE = dedent(
       review:
         runs-on: ubuntu-latest
         if: >-
-          contains(github.event.pull_request.labels.*.name, 'type: extraction') ||
-          contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
-          contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
-          contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||
-          contains(github.event.pull_request.labels.*.name, 'type: lint') ||
-          contains(github.event.pull_request.labels.*.name, 'type: principle') ||
-          contains(github.event.pull_request.labels.*.name, 'type: supersession')
+          __L2_REVIEW_CONDITION__
         steps:
-          - uses: actions/checkout@v4
-          - name: Install umx
-            run: python -m pip install .
-          - name: Run L2 review
-            run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }}
+          - uses: __CHECKOUT_ACTION__
+            with:
+              fetch-depth: 0
+              ref: ${{ github.event.pull_request.head.sha }}
+          - name: Prepare PR head branch
             env:
+              PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+              PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+            run: git checkout -B "$PR_HEAD_REF" "$PR_HEAD_SHA"
+          - name: Install umx
+            run: python -m pip install umx
+          - name: Run L2 review
+            run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }}
+            env:
+              GH_TOKEN: ${{ github.token }}
               ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     """
-)
+).replace("__L2_REVIEW_CONDITION__", _l2_review_condition()).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION)
 
 
 def workflow_templates() -> dict[str, str]:

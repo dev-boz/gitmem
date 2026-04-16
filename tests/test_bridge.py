@@ -85,3 +85,27 @@ def test_bridge_sync_import_and_remove(project_dir: Path, project_repo: Path) ->
     cleaned = (project_dir / "CLAUDE.md").read_text()
     assert START_MARKER not in cleaned
     assert END_MARKER not in cleaned
+
+
+def test_bridge_import_redacts_secret_text(project_dir: Path, project_repo: Path) -> None:
+    bridge_path = project_dir / "CLAUDE.md"
+    bridge_path.write_text(
+        START_MARKER
+        + "\n- API token sk-ABCDEFGHIJKLMNOPQRSTUV\n"
+        + END_MARKER
+        + "\n"
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["bridge", "import", "--cwd", str(project_dir), "--target", "CLAUDE.md"],
+    )
+
+    assert result.exit_code == 0, result.output
+    imported = [
+        fact
+        for fact in load_all_facts(project_repo, include_superseded=False)
+        if fact.source_session.startswith("bridge:")
+    ]
+    assert len(imported) == 1
+    assert "[REDACTED:openai-key]" in imported[0].text

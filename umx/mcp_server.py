@@ -284,30 +284,10 @@ class UMXMCPServer:
         }
 
     def _tool_status(self, args: dict) -> dict:
-        from umx.config import load_config
-        from umx.dream.gates import read_dream_state
-        from umx.metrics import compute_metrics
-        from umx.memory import load_all_facts
-        from umx.scope import config_path, project_memory_dir
+        from umx.status import build_status_payload
 
         cwd = Path(args["cwd"])
-        repo = project_memory_dir(cwd)
-        state = read_dream_state(repo)
-        facts = load_all_facts(repo, include_superseded=False) if repo.exists() else []
-        cfg = load_config(config_path())
-        metrics = compute_metrics(repo, cfg)
-        hot_util = metrics["hot_tier_utilisation"]["value"]
-        sessions_dir = repo / "sessions"
-        session_count = len(list(sessions_dir.glob("**/*.jsonl"))) if sessions_dir.exists() else 0
-        return {
-            "fact_count": len(facts),
-            "session_count": session_count,
-            "last_dream": state.get("last_dream"),
-            "hot_tier_tokens": int(round(hot_util * cfg.memory.hot_tier_max_tokens)),
-            "hot_tier_max": cfg.memory.hot_tier_max_tokens,
-            "hot_tier_pct": int(round(hot_util * 100)),
-            "metrics": metrics,
-        }
+        return build_status_payload(cwd)
 
     def handle_ping(self, params: dict) -> dict:
         return {}

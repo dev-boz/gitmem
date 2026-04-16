@@ -1,17 +1,13 @@
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass
 
 from umx.config import UMXConfig, default_config
+from umx.inline_metadata import strip_inline_metadata as strip_umx_inline_metadata
 from umx.models import Fact
 
 
-COMMENT_RE = re.compile(r"<!--\s*umx:.*?-->", re.DOTALL)
-
-
 def strip_inline_metadata(text: str) -> str:
-    return COMMENT_RE.sub("", text).strip()
+    return strip_umx_inline_metadata(text)
 
 
 def estimate_tokens(text: str) -> int:

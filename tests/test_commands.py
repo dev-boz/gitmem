@@ -18,6 +18,7 @@ from umx.models import (
     SourceType,
     Verification,
 )
+from umx.tombstones import load_tombstones
 
 
 def _make_fact(
@@ -109,6 +110,21 @@ def test_merge_dry_run(project_repo: Path) -> None:
     facts = load_all_facts(project_repo, include_superseded=True)
     for fact in facts:
         assert fact.superseded_by is None
+
+
+def test_merge_apply_persists_resolution(project_dir: Path, project_repo: Path) -> None:
+    add_fact(project_repo, _make_fact("FACT_D3", "postgres runs on 5433 in dev"), auto_commit=False)
+    add_fact(project_repo, _make_fact("FACT_D4", "postgres runs on 5432 in dev"), auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["merge", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert len(data) == 1
+    facts = load_all_facts(project_repo, include_superseded=True)
+    loser = next(fact for fact in facts if fact.fact_id == data[0]["loser_id"])
+    assert loser.superseded_by == data[0]["winner_id"]
 
 
 # ── audit tests ──────────────────────────────────────────────────
@@ -256,6 +272,59 @@ def test_promote_to_principle_moves_fact_into_principles(
     assert promoted.file_path.relative_to(project_repo).as_posix() == "principles/topics/migrations.md"
 
 
+def test_promote_folder_fact_to_principle_moves_into_principles(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact(
+        "FACT_PROMOTE_FOLDER_PRINCIPLE",
+        "shared config fragments live under config/shared",
+        topic="config",
+        scope=Scope.FOLDER,
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "principle"],
+    )
+
+    assert result.exit_code == 0, result.output
+    facts = load_all_facts(project_repo, include_superseded=False)
+    promoted = next(item for item in facts if item.fact_id == fact.fact_id)
+    assert promoted.scope == Scope.PROJECT
+    assert promoted.file_path is not None
+    assert promoted.file_path.relative_to(project_repo).as_posix() == "principles/topics/config.md"
+
+
+def test_promote_to_user_moves_fact_into_user_scope(
+    project_dir: Path,
+    project_repo: Path,
+    user_repo: Path,
+) -> None:
+    fact = _make_fact(
+        "FACT_PROMOTE_USER",
+        "release notes live in docs/releases",
+        topic="docs",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "user"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == f"{fact.fact_id} -> user"
+    project_facts = load_all_facts(project_repo, include_superseded=False)
+    assert all(item.fact_id != fact.fact_id for item in project_facts)
+    user_facts = load_all_facts(user_repo, include_superseded=False)
+    promoted = next(item for item in user_facts if item.fact_id == fact.fact_id)
+    assert promoted.scope == Scope.USER
+
+
 def test_promote_invalid_destination_leaves_source_fact_untouched(
     project_dir: Path,
     project_repo: Path,
@@ -276,6 +345,42 @@ def test_promote_invalid_destination_leaves_source_fact_untouched(
     assert result.exit_code != 0
     facts = load_all_facts(project_repo, include_superseded=False)
     assert any(item.fact_id == fact.fact_id for item in facts)
+
+
+def test_confirm_marks_fact_human_confirmed(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact("FACT_CONFIRM", "staging uses blue/green cutovers", topic="deploy")
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["confirm", "--cwd", str(project_dir), "--fact", fact.fact_id])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == fact.fact_id
+    updated = next(item for item in load_all_facts(project_repo, include_superseded=False) if item.fact_id == fact.fact_id)
+    assert updated.encoding_strength == 5
+    assert updated.verification == Verification.HUMAN_CONFIRMED
+    assert updated.consolidation_status == ConsolidationStatus.STABLE
+
+
+def test_forget_fact_creates_tombstone(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _make_fact("FACT_FORGET", "staging deploys need smoke checks", topic="deploy")
+    add_fact(project_repo, fact, auto_commit=False)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["forget", "--cwd", str(project_dir), "--fact", fact.fact_id])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == fact.fact_id
+    facts = load_all_facts(project_repo, include_superseded=False)
+    assert all(item.fact_id != fact.fact_id for item in facts)
+    tombstones = load_tombstones(project_repo)
+    assert any(item.fact_id == fact.fact_id for item in tombstones)
 
 
 # ── purge tests ──────────────────────────────────────────────────

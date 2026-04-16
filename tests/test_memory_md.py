@@ -121,6 +121,25 @@ def test_memory_md_capacity_warning(project_repo: Path) -> None:
     assert "% capacity -->" in content
 
 
+def test_memory_md_records_provider_state(project_repo: Path) -> None:
+    fact = _make_fact("provider-backed fact", topic="providers")
+
+    write_memory_md(
+        project_repo,
+        [fact],
+        last_dream="2026-04-15T00:00:00Z",
+        session_count=3,
+        dream_provider="provider:groq/groq",
+        dream_partial=True,
+        config=default_config(),
+        auto_commit=False,
+    )
+
+    content = (project_repo / "meta" / "MEMORY.md").read_text()
+    assert "dream_provider: provider:groq/groq" in content
+    assert "dream_status: partial" in content
+
+
 def test_injected_but_uncited(project_repo: Path) -> None:
     """Record usage, verify detection of injected-but-uncited facts."""
     ensure_usage_db(project_repo)

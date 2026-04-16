@@ -6,6 +6,7 @@ from pathlib import Path
 
 from umx.config import UMXConfig
 from umx.dream.gates import read_dream_state
+from umx.dream.providers import ProviderExtractionResult, run_session_provider_extraction
 from umx.identity import generate_fact_id
 from umx.models import (
     CodeAnchor,
@@ -106,14 +107,22 @@ _LOW_SIGNAL_PHRASES = (
     "so far",
 )
 
+_CODEX_LOW_SIGNAL_PHRASES = (
+    "full-suite",
+    "stricter check",
+    "earlier snapshot",
+)
+
 _FIRST_PERSON_PROGRESS_PATTERN = re.compile(
     r"\b(?:i['’]m|i am)\s+"
     r"(?:picking|collecting|leaving|reading|verifying|checking|inspecting|looking"
     r"|moving|waiting|measuring|tuning|locking|running|starting|continuing"
-    r"|focusing|shifting)\b"
+    r"|focusing|shifting|editing|writing|updating|recording|staging|committing"
+    r"|pushing|summarizing|logging|polling|creating|closing|finishing)\b"
     r"|\b(?:i['’]ll|i will)\s+"
     r"(?:pick|collect|leave|read|verify|check|inspect|look|move|wait|measure"
-    r"|tune|lock|run|start|continue|focus|shift)\b",
+    r"|tune|lock|run|start|continue|focus|shift|edit|write|update|record"
+    r"|stage|commit|push|summarize|log|poll|create|close|finish|stop)\b",
     re.IGNORECASE,
 )
 
@@ -123,6 +132,15 @@ _OPERATIONAL_STATUS_PATTERNS = (
     re.compile(r"\bsuite is green\b", re.IGNORECASE),
     re.compile(r"^that means\b", re.IGNORECASE),
     re.compile(r"^if\b.*\bneeds?\s+work\b", re.IGNORECASE),
+)
+
+_CODEX_META_PATTERNS = (
+    re.compile(r"\bleft\s+(?:alone|untouched)\b", re.IGNORECASE),
+    re.compile(r"\bcommit\s+(?:is|was)\s+(?:created|pushed?)\b", re.IGNORECASE),
+    re.compile(r"\brepo\s+is\s+using\b.*\bidentity\b", re.IGNORECASE),
+    re.compile(r"^if this repo is still pinned to\b", re.IGNORECASE),
+    re.compile(r"\bdogfooding_tests_results_changes\.md\b", re.IGNORECASE),
+    re.compile(r"\bwrong author\b", re.IGNORECASE),
 )
 
 _VERB_PATTERN = re.compile(
@@ -151,13 +169,29 @@ _TOPIC_SKIP_WORDS = {
 }
 
 
-def _looks_operational_status(sentence: str) -> bool:
+def _session_meta(events: list[dict]) -> dict[str, object]:
+    if not events:
+        return {}
+    meta = events[0].get("_meta")
+    if isinstance(meta, dict):
+        return meta
+    return {}
+
+
+def _is_codex_rollout_session(events: list[dict]) -> bool:
+    meta = _session_meta(events)
+    return meta.get("tool") == "codex" or meta.get("source") == "codex-rollout"
+
+
+def _looks_operational_status(sentence: str, *, codex_rollout: bool = False) -> bool:
     if _FIRST_PERSON_PROGRESS_PATTERN.search(sentence):
+        return True
+    if codex_rollout and any(pattern.search(sentence) for pattern in _CODEX_META_PATTERNS):
         return True
     return any(pattern.search(sentence) for pattern in _OPERATIONAL_STATUS_PATTERNS)
 
 
-def _looks_factual(sentence: str) -> bool:
+def _looks_factual(sentence: str, *, codex_rollout: bool = False) -> bool:
     stripped = sentence.strip()
     lowered = stripped.lower()
     if len(stripped) < 10 or len(stripped) > 200:
@@ -172,7 +206,9 @@ def _looks_factual(sentence: str) -> bool:
         return False
     if any(phrase in lowered for phrase in _LOW_SIGNAL_PHRASES):
         return False
-    if _looks_operational_status(stripped):
+    if codex_rollout and any(phrase in lowered for phrase in _CODEX_LOW_SIGNAL_PHRASES):
+        return False
+    if _looks_operational_status(stripped, codex_rollout=codex_rollout):
         return False
     return bool(_VERB_PATTERN.search(stripped))
 
@@ -221,6 +257,7 @@ def _facts_from_session_payload(
         return facts
 
     start = 1 if events and "_meta" in events[0] else 0
+    is_codex_rollout = _is_codex_rollout_session(events)
     for event in events[start:]:
         role = event.get("role")
         if role not in ("assistant", "tool_result"):
@@ -231,7 +268,7 @@ def _facts_from_session_payload(
 
         sentences = _extract_sentences(content)
         for sentence in sentences:
-            if not _looks_factual(sentence):
+            if not _looks_factual(sentence, codex_rollout=is_codex_rollout):
                 continue
             text = redact_candidate_fact_text(sentence, config)
             if not text:
@@ -269,11 +306,30 @@ def session_records_to_facts(
     session_ids: set[str] | None = None,
     skip_gathered: bool = True,
 ) -> list[Fact]:
+    facts, _ = session_records_to_facts_with_report(
+        repo_dir,
+        config=config,
+        include_archived=include_archived,
+        session_ids=session_ids,
+        skip_gathered=skip_gathered,
+    )
+    return facts
+
+
+def session_records_to_facts_with_report(
+    repo_dir: Path,
+    config: UMXConfig | None = None,
+    *,
+    include_archived: bool = True,
+    session_ids: set[str] | None = None,
+    skip_gathered: bool = True,
+) -> tuple[list[Fact], list[ProviderExtractionResult]]:
     state = read_dream_state(repo_dir)
     gathered: list[str] = list(state.get("last_gathered_sessions", []))
     gathered_set = set(gathered)
 
     facts: list[Fact] = []
+    reports: list[ProviderExtractionResult] = []
 
     for session_id, events in iter_session_payloads(
         repo_dir,
@@ -282,8 +338,21 @@ def session_records_to_facts(
     ):
         if skip_gathered and session_id in gathered_set:
             continue
-        facts.extend(_facts_from_session_payload(repo_dir, session_id, events, config))
-    return facts
+        result = run_session_provider_extraction(
+            repo_dir,
+            session_id,
+            events,
+            config,
+            native_extractor=lambda session_id=session_id, events=events: _facts_from_session_payload(
+                repo_dir,
+                session_id,
+                events,
+                config,
+            ),
+        )
+        facts.extend(result.facts)
+        reports.append(result)
+    return facts, reports
 
 
 def mark_sessions_gathered(repo_dir: Path, session_ids: list[str]) -> None:

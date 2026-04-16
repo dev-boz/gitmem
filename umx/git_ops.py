@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import logging
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
+
+from umx.config import UMXConfig, load_config
+from umx.scope import config_path
 
 logger = logging.getLogger(__name__)
 
@@ -12,10 +17,79 @@ _GITIGNORE_ENTRIES = [
     "meta/*.json",
     "meta/*.jsonl",
     "!meta/tombstones.jsonl",
+    "!meta/processing.jsonl",
     "meta/dream.lock",
     ".umx.json",
     "__pycache__/",
 ]
+
+
+@dataclass(slots=True, frozen=True)
+class GitCommitResult:
+    status: Literal["noop", "committed", "failed"]
+    returncode: int = 0
+    stdout: str = ""
+    stderr: str = ""
+    signed: bool = False
+
+    @property
+    def committed(self) -> bool:
+        return self.status == "committed"
+
+    @property
+    def noop(self) -> bool:
+        return self.status == "noop"
+
+    @property
+    def failed(self) -> bool:
+        return self.status == "failed"
+
+    def __bool__(self) -> bool:
+        return self.committed
+
+    @classmethod
+    def noop_result(cls) -> GitCommitResult:
+        return cls(status="noop")
+
+    @classmethod
+    def committed_result(
+        cls,
+        *,
+        returncode: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+        signed: bool = False,
+    ) -> GitCommitResult:
+        return cls(
+            status="committed",
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            signed=signed,
+        )
+
+    @classmethod
+    def failed_result(
+        cls,
+        *,
+        returncode: int = 1,
+        stdout: str = "",
+        stderr: str = "",
+        signed: bool = False,
+    ) -> GitCommitResult:
+        return cls(
+            status="failed",
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            signed=signed,
+        )
+
+
+class GitCommitError(RuntimeError):
+    def __init__(self, message: str, result: GitCommitResult) -> None:
+        super().__init__(message)
+        self.result = result
 
 
 def _run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
@@ -29,6 +103,46 @@ def _run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.Comp
     except FileNotFoundError:
         logger.warning("git is not installed; skipping git operation")
         return subprocess.CompletedProcess(args=["git"], returncode=128, stdout="", stderr="git not found")
+
+
+def _resolve_commit_signing(config: UMXConfig | None = None) -> tuple[bool, bool]:
+    resolved = config
+    if resolved is None:
+        resolved = load_config(config_path())
+    sign_commits = bool(resolved.git.sign_commits or resolved.git.require_signed_commits)
+    require_signed_commits = bool(resolved.git.require_signed_commits)
+    return sign_commits, require_signed_commits
+
+
+def git_signing_payload(config: UMXConfig | None = None) -> dict[str, bool]:
+    resolved = config
+    if resolved is None:
+        resolved = load_config(config_path())
+    sign_commits, require_signed_commits = _resolve_commit_signing(resolved)
+    return {
+        "enabled": sign_commits,
+        "sign_commits": bool(resolved.git.sign_commits),
+        "require_signed_commits": require_signed_commits,
+    }
+
+
+def git_commit_failure_message(
+    result: GitCommitResult,
+    *,
+    context: str = "git commit failed",
+) -> str:
+    detail = result.stderr.strip() or result.stdout.strip()
+    return f"{context}: {detail}" if detail else context
+
+
+def raise_for_git_commit_failure(
+    result: GitCommitResult,
+    *,
+    context: str = "git commit failed",
+) -> GitCommitResult:
+    if result.failed:
+        raise GitCommitError(git_commit_failure_message(result, context=context), result)
+    return result
 
 
 def is_git_repo(repo_dir: Path) -> bool:
@@ -53,22 +167,24 @@ def git_init(repo_dir: Path) -> None:
         return
     gitignore = repo_dir / ".gitignore"
     gitignore.write_text("\n".join(_GITIGNORE_ENTRIES) + "\n")
-    _run_git(repo_dir, "add", ".gitignore")
-    _run_git(repo_dir, "commit", "-m", "umx: initial commit")
+    commit_result = git_add_and_commit(repo_dir, paths=[gitignore], message="umx: initial commit")
+    raise_for_git_commit_failure(commit_result, context="git init commit failed")
 
 
 def git_add_and_commit(
     repo_dir: Path,
     paths: list[Path] | None = None,
     message: str = "umx: update facts",
-) -> bool:
+    *,
+    config: UMXConfig | None = None,
+) -> GitCommitResult:
     """Stage changed files and commit.
 
     If paths is None, stage all tracked changes.
-    Returns True if a commit was made, False if nothing to commit.
+    Returns a structured result that distinguishes no-op, success, and failure.
     """
     if not is_git_repo(repo_dir):
-        return False
+        return GitCommitResult.failed_result(returncode=128, stderr="not a git repository")
 
     if paths is not None:
         for p in paths:
@@ -76,19 +192,53 @@ def git_add_and_commit(
                 rel = p.relative_to(repo_dir)
             except ValueError:
                 rel = p
-            _run_git(repo_dir, "add", "--force", str(rel))
+            add_result = _run_git(repo_dir, "add", "--force", str(rel))
+            if add_result.returncode != 0:
+                return GitCommitResult.failed_result(
+                    returncode=add_result.returncode,
+                    stdout=add_result.stdout,
+                    stderr=add_result.stderr,
+                )
     else:
-        _run_git(repo_dir, "add", "-A")
+        add_result = _run_git(repo_dir, "add", "-A")
+        if add_result.returncode != 0:
+            return GitCommitResult.failed_result(
+                returncode=add_result.returncode,
+                stdout=add_result.stdout,
+                stderr=add_result.stderr,
+            )
 
     status = _run_git(repo_dir, "diff", "--cached", "--quiet")
     if status.returncode == 0:
-        return False
+        return GitCommitResult.noop_result()
+    if status.returncode != 1:
+        return GitCommitResult.failed_result(
+            returncode=status.returncode,
+            stdout=status.stdout,
+            stderr=status.stderr,
+        )
 
-    result = _run_git(repo_dir, "commit", "-m", message)
+    sign_commits, require_signed_commits = _resolve_commit_signing(config)
+    commit_args = ["commit"]
+    if sign_commits:
+        commit_args.append("-S")
+    commit_args.extend(["-m", message])
+    result = _run_git(repo_dir, *commit_args)
     if result.returncode != 0:
-        logger.warning("git commit failed: %s", result.stderr.strip())
-        return False
-    return True
+        context = "git signed commit failed" if require_signed_commits else "git commit failed"
+        logger.warning("%s: %s", context, result.stderr.strip() or result.stdout.strip())
+        return GitCommitResult.failed_result(
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            signed=sign_commits,
+        )
+    return GitCommitResult.committed_result(
+        returncode=result.returncode,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        signed=sign_commits,
+    )
 
 
 def git_status(repo_dir: Path) -> str:
@@ -145,7 +295,7 @@ def git_remote_url(repo_dir: Path) -> str | None:
 
 def git_fetch(repo_dir: Path) -> bool:
     """Fetch from remote."""
-    result = _run_git(repo_dir, "fetch", "origin")
+    result = _run_git(repo_dir, "fetch", "--prune", "origin")
     return result.returncode == 0
 
 
@@ -181,6 +331,12 @@ def git_checkout(repo_dir: Path, branch: str) -> bool:
     return result.returncode == 0
 
 
+def git_delete_branch(repo_dir: Path, branch: str, *, force: bool = False) -> bool:
+    """Delete a local branch."""
+    result = _run_git(repo_dir, "branch", "-D" if force else "-d", branch)
+    return result.returncode == 0
+
+
 def git_current_branch(repo_dir: Path) -> str | None:
     """Get current branch name."""
     result = _run_git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD")
@@ -195,15 +351,53 @@ def git_ref_exists(repo_dir: Path, ref: str) -> bool:
     return result.returncode == 0
 
 
+def git_ref_sha(repo_dir: Path, ref: str) -> str | None:
+    """Return the resolved object ID for ``ref`` when it exists."""
+    result = _run_git(repo_dir, "rev-parse", "--verify", ref)
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
 def git_path_exists_at_ref(repo_dir: Path, ref: str, path: str) -> bool:
     """Return True when ``path`` exists at ``ref``."""
     result = _run_git(repo_dir, "cat-file", "-e", f"{ref}:{path}")
     return result.returncode == 0
 
 
+def git_read_text_at_ref(repo_dir: Path, ref: str, path: str) -> str | None:
+    """Return file contents from ``ref`` when available."""
+    result = _run_git(repo_dir, "show", f"{ref}:{path}")
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
+def git_read_text_at_ref_strict(repo_dir: Path, ref: str, path: str) -> str:
+    """Return file contents from ``ref`` or raise on git failure."""
+    result = _run_git(repo_dir, "show", f"{ref}:{path}")
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to read {path} at {ref}")
+    return result.stdout
+
+
 def git_restore_path(repo_dir: Path, ref: str, path: str) -> bool:
     """Restore one path from ``ref`` into the working tree."""
     result = _run_git(repo_dir, "checkout", ref, "--", path)
+    return result.returncode == 0
+
+
+def git_reset_paths(repo_dir: Path, paths: list[Path]) -> bool:
+    """Unstage repository-relative paths from the index."""
+    if not paths:
+        return True
+    relatives: list[str] = []
+    for path in paths:
+        try:
+            relatives.append(path.relative_to(repo_dir).as_posix())
+        except ValueError:
+            relatives.append(path.as_posix())
+    result = _run_git(repo_dir, "reset", "HEAD", "--", *relatives)
     return result.returncode == 0
 
 
@@ -215,6 +409,47 @@ def diff_paths_against_ref(repo_dir: Path, ref: str, pathspec: str | None = None
     result = _run_git(repo_dir, *args)
     if result.returncode != 0 or not result.stdout:
         return []
+    return [repo_dir / line for line in result.stdout.splitlines() if line.strip()]
+
+
+def diff_committed_paths_against_ref(
+    repo_dir: Path,
+    ref: str,
+    pathspec: str | None = None,
+) -> list[Path]:
+    """Return committed branch paths that differ from ``ref``."""
+    return diff_committed_paths_between_refs(repo_dir, ref, "HEAD", pathspec=pathspec)
+
+
+def diff_committed_paths_between_refs(
+    repo_dir: Path,
+    base_ref: str,
+    head_ref: str = "HEAD",
+    pathspec: str | None = None,
+) -> list[Path]:
+    """Return committed paths that differ between ``base_ref`` and ``head_ref``."""
+    args = ["diff", "--name-only", f"{base_ref}...{head_ref}"]
+    if pathspec is not None:
+        args.extend(["--", pathspec])
+    result = _run_git(repo_dir, *args)
+    if result.returncode != 0 or not result.stdout:
+        return []
+    return [repo_dir / line for line in result.stdout.splitlines() if line.strip()]
+
+
+def diff_committed_paths_between_refs_strict(
+    repo_dir: Path,
+    base_ref: str,
+    head_ref: str = "HEAD",
+    pathspec: str | None = None,
+) -> list[Path]:
+    """Return committed paths or raise when git diff fails."""
+    args = ["diff", "--name-only", f"{base_ref}...{head_ref}"]
+    if pathspec is not None:
+        args.extend(["--", pathspec])
+    result = _run_git(repo_dir, *args)
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to diff {base_ref}...{head_ref}")
     return [repo_dir / line for line in result.stdout.splitlines() if line.strip()]
 
 
@@ -243,4 +478,5 @@ def safety_sweep(repo_dir: Path) -> int:
         paths=files,
         message=f"umx: safety sweep – {len(files)} session(s)",
     )
-    return len(files) if committed else 0
+    raise_for_git_commit_failure(committed, context="git safety sweep failed")
+    return len(files) if committed.committed else 0

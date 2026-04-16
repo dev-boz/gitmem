@@ -7,7 +7,7 @@ from typing import Any
 from umx.config import load_config
 from umx.dream.gates import should_dream
 from umx.dream.pipeline import DreamPipeline
-from umx.git_ops import git_add_and_commit
+from umx.git_ops import git_add_and_commit, git_commit_failure_message
 from umx.scope import config_path, find_project_root, project_memory_dir
 from umx.session_runtime import record_session_event
 from umx.sessions import archive_sessions, write_session
@@ -26,6 +26,7 @@ def run(
         "archived_sessions": 0,
         "dream_triggered": False,
         "dream_result": None,
+        "error": None,
     }
 
     try:
@@ -45,7 +46,15 @@ def run(
             write_session(repo_dir, meta=meta, events=events, config=cfg, auto_commit=False)
             archive_result = archive_sessions(repo_dir, config=cfg)
             result["archived_sessions"] = int(archive_result.get("archived_sessions", 0))
-            git_add_and_commit(repo_dir, message=f"umx: session {session_id}")
+            commit_result = git_add_and_commit(
+                repo_dir,
+                message=f"umx: session {session_id}",
+                config=cfg,
+            )
+            if commit_result.failed:
+                raise RuntimeError(
+                    git_commit_failure_message(commit_result, context="commit failed")
+                )
             for event in events:
                 record_session_event(
                     cwd,
@@ -56,7 +65,8 @@ def run(
                     auto_commit=False,
                 )
             result["session_written"] = True
-        except Exception:
+        except Exception as exc:
+            result["error"] = str(exc)
             logger.debug("session_end: failed to write session", exc_info=True)
 
     # Check dream gates and run pipeline if met
