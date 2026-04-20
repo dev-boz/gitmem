@@ -21,14 +21,15 @@ jobs:
   review:
     runs-on: ubuntu-latest
     if: >-
-      contains(github.event.pull_request.labels.*.name, 'type: extraction') ||
-      contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
-      contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
-      contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||
-      contains(github.event.pull_request.labels.*.name, 'type: lint') ||
-      contains(github.event.pull_request.labels.*.name, 'type: promotion') ||
-      contains(github.event.pull_request.labels.*.name, 'type: principle') ||
-      contains(github.event.pull_request.labels.*.name, 'type: supersession')
+      contains(github.event.pull_request.labels.*.name, 'state: extraction') ||
+          contains(github.event.pull_request.labels.*.name, 'type: extraction') ||
+          contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
+          contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
+          contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||
+          contains(github.event.pull_request.labels.*.name, 'type: lint') ||
+          contains(github.event.pull_request.labels.*.name, 'type: promotion') ||
+          contains(github.event.pull_request.labels.*.name, 'type: principle') ||
+          contains(github.event.pull_request.labels.*.name, 'type: supersession')
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -39,8 +40,8 @@ jobs:
           PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: git checkout -B "$PR_HEAD_REF" "$PR_HEAD_SHA"
-      - name: Install umx
-        run: python -m pip install umx
+      - name: Install gitmem
+        run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"
       - name: Run L2 review
         run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }}
         env:

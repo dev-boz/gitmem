@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from tests.secret_literals import ANTHROPIC_KEY_FAKE
+from umx.config import default_config
 from umx.dream.extract import mark_sessions_gathered, session_records_to_facts
 from umx.dream.gates import read_dream_state
 from umx.dream.pipeline import DreamPipeline
 from umx.dream.processing import read_processing_log, start_processing_run
 from umx.inject import emit_gap_signal
-from umx.memory import find_fact_by_id, load_all_facts
-from umx.models import ConsolidationStatus, MemoryType, Scope, SourceType, Verification
+from umx.memory import add_fact, find_fact_by_id, load_all_facts
+from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.sessions import write_session
 from umx.tombstones import forget_fact
 
@@ -52,7 +56,7 @@ def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) ->
                     "The server uses port 8080 by default. "
                     "Let me check the config. "
                     "PostgreSQL stores data in the /var/lib/pg directory. "
-                    "The API key is sk-ant-fake1234567890abcdef."
+                    f"The API key is {ANTHROPIC_KEY_FAKE}."
                 ),
             },
             {"role": "user", "content": "Thanks"},
@@ -81,7 +85,7 @@ def test_session_gather_extracts_facts(project_dir: Path, project_repo: Path) ->
 
     # Redaction was applied — the Anthropic key should be redacted
     all_text = " ".join(texts)
-    assert "sk-ant-fake1234567890abcdef" not in all_text
+    assert ANTHROPIC_KEY_FAKE not in all_text
     assert "[REDACTED:" in all_text
 
     # Second call with same sessions: nothing new
@@ -253,3 +257,111 @@ def test_tombstone_suppresses_gap_resurrection(project_dir: Path, project_repo: 
     DreamPipeline(project_dir).run(force=True)
 
     assert all("5433" not in fact.text for fact in load_all_facts(project_repo, include_superseded=False))
+
+
+def test_dream_weekly_lint_skips_when_recent(project_dir: Path, project_repo: Path) -> None:
+    recent = datetime.now(tz=UTC) - timedelta(days=6)
+    encoded_recent = recent.isoformat().replace("+00:00", "Z")
+    (project_repo / ".umx.json").write_text(
+        json.dumps(
+            {"dream": {"last_lint": encoded_recent}, "facts": {}},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    cfg = default_config()
+    cfg.dream.lint_interval = "weekly"
+
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert result.lint == {"ran": False, "reason": "weekly-not-due"}
+    payload = json.loads((project_repo / ".umx.json").read_text())
+    assert payload["dream"]["last_lint"] == encoded_recent
+
+
+def test_dream_invalid_last_lint_is_treated_as_due(project_dir: Path, project_repo: Path) -> None:
+    (project_repo / ".umx.json").write_text(
+        json.dumps(
+            {"dream": {"last_lint": "2026-04-17T00:00:00"}, "facts": {}},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    cfg = default_config()
+    cfg.dream.lint_interval = "weekly"
+
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert result.lint == {"ran": True, "reason": "first-run"}
+    payload = json.loads((project_repo / ".umx.json").read_text())
+    assert payload["dream"]["last_lint"].endswith("Z")
+
+
+def test_dream_hybrid_search_prewarms_embeddings_for_final_fact_ids(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    existing = Fact(
+        fact_id="01TESTFACT0000000000000901",
+        text="deploy uses the shared staging cluster",
+        scope=Scope.PROJECT,
+        topic="general",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="manual",
+        source_session="2026-04-10-manual",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, existing, auto_commit=False)
+    emit_gap_signal(
+        project_repo,
+        query="deploy flow",
+        resolution_context="agent inspected deployment docs",
+        proposed_fact="deploy uses the shared staging cluster",
+        session="2026-04-17-hybrid-prewarm",
+    )
+    cfg = default_config()
+    cfg.search.backend = "hybrid"
+    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda: True)
+    monkeypatch.setattr(
+        "umx.search_semantic.embed_fact",
+        lambda fact, config=None: [1.0, 0.0, 0.0],
+    )
+
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    payload = json.loads((project_repo / ".umx.json").read_text())
+    assert payload["facts"][existing.fact_id]["embedding"] == [1.0, 0.0, 0.0]
+
+
+def test_dream_hybrid_search_warns_when_embeddings_unavailable(
+    monkeypatch,
+    caplog,
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    emit_gap_signal(
+        project_repo,
+        query="service owner",
+        resolution_context="agent checked the runbook",
+        proposed_fact="service ownership is tracked in deploy docs",
+        session="2026-04-17-hybrid-warning",
+    )
+    cfg = default_config()
+    cfg.search.backend = "hybrid"
+    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda: False)
+    monkeypatch.setattr("umx.search_semantic.embed_fact", lambda fact, config=None: None)
+    caplog.set_level("WARNING", logger="umx.dream.pipeline")
+
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert "embedding prewarm skipped" in caplog.text

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from umx.config import UMXConfig
+from umx.dream.pr_render import GovernancePRBodyError
 from umx.governance import branch_name_for_proposal, build_promotion_pr_proposal_preview
 from umx.identity import generate_fact_id
 from umx.memory import append_fact_preserving_existing, cache_path_for, load_all_facts
@@ -25,6 +27,7 @@ from umx.models import (
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _TRAILING_PUNCTUATION_RE = re.compile(r"[.!?,;:]+$")
+_CROSS_PROJECT_PROPOSAL_SNAPSHOT_VERSION = 1
 
 
 @dataclass(slots=True, frozen=True)
@@ -404,6 +407,70 @@ def _cross_project_proposal_with_status(
     return updated_preview
 
 
+def _cross_project_proposal_with_fact_id(
+    preview: dict[str, Any],
+    *,
+    home: Path,
+    fact_id: str,
+) -> dict[str, Any]:
+    candidate_payload = preview.get("candidate")
+    target_payload = preview.get("target")
+    target_topic = target_payload.get("topic") if isinstance(target_payload, dict) else None
+    if not isinstance(candidate_payload, dict) or not isinstance(target_topic, str) or not target_topic:
+        raise ValueError("cross-project proposal preview is missing candidate or target topic")
+    updated_preview = dict(preview)
+    updated_preview["proposal"] = build_promotion_pr_proposal_preview(
+        _candidate_from_payload(candidate_payload),
+        target_topic=target_topic,
+        target_repo=home / "user",
+        fact_id=fact_id,
+    ).to_dict()
+    return updated_preview
+
+
+def _cross_project_proposal_snapshot_path(repo_dir: Path, branch: str) -> Path:
+    filename = f"{branch.replace('/', '__')}.json"
+    return repo_dir / "local" / "cross-project-proposals" / filename
+
+
+def _write_cross_project_proposal_snapshot(
+    repo_dir: Path,
+    *,
+    branch: str,
+    candidate_key: str,
+    head_sha: str,
+    preview: dict[str, Any],
+) -> None:
+    path = _cross_project_proposal_snapshot_path(repo_dir, branch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": _CROSS_PROJECT_PROPOSAL_SNAPSHOT_VERSION,
+        "branch": branch,
+        "candidate_key": candidate_key,
+        "head_sha": head_sha,
+        "preview": preview,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_cross_project_proposal_snapshot(repo_dir: Path, branch: str) -> dict[str, Any] | None:
+    path = _cross_project_proposal_snapshot_path(repo_dir, branch)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"saved proposal metadata is unreadable: {path}") from exc
+    if payload.get("version") != _CROSS_PROJECT_PROPOSAL_SNAPSHOT_VERSION:
+        raise RuntimeError(
+            f"saved proposal metadata has unsupported version {payload.get('version')!r}: {path}"
+        )
+    preview = payload.get("preview")
+    if not isinstance(preview, dict):
+        raise RuntimeError(f"saved proposal metadata is missing a proposal preview: {path}")
+    return payload
+
+
 def _candidate_from_payload(payload: dict[str, Any]) -> CrossProjectCandidate:
     return CrossProjectCandidate(
         key=str(payload["key"]),
@@ -526,6 +593,11 @@ def materialize_cross_project_promotion_branch(
     commit_succeeded = False
     try:
         materialized_fact = build_cross_project_promotion_fact(preview)
+        preview = _cross_project_proposal_with_fact_id(
+            preview,
+            home=home,
+            fact_id=materialized_fact.fact_id,
+        )
         target_path = append_fact_preserving_existing(
             user_repo,
             materialized_fact,
@@ -592,8 +664,20 @@ def materialize_and_push_cross_project_promotion_branch(
     *,
     candidate_key: str,
 ) -> dict[str, Any]:
-    from umx.git_ops import git_fetch, git_push, git_ref_exists, git_ref_sha, git_remote_url
-    from umx.github_ops import redact_url_credentials
+    from umx.git_ops import (
+        GitSignedHistoryError,
+        assert_signed_commit_range,
+        git_fetch,
+        git_push,
+        git_ref_exists,
+        git_ref_sha,
+        git_remote_url,
+    )
+    from umx.github_ops import (
+        GitHubRemoteIdentityError,
+        assert_expected_github_origin,
+        redact_url_credentials,
+    )
     from umx.push_safety import assert_push_safe
 
     materialized = materialize_cross_project_promotion_branch(
@@ -610,6 +694,15 @@ def materialize_and_push_cross_project_promotion_branch(
     remote = git_remote_url(user_repo)
     if not remote:
         raise RuntimeError("user repo has no origin remote configured")
+    try:
+        assert_expected_github_origin(
+            user_repo,
+            config_org=config.org,
+            repo_label="user memory repo",
+            operation="proposal push",
+        )
+    except GitHubRemoteIdentityError as exc:
+        raise RuntimeError(str(exc)) from exc
     display_remote = redact_url_credentials(remote) or remote
     if not git_fetch(user_repo):
         raise RuntimeError("failed to fetch user repo origin")
@@ -625,6 +718,16 @@ def materialize_and_push_cross_project_promotion_branch(
         head_ref=branch,
         config=config,
     )
+    try:
+        assert_signed_commit_range(
+            user_repo,
+            base_ref=remote_main_ref,
+            head_ref=branch,
+            config=config,
+            operation="proposal push",
+        )
+    except GitSignedHistoryError as exc:
+        raise RuntimeError(str(exc)) from exc
     if not git_push(user_repo, branch=branch, set_upstream=True):
         raise RuntimeError(f"failed to push proposal branch: {branch}")
 
@@ -638,6 +741,16 @@ def materialize_and_push_cross_project_promotion_branch(
             f"A local proposal branch and commit have been created and pushed to `{display_remote}`. "
             "No pull request has been created."
         ),
+    )
+    branch_head_sha = git_ref_sha(user_repo, branch)
+    if not branch_head_sha:
+        raise RuntimeError(f"failed to resolve pushed proposal branch head SHA: {branch}")
+    _write_cross_project_proposal_snapshot(
+        user_repo,
+        branch=branch,
+        candidate_key=candidate_key,
+        head_sha=branch_head_sha,
+        preview=pushed_preview,
     )
 
     return {
@@ -657,13 +770,16 @@ def open_cross_project_promotion_pull_request(
     *,
     candidate_key: str,
 ) -> dict[str, Any]:
-    from umx.git_ops import git_fetch, git_ref_exists, git_remote_url, is_git_repo
+    from umx.git_ops import git_fetch, git_ref_exists, git_ref_sha, git_remote_url, is_git_repo
     from umx.github_ops import (
+        GitHubError,
+        GovernancePRConflictError,
+        GitHubRemoteIdentityError,
+        assert_expected_github_origin,
         create_pr,
         gh_available,
         is_github_repo_url,
         redact_url_credentials,
-        resolve_repo_ref,
     )
 
     user_repo = home / "user"
@@ -677,22 +793,38 @@ def open_cross_project_promotion_pull_request(
         raise RuntimeError("user repo has no origin remote configured")
     if not is_github_repo_url(remote):
         raise RuntimeError("user repo origin must be a GitHub remote to open a PR")
+    try:
+        repo_ref = assert_expected_github_origin(
+            user_repo,
+            config_org=config.org,
+            repo_label="user memory repo",
+            operation="proposal pull request",
+        )
+    except GitHubRemoteIdentityError as exc:
+        raise RuntimeError(str(exc)) from exc
     display_remote = redact_url_credentials(remote) or remote
     if not git_fetch(user_repo):
         raise RuntimeError("failed to fetch user repo origin")
     branch = branch_name_for_proposal(candidate_key)
-    if not git_ref_exists(user_repo, f"refs/remotes/origin/{branch}"):
+    remote_branch_ref = f"refs/remotes/origin/{branch}"
+    if not git_ref_exists(user_repo, remote_branch_ref):
         raise RuntimeError(f"proposal branch is not pushed to origin; run `umx propose --cross-project --proposal-key {candidate_key} --push` first")
-
-    preview = _proposal_preview_from_report(
-        build_cross_project_promotion_report(
-            home,
-            config,
-            candidate_key=candidate_key,
-        ),
-        home=home,
-        allow_blocked=True,
-    )
+    snapshot = _load_cross_project_proposal_snapshot(user_repo, branch)
+    if snapshot is None:
+        raise RuntimeError(
+            "saved proposal metadata is missing for the pushed branch; rerun "
+            f"`umx propose --cross-project --proposal-key {candidate_key} --push` before `--open-pr`"
+        )
+    expected_head_sha = str(snapshot.get("head_sha") or "")
+    if not expected_head_sha:
+        raise RuntimeError("saved proposal metadata is missing the pushed branch head SHA")
+    remote_head_sha = git_ref_sha(user_repo, remote_branch_ref)
+    if remote_head_sha != expected_head_sha:
+        raise RuntimeError(
+            "proposal branch no longer matches the saved proposal preview; rerun "
+            f"`umx propose --cross-project --proposal-key {candidate_key} --push` before `--open-pr`"
+        )
+    preview = snapshot["preview"]
 
     proposal_preview = _cross_project_proposal_with_status(
         preview,
@@ -703,21 +835,26 @@ def open_cross_project_promotion_pull_request(
         outcome_line="A pull request will be opened against `main` from the pushed proposal branch.",
     )
     proposal_payload = proposal_preview["proposal"]
-    if not gh_available():
-        raise RuntimeError("gh CLI is not available or not authenticated")
+    try:
+        if not gh_available():
+            raise RuntimeError("gh CLI is not available or not authenticated")
+    except GitHubError as exc:
+        raise RuntimeError(str(exc)) from exc
 
-    repo_ref = resolve_repo_ref(user_repo, config_org=config.org)
     if not repo_ref.owner:
         raise RuntimeError("user repo GitHub owner could not be resolved for PR creation")
 
-    pr_number = create_pr(
-        repo_ref.owner,
-        repo_ref.name,
-        branch,
-        str(proposal_payload["title"]),
-        str(proposal_payload["body"]),
-        labels=list(proposal_payload["labels"]),
-    )
+    try:
+        pr_number = create_pr(
+            repo_ref.owner,
+            repo_ref.name,
+            branch,
+            str(proposal_payload["title"]),
+            str(proposal_payload["body"]),
+            labels=list(proposal_payload["labels"]),
+        )
+    except (GovernancePRBodyError, GovernancePRConflictError, GitHubError) as exc:
+        raise RuntimeError(str(exc)) from exc
     if pr_number is None:
         raise RuntimeError(f"failed to create proposal pull request for branch: {branch}")
 

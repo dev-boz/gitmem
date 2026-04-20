@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.secret_literals import materialize_placeholders
 from umx.dream.extract import gap_records_to_facts, session_records_to_facts, source_files_to_facts
 from umx.sessions import list_sessions, write_session
 
@@ -13,7 +14,11 @@ FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "golden_extraction"
 
 
 def _load_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    return [
+        materialize_placeholders(json.loads(line))
+        for line in path.read_text().splitlines()
+        if line.strip()
+    ]
 
 
 def _normalize_fact(fact) -> dict:
@@ -53,7 +58,7 @@ def _sort_key(payload: dict) -> tuple:
 
 
 def _run_case(case_dir: Path, project_dir: Path, project_repo: Path) -> list[dict]:
-    spec = json.loads((case_dir / "expected.json").read_text())
+    spec = materialize_placeholders(json.loads((case_dir / "expected.json").read_text()))
 
     project_fixture = case_dir / "project"
     if project_fixture.exists():

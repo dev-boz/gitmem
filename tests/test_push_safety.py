@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.secret_literals import AWS_ACCESS_KEY_ID
 from umx.config import default_config
 from umx.git_ops import git_add_and_commit, git_push
 from umx.push_safety import PushSafetyError, assert_push_safe
@@ -35,7 +36,7 @@ def test_push_safety_blocks_committed_fact_markdown(
 
     fact_path = project_repo / "facts" / "topics" / "deploy.md"
     fact_path.parent.mkdir(parents=True, exist_ok=True)
-    fact_path.write_text("# deploy\n\n## Facts\n- aws key AKIA1234567890ABCDEF\n")
+    fact_path.write_text(f"# deploy\n\n## Facts\n- aws key {AWS_ACCESS_KEY_ID}\n")
     git_add_and_commit(project_repo, message="commit unsafe fact")
 
     with pytest.raises(PushSafetyError) as exc_info:

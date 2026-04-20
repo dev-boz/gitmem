@@ -178,6 +178,16 @@ git:
 - `require_signed_commits: true` makes commit failures fatal instead of silently continuing when signing is expected.
 - Tests and local defaults do **not** require signing keys.
 
+Custom redaction patterns can be set from the CLI and are stored under `sessions.redaction_patterns`:
+
+```bash
+gitmem config set redaction.patterns 'customer-\d+'
+gitmem config set redaction.patterns '["ghp_[A-Za-z0-9]{36}", "ticket-[A-Z]+"]'
+```
+
+Custom matches are masked with the standard `[REDACTED:custom]` token before sessions are written.
+For safety, custom patterns must be simple token-shape regexes; empty patterns, quantified groups, backreferences, lookarounds, and wildcard repeaters are rejected.
+
 ## How capture works
 
 - `gitmem capture codex` imports existing Codex rollout JSONL files from `~/.codex` or a file you pass explicitly.

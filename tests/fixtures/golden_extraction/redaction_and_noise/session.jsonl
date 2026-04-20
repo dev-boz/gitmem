@@ -1,2 +1,2 @@
 {"_meta": {"session_id": "2026-04-11-golden-redaction"}}
-{"ts": "2026-04-11T00:00:00Z", "role": "assistant", "content": "openai key is sk-ABCDEFGHIJKLMNOPQRSTUV. Let me check the logs. Are you sure?"}
+{"ts": "2026-04-11T00:00:00Z", "role": "assistant", "content": "openai key is __OPENAI_KEY_SHORT__. Let me check the logs. Are you sure?"}

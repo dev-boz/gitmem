@@ -10,9 +10,14 @@ from umx.config import default_config
 from umx.git_ops import (
     GitCommitError,
     GitCommitResult,
+    GitSignedHistoryError,
+    assert_signed_commit_range,
     git_add_and_commit,
     git_init,
+    git_pull_rebase,
+    inspect_signed_commit_range,
     is_git_repo,
+    list_local_branches,
     safety_sweep,
     uncommitted_sessions,
 )
@@ -54,6 +59,25 @@ def test_git_add_and_commit(repo: Path) -> None:
 
     # No changes → should return False
     assert git_add_and_commit(repo, paths=[f], message="noop").noop is True
+
+
+def test_list_local_branches_reports_current_branch(repo: Path) -> None:
+    git_init(repo)
+    head = repo / "hello.txt"
+    head.write_text("hello\n")
+    assert git_add_and_commit(repo, paths=[head], message="seed").committed is True
+
+    feature = repo / "feature.txt"
+    subprocess.run(["git", "-C", str(repo), "checkout", "-b", "proposal/cleanup"], check=True)
+    feature.write_text("cleanup\n")
+    assert git_add_and_commit(repo, paths=[feature], message="feature").committed is True
+
+    branches = {branch.name: branch for branch in list_local_branches(repo)}
+
+    assert "main" in branches
+    assert "proposal/cleanup" in branches
+    assert branches["proposal/cleanup"].current is True
+    assert branches["proposal/cleanup"].last_commit_ts is not None
 
 
 def test_git_add_and_commit_returns_failed_result_on_commit_error(
@@ -149,6 +173,105 @@ def test_git_init_raises_when_initial_commit_fails(
 
     with pytest.raises(GitCommitError, match="git init commit failed: gpg failed to sign the data"):
         git_init(repo)
+
+
+def test_inspect_signed_commit_range_accepts_signature_present_statuses(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("rev-parse", "--verify", "origin/main"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="abc123\n", stderr="")
+        if args == ("log", "--format=%H %G?", "origin/main..HEAD"):
+            return subprocess.CompletedProcess(
+                args=list(args),
+                returncode=0,
+                stdout="aaaa1111 G\nbbbb2222 U\ncccc3333 E\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    monkeypatch.setattr("umx.git_ops._run_git", fake_run_git)
+
+    check = inspect_signed_commit_range(repo, base_ref="origin/main")
+
+    assert check.ok is True
+    assert check.skipped is False
+    assert [item.status for item in check.commits] == ["G", "U", "E"]
+
+
+def test_assert_signed_commit_range_rejects_unsigned_history(
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "umxhome"
+    monkeypatch.setenv("UMX_HOME", str(home))
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("rev-parse", "--verify", "origin/main"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="abc123\n", stderr="")
+        if args == ("log", "--format=%H %G?", "origin/main..HEAD"):
+            return subprocess.CompletedProcess(
+                args=list(args),
+                returncode=0,
+                stdout="aaaa1111 N\nbbbb2222 B\ncccc3333 R\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+    monkeypatch.setattr("umx.git_ops._run_git", fake_run_git)
+
+    with pytest.raises(GitSignedHistoryError, match="unsigned or invalid commit signatures"):
+        assert_signed_commit_range(repo, base_ref="origin/main", config=cfg, operation="sync")
+
+
+def test_assert_signed_commit_range_checks_full_history_when_base_ref_is_missing(
+    repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "umxhome"
+    monkeypatch.setenv("UMX_HOME", str(home))
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("log", "--format=%H %G?", "HEAD"):
+            return subprocess.CompletedProcess(
+                args=list(args),
+                returncode=0,
+                stdout="aaaa1111 N\n",
+                stderr="",
+            )
+        if args == ("rev-parse", "--verify", "origin/main"):
+            return subprocess.CompletedProcess(args=list(args), returncode=128, stdout="", stderr="")
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+    monkeypatch.setattr("umx.git_ops._run_git", fake_run_git)
+
+    with pytest.raises(GitSignedHistoryError, match="unsigned or invalid commit signatures in HEAD"):
+        assert_signed_commit_range(repo, base_ref="origin/main", config=cfg, operation="bootstrap")
+
+
+def test_git_pull_rebase_enables_rebase_signing_when_signing_is_enabled(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+    monkeypatch.setattr("umx.git_ops._run_git", fake_run_git)
+
+    assert git_pull_rebase(repo, config=cfg) is True
+    assert calls == [("-c", "rebase.gpgSign=true", "pull", "--rebase", "origin")]
 
 
 def test_uncommitted_sessions(repo: Path) -> None:

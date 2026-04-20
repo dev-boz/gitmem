@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -89,3 +90,62 @@ def test_doctor_surfaces_processing_quarantine_health_and_embeddings(
     assert "hot_tier_pct" in payload["health"]
     assert any(item["metric"] == "hot_tier_utilisation" for item in payload["health"]["guidance"])
     assert payload["advice"] == payload["health"]["guidance"]
+
+
+def test_doctor_surfaces_git_signing_readiness_issues(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    empty_home = tmp_path / "empty-home"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(empty_home / ".config"))
+
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+    save_config(config_path(), cfg)
+
+    subprocess.run(
+        ["git", "-C", str(project_repo), "config", "gpg.format", "ssh"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(project_repo), "config", "gpg.ssh.program", "missing-ssh-signer"],
+        capture_output=True,
+        check=True,
+    )
+
+    payload = run_doctor(project_dir)
+
+    assert payload["git_signing"]["require_signed_commits"] is True
+    readiness = payload["git_signing_readiness"]
+    assert readiness["format"] == "ssh"
+    assert readiness["ready"] is False
+    assert any("user.signingkey" in issue for issue in readiness["issues"])
+    assert any("missing-ssh-signer" in issue for issue in readiness["issues"])
+
+
+def test_doctor_surfaces_identity_issues_when_signing_is_enabled(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    empty_home = tmp_path / "empty-home-sign"
+    empty_home.mkdir()
+    monkeypatch.setenv("HOME", str(empty_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(empty_home / ".config"))
+
+    cfg = default_config()
+    cfg.git.sign_commits = True
+    save_config(config_path(), cfg)
+
+    payload = run_doctor(project_dir)
+
+    readiness = payload["git_signing_readiness"]
+    assert readiness["ready"] is False
+    assert any("user.name" in issue for issue in readiness["issues"])
+    assert any("user.email" in issue for issue in readiness["issues"])

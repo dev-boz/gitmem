@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -92,6 +93,54 @@ class GitCommitError(RuntimeError):
         self.result = result
 
 
+@dataclass(slots=True, frozen=True)
+class GitSignatureStatus:
+    commit: str
+    status: str
+
+
+@dataclass(slots=True, frozen=True)
+class GitSignedHistoryCheck:
+    ok: bool
+    skipped: bool = False
+    base_ref: str | None = None
+    head_ref: str = "HEAD"
+    commits: tuple[GitSignatureStatus, ...] = ()
+    invalid_commits: tuple[GitSignatureStatus, ...] = ()
+    error: str | None = None
+
+
+class GitSignedHistoryError(RuntimeError):
+    def __init__(self, message: str, check: GitSignedHistoryCheck) -> None:
+        super().__init__(message)
+        self.check = check
+
+
+@dataclass(slots=True, frozen=True)
+class GitSigningReadiness:
+    format: str
+    signing_key: str | None
+    signer_program: str
+    signer_program_configured: str | None
+    signer_available: bool
+    user_name: str | None
+    user_email: str | None
+    ready: bool
+    issues: tuple[str, ...] = ()
+
+
+@dataclass(slots=True, frozen=True)
+class GitLocalBranch:
+    name: str
+    head: str
+    last_commit_ts: str | None
+    current: bool
+    upstream: str | None = None
+
+
+_SIGNATURE_PRESENT_STATUSES = frozenset({"G", "U", "X", "Y", "E"})
+
+
 def _run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -124,6 +173,64 @@ def git_signing_payload(config: UMXConfig | None = None) -> dict[str, bool]:
         "sign_commits": bool(resolved.git.sign_commits),
         "require_signed_commits": require_signed_commits,
     }
+
+
+def _git_config_value(repo_dir: Path, key: str) -> str | None:
+    result = _run_git(repo_dir, "config", "--get", key)
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _git_signer_program(format_name: str, configured: str | None) -> str:
+    if configured:
+        return configured
+    if format_name == "ssh":
+        return "ssh-keygen"
+    if format_name == "x509":
+        return "gpgsm"
+    return "gpg"
+
+
+def git_signing_readiness(repo_dir: Path, config: UMXConfig | None = None) -> GitSigningReadiness:
+    resolved = config
+    if resolved is None:
+        resolved = load_config(config_path())
+    sign_commits, require_signed_commits = _resolve_commit_signing(resolved)
+    format_name = (_git_config_value(repo_dir, "gpg.format") or "openpgp").strip().lower()
+    program_key = {
+        "ssh": "gpg.ssh.program",
+        "x509": "gpg.x509.program",
+    }.get(format_name, "gpg.program")
+    configured_program = _git_config_value(repo_dir, program_key)
+    signer_program = _git_signer_program(format_name, configured_program)
+    signing_key = _git_config_value(repo_dir, "user.signingkey")
+    user_name = _git_config_value(repo_dir, "user.name")
+    user_email = _git_config_value(repo_dir, "user.email")
+    issues: list[str] = []
+    if sign_commits and not signing_key:
+        issues.append("missing git user.signingkey; run `git config user.signingkey <key>`")
+    if sign_commits and shutil.which(signer_program) is None:
+        issues.append(
+            f"missing signer binary `{signer_program}` for git signing format `{format_name}`; "
+            f"install it or set `git config {program_key} <path>`"
+        )
+    if sign_commits and not user_name:
+        issues.append("missing git user.name; run `git config user.name \"Your Name\"`")
+    if sign_commits and not user_email:
+        issues.append("missing git user.email; run `git config user.email \"you@example.com\"`")
+    return GitSigningReadiness(
+        format=format_name,
+        signing_key=signing_key,
+        signer_program=signer_program,
+        signer_program_configured=configured_program,
+        signer_available=shutil.which(signer_program) is not None,
+        user_name=user_name,
+        user_email=user_email,
+        ready=not issues,
+        issues=tuple(issues),
+    )
 
 
 def git_commit_failure_message(
@@ -299,9 +406,14 @@ def git_fetch(repo_dir: Path) -> bool:
     return result.returncode == 0
 
 
-def git_pull_rebase(repo_dir: Path) -> bool:
+def git_pull_rebase(repo_dir: Path, *, config: UMXConfig | None = None) -> bool:
     """Pull with rebase from remote."""
-    result = _run_git(repo_dir, "pull", "--rebase", "origin")
+    sign_commits, _ = _resolve_commit_signing(config)
+    args: list[str] = []
+    if sign_commits:
+        args.extend(["-c", "rebase.gpgSign=true"])
+    args.extend(["pull", "--rebase", "origin"])
+    result = _run_git(repo_dir, *args)
     return result.returncode == 0
 
 
@@ -343,6 +455,40 @@ def git_current_branch(repo_dir: Path) -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip() or None
+
+
+def list_local_branches(repo_dir: Path) -> tuple[GitLocalBranch, ...]:
+    """Return local branch metadata for ``repo_dir``."""
+    result = _run_git(
+        repo_dir,
+        "for-each-ref",
+        "--format=%(refname:short)\t%(objectname)\t%(committerdate:iso8601-strict)\t%(HEAD)\t%(upstream:short)",
+        "refs/heads",
+    )
+    if result.returncode != 0:
+        return ()
+    branches: list[GitLocalBranch] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 5:
+            parts.extend([""] * (5 - len(parts)))
+        name, head, stamp, head_marker, upstream = parts[:5]
+        name = name.strip()
+        head = head.strip()
+        if not name or not head:
+            continue
+        branches.append(
+            GitLocalBranch(
+                name=name,
+                head=head,
+                last_commit_ts=stamp.strip() or None,
+                current=head_marker.strip() == "*",
+                upstream=upstream.strip() or None,
+            )
+        )
+    return tuple(branches)
 
 
 def git_ref_exists(repo_dir: Path, ref: str) -> bool:
@@ -463,6 +609,88 @@ def git_log_oneline(repo_dir: Path, count: int = 10) -> str:
     """Get recent commits one-line."""
     result = _run_git(repo_dir, "log", "--oneline", f"-{count}")
     return result.stdout
+
+
+def git_commit_signature_statuses(
+    repo_dir: Path,
+    rev_range: str,
+) -> tuple[GitSignatureStatus, ...]:
+    result = _run_git(repo_dir, "log", "--format=%H %G?", rev_range)
+    if result.returncode != 0:
+        raise RuntimeError(f"failed to inspect commit signatures for {rev_range}")
+    statuses: list[GitSignatureStatus] = []
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(maxsplit=1)
+        commit = parts[0]
+        status = parts[1].strip() if len(parts) > 1 else ""
+        statuses.append(GitSignatureStatus(commit=commit, status=status))
+    return tuple(statuses)
+
+
+def inspect_signed_commit_range(
+    repo_dir: Path,
+    *,
+    base_ref: str | None,
+    head_ref: str = "HEAD",
+) -> GitSignedHistoryCheck:
+    if base_ref is None or not git_ref_exists(repo_dir, base_ref):
+        rev_range = head_ref
+    else:
+        rev_range = f"{base_ref}..{head_ref}"
+    try:
+        commits = git_commit_signature_statuses(repo_dir, rev_range)
+    except RuntimeError as exc:
+        return GitSignedHistoryCheck(
+            ok=False,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            error=str(exc),
+        )
+    invalid_commits = tuple(
+        commit for commit in commits if commit.status not in _SIGNATURE_PRESENT_STATUSES
+    )
+    return GitSignedHistoryCheck(
+        ok=len(invalid_commits) == 0,
+        base_ref=base_ref,
+        head_ref=head_ref,
+        commits=commits,
+        invalid_commits=invalid_commits,
+    )
+
+
+def assert_signed_commit_range(
+    repo_dir: Path,
+    *,
+    base_ref: str | None,
+    head_ref: str = "HEAD",
+    config: UMXConfig | None = None,
+    operation: str = "push",
+) -> GitSignedHistoryCheck:
+    _, require_signed_commits = _resolve_commit_signing(config)
+    if not require_signed_commits:
+        return GitSignedHistoryCheck(
+            ok=True,
+            skipped=True,
+            base_ref=base_ref,
+            head_ref=head_ref,
+        )
+    check = inspect_signed_commit_range(repo_dir, base_ref=base_ref, head_ref=head_ref)
+    if check.ok or check.skipped:
+        return check
+    if check.error:
+        raise GitSignedHistoryError(f"{operation} blocked: {check.error}", check)
+    range_label = head_ref if base_ref is None or not git_ref_exists(repo_dir, base_ref) else f"{base_ref}..{head_ref}"
+    details = ", ".join(
+        f"{commit.commit[:12]}:{commit.status or '?'}" for commit in check.invalid_commits
+    )
+    raise GitSignedHistoryError(
+        f"{operation} blocked: unsigned or invalid commit signatures in "
+        f"{range_label} ({details})",
+        check,
+    )
 
 
 def safety_sweep(repo_dir: Path) -> int:

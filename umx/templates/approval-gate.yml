@@ -1,0 +1,102 @@
+name: Governance Approval Gate
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - labeled
+      - unlabeled
+    branches:
+      - main
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: governance-approval-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  approval-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce governance approval gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GOVERNANCE_TRIGGER_LABELS: '["state: extraction", "type: consolidation", "type: deletion", "type: extraction", "type: gap-fill", "type: lint", "type: principle", "type: promotion", "type: supersession"]'
+          GOVERNANCE_BRANCH_PREFIXES: '["dream/", "proposal/"]'
+          GOVERNED_FACT_FILES: '["MEMORY.md", "meta/tombstones.jsonl"]'
+          GOVERNED_FACT_PREFIXES: '["facts/", "episodic/", "principles/"]'
+          PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          labels = set(json.loads(os.environ["PR_LABELS_JSON"]))
+          trigger_labels = set(json.loads(os.environ["GOVERNANCE_TRIGGER_LABELS"]))
+          branch_prefixes = tuple(json.loads(os.environ["GOVERNANCE_BRANCH_PREFIXES"]))
+          governed_files = set(json.loads(os.environ["GOVERNED_FACT_FILES"]))
+          governed_prefixes = tuple(json.loads(os.environ["GOVERNED_FACT_PREFIXES"]))
+          head_ref = os.environ.get("PR_HEAD_REF", "")
+          api_url = os.environ["GITHUB_API_URL"].rstrip("/")
+          repo = os.environ["GITHUB_REPOSITORY"]
+          pr_number = os.environ["PR_NUMBER"]
+          token = os.environ["GH_TOKEN"]
+          changed_files = []
+          page = 1
+          while True:
+              request = urllib.request.Request(
+                  f"{api_url}/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.loads(response.read().decode("utf-8") or "[]")
+              if not isinstance(payload, list):
+                  raise SystemExit("unexpected PR files payload from GitHub API")
+              if not payload:
+                  break
+              for item in payload:
+                  if not isinstance(item, dict):
+                      raise SystemExit("malformed PR files payload from GitHub API")
+                  filename = item.get("filename")
+                  if not isinstance(filename, str) or not filename:
+                      raise SystemExit("malformed PR files payload from GitHub API")
+                  changed_files.append(filename)
+                  if item.get("status") == "renamed":
+                      previous = item.get("previous_filename")
+                      if not isinstance(previous, str) or not previous:
+                          raise SystemExit("malformed PR files payload from GitHub API")
+                      changed_files.append(previous)
+              if len(payload) < 100:
+                  break
+              page += 1
+          governed_paths = [
+              path
+              for path in changed_files
+              if path in governed_files or path.startswith(governed_prefixes)
+          ]
+          is_governance = (
+              head_ref.startswith(branch_prefixes)
+              or bool(labels & trigger_labels)
+              or bool(governed_paths)
+          )
+          if not is_governance:
+              print("non-governance PR; approval gate skipped")
+              raise SystemExit(0)
+          required = "state: approved"
+          if required not in labels:
+              print(f"governance PR missing required label: {required}")
+              raise SystemExit(1)
+          print("governance approval gate satisfied")
+          PY

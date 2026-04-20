@@ -22,7 +22,7 @@
     }
   ],
   "forbidden_substrings": [
-    "sk-ABCDEFGHIJKLMNOPQRSTUV",
+    "__OPENAI_KEY_SHORT__",
     "Let me check the logs"
   ]
 }

@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from umx.aip import main as aip_main, mem_main
 from umx.cli import main
+from umx.config import default_config, save_config
 from umx.dream.gates import read_dream_state
 from umx.git_ops import GitCommitResult
 from umx.memory import add_fact
@@ -18,6 +19,7 @@ from umx.models import (
     SourceType,
     Verification,
 )
+from umx.scope import config_path
 from umx.sessions import read_session, session_path, write_session
 
 
@@ -44,7 +46,8 @@ def test_cli_init_actions_writes_templates(tmp_path: Path) -> None:
     result = runner.invoke(main, ["init-actions", "--dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert len(payload) == 2
+    assert len(payload) == 3
+    assert (tmp_path / ".github" / "workflows" / "approval-gate.yml").exists()
     assert (tmp_path / ".github" / "workflows" / "l1-dream.yml").exists()
     assert (tmp_path / ".github" / "workflows" / "l2-review.yml").exists()
 
@@ -90,6 +93,27 @@ def test_cli_rebuild_index_with_embeddings_writes_cache(
     payload = json.loads(cache_path.read_text())
     assert fact.fact_id in payload["facts"]
     assert payload["facts"][fact.fact_id]["embedding"] == [1.0, 0.0, 0.0]
+
+
+def test_cli_dream_force_lint_overrides_never_interval(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    cfg = default_config()
+    cfg.dream.lint_interval = "never"
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--force", "--force-lint"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["lint"] == {"ran": True, "reason": "forced"}
+    cache_payload = json.loads((project_repo / ".umx.json").read_text())
+    assert "last_lint" in cache_payload["dream"]
 
 
 def test_cli_collect_stdin_writes_session(project_dir: Path, project_repo: Path) -> None:

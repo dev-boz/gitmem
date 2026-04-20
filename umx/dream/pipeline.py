@@ -14,17 +14,21 @@ from umx.dream.consolidation import stabilize_facts
 from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
 from umx.dream.gates import DreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
-from umx.dream.lint import generate_lint_findings, write_lint_report
+from umx.dream.lint import generate_lint_findings, mark_lint_complete, should_run as should_run_lint, write_lint_report
 from umx.dream.notice import append_notice
+from umx.dream.pr_render import GovernancePRBodyError
 from umx.dream.processing import (
     active_processing_runs,
+    append_processing_event,
     complete_processing_run,
     fail_processing_run,
     processing_log_path,
     start_processing_run,
 )
-from umx.dream.providers import run_l2_review_with_providers
+from umx.dream.providers import ProviderUnavailableError, run_l2_review_with_providers
 from umx.git_ops import (
+    GitSignedHistoryError,
+    assert_signed_commit_range,
     changed_paths,
     diff_committed_paths_against_ref,
     diff_paths_against_ref,
@@ -42,13 +46,21 @@ from umx.git_ops import (
     git_restore_path,
 )
 from umx.governance import (
+    APPROVAL_REQUIRED_LABELS,
+    approval_gate_missing_labels,
+    approval_override_audit_note,
+    GOVERNANCE_MANAGED_LABELS,
     LABEL_HUMAN_REVIEW,
+    LABEL_STATE_APPROVED,
+    LABEL_STATE_REVIEWED,
     LABEL_TYPE_DELETION,
     PRProposal,
     REVIEW_ACTION_APPROVE,
     REVIEW_ACTION_ESCALATE,
     REVIEW_ACTION_REJECT,
+    assert_governance_pr_body,
     classify_pr_labels,
+    desired_governance_labels,
     filter_non_operational_sync_paths,
     generate_l1_pr,
     generate_l2_review,
@@ -78,9 +90,14 @@ from umx.scope import (
     project_memory_dir,
 )
 from umx.search import injected_without_reference_sessions, rebuild_index, usage_snapshot
+from umx.search_semantic import embeddings_available, ensure_embeddings
 from umx.strength import apply_corroboration, independent_corroboration, should_prune
 from umx.tasks import auto_abandon_tasks
 from umx.tombstones import is_suppressed, load_tombstones
+
+
+def _default_lint_status() -> dict[str, object]:
+    return {"ran": False, "reason": "not-started"}
 
 
 @dataclass(slots=True)
@@ -91,6 +108,7 @@ class DreamResult:
     findings: list[dict[str, str]] = field(default_factory=list)
     message: str | None = None
     pr_proposal: PRProposal | None = None
+    lint: dict[str, object] = field(default_factory=_default_lint_status)
 
 
 class DreamPipeline:
@@ -229,14 +247,12 @@ class DreamPipeline:
         return current
 
     def lint(self, facts: list[Fact]) -> list[dict[str, str]]:
-        findings = generate_lint_findings(
+        return generate_lint_findings(
             facts,
             conventions=self.conventions,
             repo_dir=self.repo_dir,
             project_root=self.project_root,
         )
-        write_lint_report(self.repo_dir, findings)
-        return findings
 
     def schema_lock_in_findings(self, candidates: list[Fact]) -> list[dict[str, str]]:
         if not self.conventions.topics or len(candidates) < 5:
@@ -308,9 +324,17 @@ class DreamPipeline:
             active.append(fact)
         stabilized = stabilize_facts(active, self.new_fact_ids, now)
         save_repository_facts(self.repo_dir, stabilized, auto_commit=False)
+        active_facts = [fact for fact in stabilized if fact.superseded_by is None]
+        if self.config.search.backend == "hybrid" and active_facts:
+            if not embeddings_available():
+                logger.warning(
+                    "hybrid search requested but sentence-transformers is unavailable; "
+                    "embedding prewarm skipped"
+                )
+            ensure_embeddings(self.repo_dir, active_facts, config=self.config, force=False)
         write_memory_md(
             self.repo_dir,
-            [fact for fact in stabilized if fact.superseded_by is None],
+            active_facts,
             last_dream=now.isoformat().replace("+00:00", "Z"),
             session_count=int(read_dream_state(self.repo_dir).get("session_count", 0)),
             dream_provider=getattr(self, "_dream_provider", None),
@@ -379,7 +403,29 @@ class DreamPipeline:
     def _push_and_open_pr(self, pr_proposal: PRProposal) -> int | None:
         """Push branch and open a PR on GitHub. Returns PR number or None."""
         self._push_block_reason = None
-        repo_ref = self._github_repo_ref()
+        from umx.github_ops import (
+            GitHubError,
+            GitHubRemoteIdentityError,
+            assert_no_open_governance_pr_overlap,
+            assert_expected_github_origin,
+            create_pr,
+            gh_available,
+            is_github_repo_url,
+            push_branch,
+        )
+        from umx.governance import GovernancePRConflictError
+
+        try:
+            repo_ref = assert_expected_github_origin(
+                self.repo_dir,
+                config_org=self.config.org,
+                repo_label="project memory repo",
+                operation="PR push",
+            )
+        except GitHubRemoteIdentityError as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
+            return None
         repo_owner = repo_ref.owner or self.config.org
         if not repo_owner:
             logger.warning("no org configured; skipping PR creation")
@@ -398,24 +444,70 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
-        from umx.github_ops import gh_available, push_branch, create_pr
-        if not gh_available():
-            logger.warning("gh CLI not available; skipping PR creation")
+        try:
+            assert_signed_commit_range(
+                self.repo_dir,
+                base_ref="origin/main",
+                head_ref=pr_proposal.branch,
+                config=self.config,
+                operation="PR push",
+            )
+        except GitSignedHistoryError as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
             return None
+        try:
+            if not gh_available():
+                logger.warning("gh CLI not available; skipping PR creation")
+                return None
+        except GitHubError as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
+            return None
+        if is_github_repo_url(repo_ref.url):
+            try:
+                assert_no_open_governance_pr_overlap(
+                    repo_owner,
+                    repo_ref.name,
+                    branch=pr_proposal.branch,
+                    body=pr_proposal.body,
+                    labels=pr_proposal.labels,
+                )
+            except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
+                self._push_block_reason = str(exc)
+                logger.warning("%s", exc)
+                return None
         if not push_branch(self.repo_dir, pr_proposal.branch):
             logger.warning("failed to push branch %s", pr_proposal.branch)
             return None
-        return create_pr(
-            repo_owner,
-            repo_ref.name,
-            pr_proposal.branch,
-            pr_proposal.title,
-            pr_proposal.body,
-            labels=pr_proposal.labels,
-        )
+        try:
+            return create_pr(
+                repo_owner,
+                repo_ref.name,
+                pr_proposal.branch,
+                pr_proposal.title,
+                pr_proposal.body,
+                labels=pr_proposal.labels,
+            )
+        except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
+            return None
 
     def _push_paths_to_main(self, paths: list[Path], message: str) -> bool:
+        from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
+
         if git_current_branch(self.repo_dir) != "main":
+            return False
+        try:
+            assert_expected_github_origin(
+                self.repo_dir,
+                config_org=self.config.org,
+                repo_label="project memory repo",
+                operation="main-branch sync",
+            )
+        except GitHubRemoteIdentityError as exc:
+            logger.error("%s", exc)
             return False
         unique_paths: list[Path] = []
         seen: set[str] = set()
@@ -457,6 +549,17 @@ class DreamPipeline:
                 include_bridge=True,
             )
         except PushSafetyError as exc:
+            logger.error("%s", exc)
+            return False
+        try:
+            assert_signed_commit_range(
+                self.repo_dir,
+                base_ref="origin/main",
+                head_ref="HEAD",
+                config=self.config,
+                operation="main-branch sync",
+            )
+        except GitSignedHistoryError as exc:
             logger.error("%s", exc)
             return False
         return git_push(self.repo_dir, branch="main")
@@ -548,6 +651,8 @@ class DreamPipeline:
         self,
         pr_number: int,
         *,
+        force_merge: bool = False,
+        force_reason: str | None = None,
         expected_head_sha: str | None = None,
     ) -> dict[str, object]:
         if self.config.dream.mode not in ("remote", "hybrid"):
@@ -557,6 +662,15 @@ class DreamPipeline:
         repo_org = repo_ref.owner or self.config.org
         if not repo_org:
             raise RuntimeError("L2 review requires config.org or a GitHub origin remote")
+        from umx.github_ops import read_pr_body
+
+        pr_body = read_pr_body(repo_org, repo_name, pr_number)
+        if pr_body is None:
+            raise RuntimeError(f"failed to read PR body for PR #{pr_number}")
+        try:
+            assert_governance_pr_body(pr_body, allow_legacy=True)
+        except GovernancePRBodyError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         schema_error = self._schema_preflight_result()
         if schema_error is not None:
@@ -584,30 +698,88 @@ class DreamPipeline:
         files_changed = [path.relative_to(self.repo_dir).as_posix() for path in changed_paths]
         destructive_change = False
 
+        def _review_label_transition(
+            current_labels: list[str],
+            *,
+            managed_labels: list[str],
+            human_review: bool,
+            preserve_approved: bool,
+        ) -> list[str]:
+            lifecycle_label = (
+                LABEL_STATE_APPROVED
+                if preserve_approved and LABEL_STATE_APPROVED in current_labels
+                else LABEL_STATE_REVIEWED
+            )
+            desired_human_review = False if lifecycle_label == LABEL_STATE_APPROVED else human_review
+            unmanaged = [
+                label
+                for label in current_labels
+                if label not in GOVERNANCE_MANAGED_LABELS
+            ]
+            return desired_governance_labels(
+                [*unmanaged, *managed_labels],
+                lifecycle_label=lifecycle_label,
+                human_review=desired_human_review,
+            )
+
         def _escalate_human_review(reason: str) -> dict[str, object]:
-            from umx.github_ops import add_pr_labels, comment_pr
+            from umx.github_ops import comment_pr, read_pr_labels, reconcile_pr_labels
 
             audit_note = review_audit_note(REVIEW_ACTION_ESCALATE, pr_number, reason)
-            labels_ok = add_pr_labels(
+            current_labels = read_pr_labels(repo_org, repo_name, pr_number)
+            if current_labels is None:
+                return {
+                    "status": "error",
+                    "action": REVIEW_ACTION_ESCALATE,
+                    "reason": f"failed to read current labels for PR #{pr_number}",
+                    "audit_note": audit_note,
+                    "pr_number": pr_number,
+                    "files_changed": files_changed,
+                    "labels": [],
+                    "violations": [],
+                }
+            desired_labels = _review_label_transition(
+                current_labels,
+                managed_labels=current_labels,
+                human_review=True,
+                preserve_approved=False,
+            )
+            labels_ok = reconcile_pr_labels(
                 repo_org,
                 repo_name,
                 pr_number,
-                [LABEL_HUMAN_REVIEW],
+                desired_labels,
             )
+            if not labels_ok:
+                return {
+                    "status": "error",
+                    "action": REVIEW_ACTION_ESCALATE,
+                    "reason": f"failed to reconcile review labels for PR #{pr_number}",
+                    "audit_note": audit_note,
+                    "pr_number": pr_number,
+                    "files_changed": files_changed,
+                    "labels": list(current_labels),
+                    "violations": [],
+                }
             comment_ok = comment_pr(
                 repo_org,
                 repo_name,
                 pr_number,
                 audit_note,
             )
+            payload_labels = desired_labels
+            status = "ok" if comment_ok else "error"
+            failure_reason = reason
+            if not comment_ok:
+                failure_reason = f"failed to persist review comment for PR #{pr_number}"
             return {
-                "status": "ok" if labels_ok and comment_ok else "error",
+                "status": status,
                 "action": REVIEW_ACTION_ESCALATE,
-                "reason": reason,
+                "reason": failure_reason,
                 "audit_note": audit_note,
                 "pr_number": pr_number,
                 "files_changed": files_changed,
-                "labels": [LABEL_HUMAN_REVIEW],
+                "labels": payload_labels,
                 "violations": [],
             }
 
@@ -677,46 +849,148 @@ class DreamPipeline:
             labels = sorted({*labels, LABEL_TYPE_DELETION})
         proposal = PRProposal(
             title=f"[dream/l2] Review PR #{pr_number}",
-            body="",
+            body=pr_body,
             branch=git_current_branch(self.repo_dir) or "",
             labels=labels,
             files_changed=files_changed,
         )
-        decision = run_l2_review_with_providers(
-            proposal,
-            self.conventions,
-            existing_facts,
-            review_new_facts,
-            self.config,
-            fallback_reviewer=lambda pr, conventions, existing_facts, new_facts: generate_l2_review(
-                pr,
-                conventions,
+        try:
+            decision = run_l2_review_with_providers(
+                proposal,
+                self.conventions,
                 existing_facts,
-                new_facts=new_facts,
-            ),
-        )
+                review_new_facts,
+                self.config,
+                fallback_reviewer=lambda pr, conventions, existing_facts, new_facts: generate_l2_review(
+                    pr,
+                    conventions,
+                    existing_facts,
+                    new_facts=new_facts,
+                ),
+            )
+        except ProviderUnavailableError as exc:
+            raise RuntimeError(str(exc)) from exc
 
-        from umx.github_ops import add_pr_labels, close_pr, comment_pr, merge_pr
+        from umx.github_ops import close_pr, comment_pr, merge_pr, read_pr_labels, reconcile_pr_labels
 
         action = str(decision.action)
         reason = str(decision.reason)
         reviewed_by = decision.reviewed_by
         audit_note = review_audit_note(action, pr_number, reason)
+        review_comment = decision.comment_body
+        review_model = decision.model
+        review_usage = dict(decision.usage) if decision.usage else None
+        fact_notes = [dict(item) for item in decision.fact_notes]
+        review_prompt_id = decision.prompt_id
+        review_prompt_version = decision.prompt_version
+        payload_labels = list(proposal.labels)
+        merge_blocked = False
+        merge_override_used = False
+        merge_override_reason = None
+        merge_required_labels = sorted(APPROVAL_REQUIRED_LABELS)
+
+        def _review_payload(
+            status_value: str,
+            reason_value: str,
+            labels_value: list[str],
+            *,
+            merge_blocked_value: bool | None = None,
+            merge_override_used_value: bool | None = None,
+            merge_override_reason_value: str | None = None,
+        ) -> dict[str, object]:
+            payload = {
+                "status": status_value,
+                "action": action,
+                "reason": reason_value,
+                "audit_note": audit_note,
+                "reviewed_by": reviewed_by,
+                "pr_number": pr_number,
+                "files_changed": proposal.files_changed,
+                "labels": labels_value,
+                "violations": list(decision.violations),
+                "model_backed": decision.model_backed,
+                "review_model": review_model,
+                "review_usage": review_usage,
+                "review_prompt_id": review_prompt_id,
+                "review_prompt_version": review_prompt_version,
+                "fact_notes": fact_notes,
+                "merge_blocked": merge_blocked if merge_blocked_value is None else merge_blocked_value,
+                "merge_override_used": (
+                    merge_override_used
+                    if merge_override_used_value is None
+                    else merge_override_used_value
+                ),
+                "merge_override_reason": (
+                    merge_override_reason
+                    if merge_override_reason_value is None
+                    else merge_override_reason_value
+                ),
+                "merge_required_labels": merge_required_labels,
+            }
+            if decision.model_backed:
+                append_processing_event(
+                    self.repo_dir,
+                    {
+                        "tier": "l2",
+                        "event": "review_completed",
+                        "status": status_value,
+                        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                        "pr_number": pr_number,
+                        "action": action,
+                        "reviewed_by": reviewed_by,
+                        "review_model": review_model,
+                        "review_usage": review_usage,
+                        "review_prompt_id": review_prompt_id,
+                        "review_prompt_version": review_prompt_version,
+                        "fact_notes": fact_notes,
+                        "merge_blocked": merge_blocked if merge_blocked_value is None else merge_blocked_value,
+                        "merge_override_used": (
+                            merge_override_used
+                            if merge_override_used_value is None
+                            else merge_override_used_value
+                        ),
+                        "merge_override_reason": (
+                            merge_override_reason
+                            if merge_override_reason_value is None
+                            else merge_override_reason_value
+                        ),
+                        "merge_required_labels": merge_required_labels,
+                    },
+                )
+            return payload
+
+        def _review_label_state(
+            *,
+            human_review: bool,
+            preserve_approved: bool,
+        ) -> tuple[list[str], list[str]] | None:
+            current_labels = read_pr_labels(repo_org, repo_name, pr_number)
+            if current_labels is None:
+                return None
+            desired = _review_label_transition(
+                current_labels,
+                managed_labels=labels,
+                human_review=human_review,
+                preserve_approved=preserve_approved,
+            )
+            return list(current_labels), desired
 
         if action == REVIEW_ACTION_APPROVE:
+            label_state = _review_label_state(human_review=False, preserve_approved=True)
+            if label_state is None:
+                return _review_payload(
+                    "error",
+                    f"failed to read current labels for PR #{pr_number}",
+                    [],
+                )
+            current_labels, final_labels = label_state
             current_branch = git_current_branch(self.repo_dir)
             if not current_branch or current_branch == "HEAD":
-                return {
-                    "status": "error",
-                    "action": action,
-                    "reason": "cannot push review provenance from detached HEAD",
-                    "audit_note": audit_note,
-                    "pr_number": pr_number,
-                    "files_changed": files_changed,
-                    "labels": labels,
-                    "violations": [],
-                    "reviewed_by": reviewed_by,
-                }
+                return _review_payload(
+                    "error",
+                    "cannot push review provenance from detached HEAD",
+                    current_labels,
+                )
             stamped = self._stamp_review_provenance(
                 new_facts,
                 reviewed_by=reviewed_by,
@@ -727,65 +1001,148 @@ class DreamPipeline:
                 match_head_commit = git_ref_sha(self.repo_dir, "HEAD")
             if stamped:
                 if not git_push(self.repo_dir, branch=current_branch):
-                    return {
-                        "status": "error",
-                        "action": action,
-                        "reason": f"failed to push review provenance on {current_branch}",
-                        "audit_note": audit_note,
-                        "pr_number": pr_number,
-                        "files_changed": files_changed,
-                        "labels": labels,
-                        "violations": [],
-                        "reviewed_by": reviewed_by,
-                    }
-            ok = merge_pr(
+                    return _review_payload(
+                        "error",
+                        f"failed to push review provenance on {current_branch}",
+                        current_labels,
+                    )
+            reconcile_label_state = _review_label_state(human_review=False, preserve_approved=True)
+            if reconcile_label_state is None:
+                return _review_payload(
+                    "error",
+                    f"failed to read current labels for PR #{pr_number}",
+                    current_labels,
+                )
+            current_labels, final_labels = reconcile_label_state
+            labels_ok = reconcile_pr_labels(
                 repo_org,
                 repo_name,
                 pr_number,
-                match_head_commit=match_head_commit,
+                final_labels,
+                current_labels=current_labels,
             )
-            status = "ok" if ok else "error"
-            if not ok:
-                reason = f"failed to merge PR #{pr_number}"
+            if not labels_ok:
+                return _review_payload(
+                    "error",
+                    f"failed to reconcile review labels for PR #{pr_number}",
+                    current_labels,
+                )
+            payload_labels = list(final_labels)
+            if review_comment and not comment_pr(repo_org, repo_name, pr_number, review_comment):
+                return _review_payload(
+                    "error",
+                    f"failed to persist review comment for PR #{pr_number}",
+                    payload_labels,
+                )
+            live_labels = read_pr_labels(repo_org, repo_name, pr_number)
+            if live_labels is None:
+                return _review_payload(
+                    "error",
+                    f"failed to read current labels for PR #{pr_number}",
+                    [],
+                )
+            payload_labels = _review_label_transition(
+                live_labels,
+                managed_labels=labels,
+                human_review=False,
+                preserve_approved=True,
+            )
+            missing_approval_labels = approval_gate_missing_labels(live_labels)
+            if missing_approval_labels and not force_merge:
+                merge_blocked = True
+                status = "blocked"
+                reason = f"awaiting approval label before merge: {', '.join(missing_approval_labels)}"
+            else:
+                if missing_approval_labels:
+                    if not force_reason:
+                        return _review_payload(
+                            "error",
+                            "approval-gated merge override requires --force-reason",
+                            payload_labels,
+                            merge_blocked_value=True,
+                            merge_override_used_value=False,
+                            merge_override_reason_value=force_reason,
+                        )
+                    override_note = approval_override_audit_note(pr_number, force_reason)
+                    if not comment_pr(repo_org, repo_name, pr_number, override_note):
+                        return _review_payload(
+                            "error",
+                            f"failed to persist approval override audit for PR #{pr_number}",
+                            payload_labels,
+                            merge_blocked_value=True,
+                            merge_override_used_value=False,
+                            merge_override_reason_value=None,
+                        )
+                    append_processing_event(
+                        self.repo_dir,
+                        {
+                            "tier": "l2",
+                            "event": "approval_override_used",
+                            "status": "ok",
+                            "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
+                            "pr_number": pr_number,
+                            "reason": force_reason,
+                        },
+                    )
+                    merge_override_used = True
+                    merge_override_reason = force_reason
+                ok = merge_pr(
+                    repo_org,
+                    repo_name,
+                    pr_number,
+                    admin=merge_override_used,
+                    match_head_commit=match_head_commit,
+                )
+                status = "ok" if ok else "error"
+                if not ok:
+                    reason = f"failed to merge PR #{pr_number}"
         elif action == REVIEW_ACTION_REJECT:
             ok = close_pr(
                 repo_org,
                 repo_name,
                 pr_number,
-                comment=audit_note,
+                comment=review_comment or audit_note,
             )
             status = "ok" if ok else "error"
             if not ok:
                 reason = f"failed to close PR #{pr_number}"
         else:
-            labels_ok = add_pr_labels(
+            label_state = _review_label_state(human_review=True, preserve_approved=False)
+            if label_state is None:
+                return _review_payload(
+                    "error",
+                    f"failed to read current labels for PR #{pr_number}",
+                    [],
+                )
+            current_labels, final_labels = label_state
+            labels_ok = reconcile_pr_labels(
                 repo_org,
                 repo_name,
                 pr_number,
-                [LABEL_HUMAN_REVIEW],
+                final_labels,
             )
+            if not labels_ok:
+                return _review_payload(
+                    "error",
+                    f"failed to reconcile review labels for PR #{pr_number}",
+                    current_labels,
+                )
+            payload_labels = list(final_labels)
             comment_ok = comment_pr(
                 repo_org,
                 repo_name,
                 pr_number,
-                audit_note,
+                review_comment or audit_note,
             )
-            ok = labels_ok and comment_ok
-            status = "ok" if ok else "error"
-            if not ok:
-                reason = f"failed to update PR #{pr_number} for human review"
+            if not comment_ok:
+                return _review_payload(
+                    "error",
+                    f"failed to persist review comment for PR #{pr_number}",
+                    payload_labels,
+                )
+            status = "ok"
 
-        return {
-            "status": status,
-            "action": action,
-            "reason": reason,
-            "audit_note": audit_note,
-            "reviewed_by": reviewed_by,
-            "pr_number": pr_number,
-            "files_changed": proposal.files_changed,
-            "labels": proposal.labels,
-            "violations": list(decision.violations),
-        }
+        return _review_payload(status, reason, payload_labels)
 
     def _schema_preflight_result(self) -> DreamResult | None:
         ensure_repo_structure(self.repo_dir, ensure_schema=False)
@@ -802,7 +1159,7 @@ class DreamPipeline:
             message=f"{schema_state.message}; {fix_hint}",
         )
 
-    def run(self, force: bool = False) -> DreamResult:
+    def run(self, force: bool = False, force_lint: bool = False) -> DreamResult:
         schema_error = self._schema_preflight_result()
         if schema_error is not None:
             return schema_error
@@ -850,9 +1207,19 @@ class DreamPipeline:
             candidates = self.gather()
             lock.heartbeat()
             consolidated = self.consolidate(oriented, candidates)
-            findings = self.lint(consolidated)
-            findings.extend(self.schema_lock_in_findings(candidates))
-            write_lint_report(self.repo_dir, findings)
+            lint_ran, lint_reason = should_run_lint(
+                self.repo_dir,
+                interval=self.config.dream.lint_interval,
+                force=force_lint,
+                now=now,
+            )
+            lint_status: dict[str, object] = {"ran": lint_ran, "reason": lint_reason}
+            findings: list[dict[str, str]] = []
+            if lint_ran:
+                findings = self.lint(consolidated)
+                findings.extend(self.schema_lock_in_findings(candidates))
+                write_lint_report(self.repo_dir, findings)
+                mark_lint_complete(self.repo_dir, now)
             lock.heartbeat()
 
             provider_results = getattr(self, "_provider_results", [])
@@ -892,6 +1259,7 @@ class DreamPipeline:
                             findings=findings,
                             message=self._push_block_reason,
                             pr_proposal=pr_proposal,
+                            lint=lint_status,
                         )
                 if self._gathered_session_ids:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
@@ -913,6 +1281,7 @@ class DreamPipeline:
                     findings=findings,
                     message=msg,
                     pr_proposal=pr_proposal,
+                    lint=lint_status,
                 )
                 complete_processing_run(
                     self.repo_dir,
@@ -935,6 +1304,7 @@ class DreamPipeline:
                         findings=findings,
                         message="failed to publish dream processing completion",
                         pr_proposal=pr_proposal,
+                        lint=lint_status,
                     )
                 return result
 
@@ -965,6 +1335,7 @@ class DreamPipeline:
                             findings=findings,
                             message=self._push_block_reason,
                             pr_proposal=pr_proposal,
+                            lint=lint_status,
                         )
                 if self._gathered_session_ids:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
@@ -986,6 +1357,7 @@ class DreamPipeline:
                     findings=findings,
                     message=msg,
                     pr_proposal=pr_proposal,
+                    lint=lint_status,
                 )
                 complete_processing_run(
                     self.repo_dir,
@@ -1011,6 +1383,7 @@ class DreamPipeline:
                         findings=findings,
                         message="failed to sync sessions and processing",
                         pr_proposal=pr_proposal,
+                        lint=lint_status,
                     )
                 return result
 
@@ -1032,6 +1405,7 @@ class DreamPipeline:
                 pruned=pruned,
                 findings=findings,
                 message=msg,
+                lint=lint_status,
             )
             complete_processing_run(
                 self.repo_dir,

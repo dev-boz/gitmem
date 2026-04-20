@@ -26,7 +26,12 @@ from umx.governance import (
     is_governed_mode,
     session_sync_error,
 )
+from umx.governance_health import (
+    build_governance_health_payload,
+    render_governance_health_human,
+)
 from umx.search import advance_session_state
+from umx.redaction import RedactionError, validate_redaction_patterns
 from umx.scope import (
     config_path,
     discover_project_slug,
@@ -34,8 +39,11 @@ from umx.scope import (
     get_umx_home,
     init_local_umx,
     init_project_memory,
+    next_available_project_slug,
+    project_slug_in_use,
     project_memory_dir,
     user_memory_dir,
+    validate_project_slug,
 )
 from umx.viewer.server import start as start_viewer
 from umx.search import query_index, rebuild_index, search_sessions
@@ -48,6 +56,26 @@ from umx.status import build_status_payload
 
 def _cfg():
     return load_config(config_path())
+
+
+def _parse_redaction_patterns_value(value: str) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        patterns = [value]
+    else:
+        if isinstance(parsed, str):
+            patterns = [parsed]
+        elif isinstance(parsed, list):
+            patterns = parsed
+        else:
+            raise click.ClickException(
+                "redaction.patterns must be a regex string or a JSON array of regex strings"
+            )
+    try:
+        return validate_redaction_patterns(patterns)
+    except RedactionError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 _SESSION_SWEEP_SUBCOMMANDS = frozenset({"collect", "dream", "sync", "capture"})
@@ -88,7 +116,7 @@ def _bootstrap_remote_repo(
     project_root: Path | None = None,
     config=None,
 ) -> None:
-    from umx.git_ops import git_push
+    from umx.git_ops import GitSignedHistoryError, assert_signed_commit_range, git_push
 
     _commit_repo(repo, message, allow_governed=True)
     try:
@@ -102,8 +130,35 @@ def _bootstrap_remote_repo(
         )
     except PushSafetyError as exc:
         raise click.ClickException(str(exc)) from exc
+    try:
+        assert_signed_commit_range(
+            repo,
+            base_ref=None,
+            head_ref="HEAD",
+            config=config or _cfg(),
+            operation="remote bootstrap",
+        )
+    except GitSignedHistoryError as exc:
+        raise click.ClickException(str(exc)) from exc
     if not git_push(repo, branch="main", set_upstream=True):
         raise click.ClickException("push failed")
+
+
+def _emit_governance_protection_status(mode: str) -> None:
+    if mode != "remote":
+        return
+    from umx.github_ops import plan_governance_protection
+
+    plan = plan_governance_protection(mode)
+    required_checks = ", ".join(plan.required_status_checks) or "<none>"
+    status = "ready" if plan.eligible else "deferred"
+    click.echo(
+        "governance-protection: "
+        f"{status} (branch {plan.target_branch}; require PR={str(plan.require_pull_request).lower()}; "
+        f"status checks: {required_checks}; merge label: {plan.governance_merge_label})"
+    )
+    if plan.deferred_reason:
+        click.echo(f"governance-protection reason: {plan.deferred_reason}")
 
 
 @click.group()
@@ -151,21 +206,25 @@ def init_cmd(org: str | None, init_mode: str) -> None:
     save_config(config_path(), config)
 
     if init_mode in ("remote", "hybrid") and org:
-        from umx.github_ops import deploy_workflows, gh_available, ensure_repo, set_remote
+        from umx.github_ops import GitHubError, deploy_workflows, gh_available, ensure_repo, set_remote
 
-        if not gh_available():
-            click.echo("warning: gh CLI not available; skipping remote setup")
-        else:
-            url = ensure_repo(org, "umx-user", private=True)
-            set_remote(home / "user", url)
-            if init_mode == "remote":
-                deploy_workflows(home / "user")
-            _bootstrap_remote_repo(
-                home / "user",
-                "umx: bootstrap remote user memory",
-                config=config,
-            )
-            click.echo(f"remote: {url}")
+        try:
+            if not gh_available():
+                click.echo("warning: gh CLI not available; skipping remote setup")
+            else:
+                url = ensure_repo(org, "umx-user", private=True)
+                set_remote(home / "user", url)
+                if init_mode == "remote":
+                    deploy_workflows(home / "user")
+                _bootstrap_remote_repo(
+                    home / "user",
+                    "umx: bootstrap remote user memory",
+                    config=config,
+                )
+                _emit_governance_protection_status(init_mode)
+                click.echo(f"remote: {url}")
+        except GitHubError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     click.echo(str(home))
 
@@ -173,41 +232,69 @@ def init_cmd(org: str | None, init_mode: str) -> None:
 @main.command("init-project")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--slug", default=None)
-def init_project_cmd(cwd: Path, slug: str | None) -> None:
+@click.option("--yes", is_flag=True, default=False)
+def init_project_cmd(cwd: Path, slug: str | None, yes: bool) -> None:
     from umx.git_ops import GitCommitError
 
     root = find_project_root(cwd)
-    if slug:
-        (root / ".umx-project").write_text(f"{slug}\n")
+    project_slug = slug or discover_project_slug(root)
+    while True:
+        try:
+            project_slug = validate_project_slug(project_slug)
+        except ValueError as exc:
+            if slug is not None or yes:
+                raise click.ClickException(str(exc)) from exc
+            click.echo(str(exc))
+            project_slug = click.prompt("Enter project slug")
+            continue
+        if not project_slug_in_use(project_slug, root):
+            break
+        if slug:
+            raise click.ClickException(
+                f"project slug '{project_slug}' is already in use; choose a different --slug"
+            )
+        if yes:
+            project_slug = next_available_project_slug(project_slug, root)
+            break
+        click.echo(f"project slug '{project_slug}' is already in use")
+        project_slug = click.prompt(
+            "Enter project slug",
+            default=next_available_project_slug(project_slug, root),
+        )
     try:
-        repo = init_project_memory(root, write_marker=True)
+        repo = init_project_memory(root, write_marker=True, slug=project_slug)
     except GitCommitError as exc:
         raise click.ClickException(str(exc)) from exc
 
     cfg = _cfg()
     if cfg.dream.mode in ("remote", "hybrid") and cfg.org:
         from umx.github_ops import (
+            GitHubError,
             gh_available,
             ensure_repo,
             set_remote,
             deploy_workflows,
         )
 
-        if not gh_available():
-            click.echo("warning: gh CLI not available; skipping remote setup")
-        else:
-            project_slug = discover_project_slug(root)
-            url = ensure_repo(cfg.org, project_slug, private=True)
-            set_remote(repo, url)
-            if cfg.dream.mode == "remote":
-                deploy_workflows(repo)
-            _bootstrap_remote_repo(
-                repo,
-                "umx: bootstrap remote project memory",
-                project_root=root,
-                config=cfg,
-            )
-            click.echo(f"remote: {url}")
+        try:
+            if not gh_available():
+                click.echo("warning: gh CLI not available; skipping remote setup")
+            else:
+                project_slug = discover_project_slug(root)
+                url = ensure_repo(cfg.org, project_slug, private=True)
+                set_remote(repo, url)
+                if cfg.dream.mode == "remote":
+                    deploy_workflows(repo)
+                _bootstrap_remote_repo(
+                    repo,
+                    "umx: bootstrap remote project memory",
+                    project_root=root,
+                    config=cfg,
+                )
+                _emit_governance_protection_status(cfg.dream.mode)
+                click.echo(f"remote: {url}")
+        except GitHubError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     click.echo(str(repo))
 
@@ -353,6 +440,8 @@ def collect_cmd(
 @main.command("dream")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--force", is_flag=True, default=False)
+@click.option("--force-reason", default=None, help="Audit reason required when --force bypasses L2 approval gating")
+@click.option("--force-lint", is_flag=True, default=False)
 @click.option("--mode", type=click.Choice(["local", "remote", "hybrid"]), default=None)
 @click.option("--tier", type=click.Choice(["l1", "l2"]), default=None)
 @click.option(
@@ -362,32 +451,47 @@ def collect_cmd(
 def dream_cmd(
     cwd: Path,
     force: bool,
+    force_reason: str | None,
+    force_lint: bool,
     mode: str | None,
     tier: str | None,
     pr_number: int | None,
     head_sha: str | None,
 ) -> None:
     cfg = _cfg()
+    raw_force_reason = force_reason
+    force_reason = force_reason.strip() if force_reason is not None else None
     if mode:
         cfg.dream.mode = mode
     if tier == "l2" and pr_number is None:
         raise click.UsageError("--tier l2 requires --pr <number>")
     if head_sha and tier != "l2":
         raise click.UsageError("--head-sha requires --tier l2")
+    if raw_force_reason is not None and not force:
+        raise click.UsageError("--force-reason requires --force")
+    if force_reason and tier != "l2":
+        raise click.UsageError("--force-reason requires --tier l2")
+    if force and tier == "l2" and force_reason == "":
+        raise click.UsageError("--force-reason cannot be blank")
     if tier == "l2":
         assert pr_number is not None
         output = DreamPipeline(cwd, config=cfg).review_pr(
             pr_number,
             expected_head_sha=head_sha,
+            force_merge=force,
+            force_reason=force_reason,
         )
         click.echo(json.dumps(output, sort_keys=True))
+        if output.get("status") == "error":
+            raise click.exceptions.Exit(1)
         return
-    result = DreamPipeline(cwd, config=cfg).run(force=force)
+    result = DreamPipeline(cwd, config=cfg).run(force=force, force_lint=force_lint)
     output = {
         "status": result.status,
         "added": result.added,
         "pruned": result.pruned,
         "findings": result.findings,
+        "lint": result.lint,
         "message": result.message,
     }
     if result.pr_proposal:
@@ -457,7 +561,18 @@ def status_cmd(cwd: Path) -> None:
 
 @main.command("health")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-def health_cmd(cwd: Path) -> None:
+@click.option("--governance", is_flag=True, default=False)
+@click.option("--format", "output_format", type=click.Choice(["json", "human"]), default="json")
+def health_cmd(cwd: Path, governance: bool, output_format: str) -> None:
+    if not governance and output_format != "json":
+        raise click.UsageError("--format is only supported with --governance")
+    if governance:
+        payload = build_governance_health_payload(cwd, _cfg())
+        if output_format == "human":
+            click.echo(render_governance_health_human(payload))
+        else:
+            click.echo(json.dumps(payload, sort_keys=True))
+        return
     repo = project_memory_dir(cwd)
     metrics = compute_metrics(repo, _cfg())
     flags = health_flags(metrics)
@@ -497,16 +612,32 @@ def gaps_cmd(cwd: Path) -> None:
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--fact", "fact_id", default=None)
 @click.option("--topic", default=None)
-def forget_cmd(cwd: Path, fact_id: str | None, topic: str | None) -> None:
-    from umx.fact_actions import forget_fact_action, forget_topic_action
+@click.option("--governed", is_flag=True, default=False)
+def forget_cmd(
+    cwd: Path,
+    fact_id: str | None,
+    topic: str | None,
+    governed: bool,
+) -> None:
+    from umx.fact_actions import (
+        forget_fact_action,
+        forget_fact_governed_action,
+        forget_topic_action,
+    )
 
     if fact_id:
-        result = forget_fact_action(cwd, fact_id)
+        result = (
+            forget_fact_governed_action(cwd, fact_id)
+            if governed
+            else forget_fact_action(cwd, fact_id)
+        )
         if not result.ok and result.message:
             raise click.ClickException(result.message)
         click.echo(result.message)
         return
     if topic:
+        if governed:
+            raise click.ClickException("--governed currently supports --fact only")
         result = forget_topic_action(cwd, topic)
         if not result.ok:
             raise click.ClickException(result.message)
@@ -706,6 +837,8 @@ def sync_cmd(cwd: Path) -> None:
         return
 
     from umx.git_ops import (
+        GitSignedHistoryError,
+        assert_signed_commit_range,
         changed_paths,
         diff_committed_paths_against_ref,
         git_add_and_commit,
@@ -722,6 +855,17 @@ def sync_cmd(cwd: Path) -> None:
     if not remote:
         click.echo("no remote configured; run 'umx setup-remote' first")
         return
+    from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
+
+    try:
+        assert_expected_github_origin(
+            repo,
+            config_org=cfg.org,
+            repo_label="project memory repo",
+            operation="sync",
+        )
+    except GitHubRemoteIdentityError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     pending = changed_paths(repo)
     if is_governed_mode(mode):
@@ -755,7 +899,7 @@ def sync_cmd(cwd: Path) -> None:
         )
         if blocked_committed:
             raise click.ClickException(session_sync_error(mode, repo, blocked_committed))
-    if not git_pull_rebase(repo):
+    if not git_pull_rebase(repo, config=cfg):
         raise click.ClickException("pull --rebase failed")
     try:
         assert_push_safe(
@@ -767,6 +911,16 @@ def sync_cmd(cwd: Path) -> None:
             include_bridge=True,
         )
     except PushSafetyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    try:
+        assert_signed_commit_range(
+            repo,
+            base_ref="origin/main",
+            head_ref="HEAD",
+            config=cfg,
+            operation="sync",
+        )
+    except GitSignedHistoryError as exc:
         raise click.ClickException(str(exc)) from exc
     if not git_push(repo):
         raise click.ClickException("push failed")
@@ -786,33 +940,36 @@ def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
             "no org configured; run 'umx init --org <org> --mode remote' first"
         )
 
-    from umx.github_ops import gh_available, ensure_repo, set_remote, deploy_workflows
-
-    if not gh_available():
-        raise click.ClickException("gh CLI not available")
+    from umx.github_ops import GitHubError, gh_available, ensure_repo, set_remote, deploy_workflows
 
     root = find_project_root(cwd)
     repo = project_memory_dir(root)
     slug = discover_project_slug(root)
 
-    url = ensure_repo(cfg.org, slug, private=True)
-    set_remote(repo, url)
+    try:
+        if not gh_available():
+            raise click.ClickException("gh CLI not available")
+        url = ensure_repo(cfg.org, slug, private=True)
+        set_remote(repo, url)
 
-    if new_mode == "remote":
-        deploy_workflows(repo)
+        if new_mode == "remote":
+            deploy_workflows(repo)
 
-    cfg.dream.mode = new_mode
-    save_config(config_path(), cfg)
+        cfg.dream.mode = new_mode
+        save_config(config_path(), cfg)
 
-    _bootstrap_remote_repo(
-        repo,
-        "umx: bootstrap remote project memory",
-        project_root=root,
-        config=cfg,
-    )
+        _bootstrap_remote_repo(
+            repo,
+            "umx: bootstrap remote project memory",
+            project_root=root,
+            config=cfg,
+        )
+        _emit_governance_protection_status(new_mode)
 
-    click.echo(f"mode: {new_mode}")
-    click.echo(f"remote: {url}")
+        click.echo(f"mode: {new_mode}")
+        click.echo(f"remote: {url}")
+    except GitHubError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @main.command("purge")
@@ -896,6 +1053,55 @@ def migrate_scope_cmd(cwd: Path, old_path: str, new_path: str) -> None:
 @click.option("--fix", is_flag=True, default=False)
 def doctor_cmd(cwd: Path, fix: bool) -> None:
     click.echo(json.dumps(run_doctor(cwd, fix=fix), sort_keys=True))
+
+
+@main.group("eval")
+def eval_group() -> None:
+    """Evaluation tools."""
+
+
+@eval_group.command("l2-review")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "l2_reviewer",
+)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=0.85)
+def eval_l2_review_cmd(cases_path: Path, case_id: str | None, min_pass_rate: float) -> None:
+    from umx.dream.l2_eval import run_l2_review_eval
+
+    try:
+        payload = run_l2_review_eval(
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@main.group("config")
+def config_group() -> None:
+    """Config operations."""
+
+
+@config_group.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set_cmd(key: str, value: str) -> None:
+    cfg = _cfg()
+    if key == "redaction.patterns":
+        cfg.sessions.redaction_patterns = _parse_redaction_patterns_value(value)
+    else:
+        raise click.ClickException(f"unsupported config key: {key}")
+    save_config(config_path(), cfg)
+    click.echo(key)
 
 
 @main.group("shim")

@@ -76,6 +76,14 @@ def _display_path(path: Path | None, *roots: Path) -> str:
     return str(path)
 
 
+def _viewer_template(name: str) -> str:
+    return (Path(__file__).with_name("templates") / name).read_text(encoding="utf-8")
+
+
+def _render_quarantine_section(body: str) -> str:
+    return _viewer_template("quarantine.html").format(quarantine_body=body)
+
+
 def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "info") -> str:
     from umx.audit import audit_report
     from umx.calibration import build_calibration_advice
@@ -83,11 +91,12 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
     from umx.dream.gates import read_dream_state
     from umx.dream.processing import summarize_processing_log
     from umx.fact_actions import merge_conflicts_action
+    from umx.governance_health import build_governance_health_payload
     from umx.metrics import compute_metrics, health_flags
     from umx.memory import load_all_facts
     from umx.scope import config_path, project_memory_dir, user_memory_dir
     from umx.search import session_replay
-    from umx.sessions import iter_session_payloads
+    from umx.sessions import iter_session_payloads, list_quarantined_sessions
     from umx.tombstones import load_tombstones
 
     repo = project_memory_dir(cwd)
@@ -97,6 +106,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
     metrics = compute_metrics(repo, cfg)
     flags = health_flags(metrics)
     advice = build_calibration_advice(metrics, flags)
+    governance = build_governance_health_payload(cwd, cfg)
     project_facts = load_all_facts(repo, include_superseded=False) if repo.exists() else []
     user_facts = load_all_facts(user_repo, include_superseded=False) if user_repo.exists() else []
     facts = sorted(
@@ -109,6 +119,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         ),
     )
     sessions = list(iter_session_payloads(repo, include_archived=True)) if repo.exists() else []
+    quarantined = list_quarantined_sessions(repo, config=cfg) if repo.exists() else []
     manifest = _load_json(repo / "meta" / "manifest.json", {"topics": {}, "uncertainty_hotspots": [], "knowledge_gaps": []})
     gaps = _gap_rows(repo)
     lint_rows = _lint_rows(repo)
@@ -338,6 +349,129 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         + health_rows
         + "</table>"
     )
+    governance_summary = governance.get("summary", {})
+    governance_pr_rows = "".join(
+        "<tr>"
+        f"<td><a href='{html.escape(str(item.get('url', '')), quote=True)}'>"
+        f"#{html.escape(str(item.get('number', '')))}</a></td>"
+        f"<td>{html.escape(str(item.get('title', '')))}</td>"
+        f"<td><code>{html.escape(str(item.get('head_ref', '')))}</code></td>"
+        f"<td>{html.escape(str(item.get('state') or 'unknown'))}</td>"
+        f"<td>{html.escape(', '.join(str(label) for label in item.get('labels', [])))}</td>"
+        "</tr>"
+        for item in governance.get("open_prs", [])
+    )
+    governance_branch_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(str(item.get('name', '')))}</code></td>"
+        f"<td>{html.escape(str(item.get('age_days', '')))}</td>"
+        f"<td>{html.escape(str(item.get('last_commit_ts', '')))}</td>"
+        f"<td>{'yes' if item.get('current') else 'no'}</td>"
+        "</tr>"
+        for item in governance.get("stale_branches", [])
+    )
+    governance_drift_rows = "".join(
+        "<tr>"
+        f"<td><a href='{html.escape(str(item.get('url', '')), quote=True)}'>"
+        f"#{html.escape(str(item.get('number', '')))}</a></td>"
+        f"<td><code>{html.escape(str(item.get('head_ref', '')))}</code></td>"
+        f"<td>{html.escape('; '.join(str(issue) for issue in item.get('issues', [])))}</td>"
+        "</tr>"
+        for item in governance.get("label_drift", [])
+    )
+    governance_last_l2 = governance.get("last_l2_review") or {}
+    governance_flags = governance.get("flags", [])
+    governance_errors = governance.get("errors", [])
+    pr_inventory_available = bool(governance_summary.get("pr_inventory_available", True))
+    governance_pr_count = (
+        str(governance_summary.get("open_governance_prs", 0))
+        if pr_inventory_available
+        else "unknown"
+    )
+    governance_reviewer_count = (
+        str(governance_summary.get("reviewer_queue_depth", 0))
+        if pr_inventory_available
+        else "unknown"
+    )
+    governance_human_count = (
+        str(governance_summary.get("human_review_queue_depth", 0))
+        if pr_inventory_available
+        else "unknown"
+    )
+    governance_stale_count = (
+        str(governance_summary.get("stale_branch_count", 0))
+        if pr_inventory_available
+        else "unknown"
+    )
+    governance_drift_count = (
+        str(governance_summary.get("label_drift_count", 0))
+        if pr_inventory_available
+        else "unknown"
+    )
+    governance_html = (
+        "<div class='cards'>"
+        + _summary_card("Governance", "ok" if governance.get("ok") else "warn")
+        + _summary_card("Open PRs", governance_pr_count)
+        + _summary_card("Awaiting L2", governance_reviewer_count)
+        + _summary_card("Human Review", governance_human_count)
+        + _summary_card("Stale Branches", governance_stale_count)
+        + _summary_card("Label Drift", governance_drift_count)
+        + "</div>"
+    )
+    if not governance.get("governed"):
+        governance_html += (
+            f"<p>Governance health is inactive for sync mode "
+            f"{html.escape(str(governance.get('mode', 'unknown')))}.</p>"
+        )
+    else:
+        governance_html += (
+            "<ul>" + "".join(f"<li>{html.escape(flag)}</li>" for flag in governance_flags) + "</ul>"
+            if governance_flags
+            else "<p>No active governance warnings.</p>"
+        )
+        governance_html += (
+            "<h3>Errors</h3><ul>"
+            + "".join(f"<li>{html.escape(item)}</li>" for item in governance_errors)
+            + "</ul>"
+            if governance_errors
+            else ""
+        )
+        governance_html += (
+            "<h3>Last L2 Review</h3><table><tr><th>Time</th><th>Action</th><th>Status</th>"
+            "<th>PR</th><th>Reviewer</th><th>Model</th></tr><tr>"
+            f"<td>{html.escape(str(governance_last_l2.get('ts', 'never')))}</td>"
+            f"<td>{html.escape(str(governance_last_l2.get('action', '')))}</td>"
+            f"<td>{html.escape(str(governance_last_l2.get('status', '')))}</td>"
+            f"<td>{html.escape(str(governance_last_l2.get('pr_number', '')))}</td>"
+            f"<td>{html.escape(str(governance_last_l2.get('reviewed_by', '')))}</td>"
+            f"<td>{html.escape(str(governance_last_l2.get('review_model', '')))}</td>"
+            "</tr></table>"
+            if governance_last_l2
+            else "<p>No L2 review completions recorded.</p>"
+        )
+        governance_html += (
+            "<h3>Open Governance PRs</h3><table><tr><th>PR</th><th>Title</th><th>Branch</th>"
+            "<th>State</th><th>Labels</th></tr>"
+            + governance_pr_rows
+            + "</table>"
+            if governance_pr_rows
+            else "<p>No open governance PRs.</p>"
+        )
+        governance_html += (
+            "<h3>Stale Local Branches</h3><table><tr><th>Branch</th><th>Age (days)</th>"
+            "<th>Last Commit</th><th>Current</th></tr>"
+            + governance_branch_rows
+            + "</table>"
+            if governance_branch_rows
+            else "<p>No stale local governance branches.</p>"
+        )
+        governance_html += (
+            "<h3>Label Drift</h3><table><tr><th>PR</th><th>Branch</th><th>Issues</th></tr>"
+            + governance_drift_rows
+            + "</table>"
+            if governance_drift_rows
+            else "<p>No open governance PR label drift detected.</p>"
+        )
     merge_preview_html = (
         "<table><tr><th>Winner</th><th>Loser</th><th>Reason</th></tr>"
         + "".join(
@@ -423,6 +557,36 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
                 "",
             ),
         )]
+    )
+
+    quarantine_rows = "".join(
+        "<tr>"
+        f"<td><code>{html.escape(entry.session_id)}</code></td>"
+        f"<td>{html.escape(entry.tool or '')}</td>"
+        f"<td>{html.escape(entry.started or '')}</td>"
+        f"<td>{html.escape(entry.quarantined_at or '')}</td>"
+        f"<td>{html.escape(entry.reason)}</td>"
+        f"<td>{html.escape(entry.snippet)}</td>"
+        "<td><div class='action-stack'>"
+        f"<form method='post'><input type='hidden' name='action' value='release-quarantine' />"
+        f"<input type='hidden' name='session_id' value='{html.escape(entry.session_id)}' />"
+        "<label><input type='checkbox' name='confirm_release' value='yes' /> confirm release</label>"
+        "<button type='submit'>Release</button></form>"
+        f"<form method='post'><input type='hidden' name='action' value='discard-quarantine' />"
+        f"<input type='hidden' name='session_id' value='{html.escape(entry.session_id)}' />"
+        "<button type='submit'>Discard</button></form>"
+        "</div></td>"
+        "</tr>"
+        for entry in quarantined
+    )
+    quarantine_html = _render_quarantine_section(
+        (
+            "<table><tr><th>Session</th><th>Tool</th><th>Started</th><th>Quarantined</th><th>Reason</th><th>Masked Preview</th><th>Actions</th></tr>"
+            + quarantine_rows
+            + "</table>"
+        )
+        if quarantine_rows
+        else "<p>No quarantined sessions.</p>"
     )
 
     conventions_path = repo / "CONVENTIONS.md"
@@ -557,11 +721,13 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
 {('<table><tr><th>Source Type</th><th>Count</th></tr>' + audit_source_rows + '</table>') if audit_source_rows else '<p>No audit source breakdown yet.</p>'}
 {('<table><tr><th>ID</th><th>Topic</th><th>Scope</th><th>Session</th><th>Extracted By</th><th>Tier</th><th>PR</th><th>File</th></tr>' + audit_fact_rows + '</table>') if audit_fact_rows else '<p>No facts available for audit.</p>'}
 </div>
+{quarantine_html}
 <div class="section"><h2>Session Browser</h2>{('<table><tr><th>Session</th><th>Tool</th><th>Machine</th><th>Source</th><th>Started</th><th>Events</th><th>Preview</th></tr>' + session_browser_rows + '</table>') if session_browser_rows else '<p>No sessions recorded yet.</p>'}</div>
 <div class="section"><h2>Gap Proposals</h2>{gap_html}</div>
 <div class="section"><h2>Lint Report</h2>{lint_html}</div>
 <div class="section"><h2>Processing Log</h2>{processing_html}</div>
 <div class="section"><h2>Health Signals</h2>{health_html}</div>
+<div class="section"><h2>Governance Health</h2>{governance_html}</div>
 <div class="section"><h2>Conventions</h2>{conventions_html}</div>
 <div class="section"><h2>Session Replay</h2>{replay_html if replay_html else '<p>No replay telemetry yet.</p>'}</div>
 </div></body></html>"""
@@ -593,6 +759,8 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
                 merge_conflicts_action,
                 promote_fact_action,
             )
+            from umx.scope import project_memory_dir
+            from umx.sessions import discard_quarantined_session, release_quarantined_session
 
             length = int(self.headers.get("Content-Length", "0"))
             payload = parse_qs(self.rfile.read(length).decode())
@@ -618,6 +786,21 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
                 kind = "success" if result.ok else "error"
             elif action == "merge":
                 result = merge_conflicts_action(cwd, dry_run=False)
+                notice = result.message
+                kind = "success" if result.ok else "error"
+            elif action == "release-quarantine":
+                result = release_quarantined_session(
+                    project_memory_dir(cwd),
+                    payload.get("session_id", [""])[0],
+                    confirm=payload.get("confirm_release", [""])[0] == "yes",
+                )
+                notice = result.message
+                kind = "success" if result.ok else "error"
+            elif action == "discard-quarantine":
+                result = discard_quarantined_session(
+                    project_memory_dir(cwd),
+                    payload.get("session_id", [""])[0],
+                )
                 notice = result.message
                 kind = "success" if result.ok else "error"
 

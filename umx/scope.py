@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from umx.schema import ensure_memory_schema_header, schema_version_path, write_s
 
 DEFAULT_UMX_HOME = "~/.umx"
 ROOT_SCOPE_SENTINEL = "__root__"
+_PROJECT_SLUG_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
 
 @dataclass(slots=True, frozen=True)
@@ -151,6 +153,38 @@ def project_memory_dir(cwd: Path | None = None) -> Path:
     return get_umx_home() / "projects" / discover_project_slug(cwd)
 
 
+def validate_project_slug(slug: str) -> str:
+    candidate = slug.strip()
+    if not candidate:
+        raise ValueError("Invalid project slug: value must not be empty.")
+    if Path(candidate).is_absolute() or "/" in candidate or "\\" in candidate:
+        raise ValueError("Invalid project slug: path separators and absolute paths are not allowed.")
+    if candidate in {".", ".."} or candidate.startswith(".") or ".." in candidate:
+        raise ValueError("Invalid project slug: dot-prefixed and parent-directory segments are not allowed.")
+    if not _PROJECT_SLUG_RE.fullmatch(candidate):
+        raise ValueError(
+            "Invalid project slug: use only letters, numbers, '.', '_' and '-'."
+        )
+    return candidate
+
+
+def project_slug_in_use(slug: str, cwd: Path | None = None) -> bool:
+    root = find_project_root(cwd)
+    marker = root / ".umx-project"
+    if marker.exists() and marker.read_text().strip() == slug:
+        return False
+    return (get_umx_home() / "projects" / slug).exists()
+
+
+def next_available_project_slug(slug: str, cwd: Path | None = None) -> str:
+    if not project_slug_in_use(slug, cwd):
+        return slug
+    suffix = 2
+    while project_slug_in_use(f"{slug}-{suffix}", cwd):
+        suffix += 1
+    return f"{slug}-{suffix}"
+
+
 def ensure_repo_structure(repo_dir: Path, *, ensure_schema: bool = True) -> None:
     for relative in [
         "sessions",
@@ -200,10 +234,14 @@ def init_local_umx(org: str | None = None) -> Path:
     return home
 
 
-def init_project_memory(cwd: Path | None = None, write_marker: bool = True) -> Path:
+def init_project_memory(
+    cwd: Path | None = None,
+    write_marker: bool = True,
+    slug: str | None = None,
+) -> Path:
     root = find_project_root(cwd)
-    slug = discover_project_slug(root)
-    repo_dir = get_umx_home() / "projects" / slug
+    project_slug = validate_project_slug(slug or discover_project_slug(root))
+    repo_dir = get_umx_home() / "projects" / project_slug
     ensure_repo_structure(repo_dir)
     from umx.git_ops import git_init, is_git_repo
 
@@ -215,5 +253,5 @@ def init_project_memory(cwd: Path | None = None, write_marker: bool = True) -> P
             "# Project Conventions\n\n## Topic taxonomy\n- general: default topic\n\n## Fact phrasing\n- Atomic facts only\n- <=200 characters per fact\n\n## Entity vocabulary\n- Fill in project-specific vocabulary here\n"
         )
     if write_marker:
-        (root / ".umx-project").write_text(f"{slug}\n")
+        (root / ".umx-project").write_text(f"{project_slug}\n")
     return repo_dir

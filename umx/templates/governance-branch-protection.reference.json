@@ -1,0 +1,14 @@
+{
+  "description": "Reference branch-protection contract for T3.5 approval gating. T3.6 should translate this artifact into live GitHub ruleset/branch-protection API calls.",
+  "default_branch": "main",
+  "require_pull_request": true,
+  "required_status_checks": [
+    "Governance Approval Gate / approval-gate"
+  ],
+  "governance_merge_label": "state: approved",
+  "override": {
+    "cli_flag": "--force",
+    "reason_flag": "--force-reason",
+    "audit_comment_marker": "<!-- umx:approval-override -->"
+  }
+}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+from dataclasses import dataclass
 import gzip
 import json
 from datetime import UTC, datetime, timedelta
@@ -7,9 +9,29 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from umx.config import UMXConfig, default_config, load_config
+from umx.git_ops import git_add_and_commit, git_commit_failure_message
 from umx.identity import generate_fact_id
-from umx.redaction import RedactionError, redact_jsonl_lines
-from umx.scope import ensure_repo_structure
+from umx.redaction import RedactionError, redact_jsonl_lines, redact_jsonl_lines_with_issues
+from umx.scope import config_path, ensure_repo_structure
+
+
+@dataclass(slots=True)
+class QuarantineEntry:
+    session_id: str
+    path: Path
+    reason: str
+    snippet: str
+    tool: str | None = None
+    started: str | None = None
+    quarantined_at: str | None = None
+
+
+@dataclass(slots=True)
+class QuarantineActionResult:
+    ok: bool
+    action: str
+    message: str
+    session_id: str | None = None
 
 
 def generate_session_id(now: datetime | None = None) -> str:
@@ -46,6 +68,14 @@ def quarantine_path(repo_dir: Path, session_id: str) -> Path:
     return repo_dir / "local" / "quarantine" / f"{session_id}.jsonl"
 
 
+def quarantine_metadata_path(repo_dir: Path, session_id: str) -> Path:
+    return repo_dir / "local" / "quarantine" / f"{session_id}.meta.json"
+
+
+def quarantine_decision_log_path(repo_dir: Path) -> Path:
+    return repo_dir / "local" / "quarantine-decisions.jsonl"
+
+
 def _iso_now() -> str:
     return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
 
@@ -75,6 +105,276 @@ def normalize_session_payload(
     return normalized_meta, normalized_events
 
 
+def _payload_meta(payload: list[dict[str, Any]]) -> dict[str, Any]:
+    if payload and "_meta" in payload[0]:
+        return dict(payload[0].get("_meta", {}))
+    return {}
+
+
+def _write_quarantine_metadata(
+    repo_dir: Path,
+    session_id: str,
+    *,
+    reason: str,
+    meta: dict[str, Any],
+) -> None:
+    path = quarantine_metadata_path(repo_dir, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "session",
+                "session_id": session_id,
+                "quarantined_at": _iso_now(),
+                "reason": reason,
+                "tool": meta.get("tool"),
+                "started": meta.get("started"),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+
+def _load_quarantine_metadata(repo_dir: Path, session_id: str) -> dict[str, Any]:
+    path = quarantine_metadata_path(repo_dir, session_id)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _preview_redaction_config(config: UMXConfig | None = None) -> UMXConfig:
+    cfg = config or load_config(config_path())
+    preview = default_config()
+    preview.sessions.redaction = "default"
+    preview.sessions.entropy_threshold = cfg.sessions.entropy_threshold
+    preview.sessions.entropy_min_length = cfg.sessions.entropy_min_length
+    preview.sessions.entropy_assignment_patterns = list(cfg.sessions.entropy_assignment_patterns)
+    return preview
+
+
+def _payload_snippet(payload: list[dict[str, Any]]) -> str:
+    records = payload[1:] if payload and "_meta" in payload[0] else payload
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        for key in ("content", "text", "message", "output"):
+            value = record.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())
+        dumped = json.dumps(record, sort_keys=True)
+        if dumped:
+            return " ".join(dumped.split())
+    if payload:
+        return " ".join(json.dumps(payload[0], sort_keys=True).split())
+    return ""
+
+
+def _reason_from_issues(payload: list[dict[str, Any]], config: UMXConfig) -> str:
+    try:
+        _, issues = redact_jsonl_lines_with_issues(payload, config)
+    except RedactionError:
+        return "unknown (legacy quarantine entry)"
+    if not issues:
+        return "unknown (legacy quarantine entry)"
+    counts = Counter(issue.kind for issue in issues)
+    return ", ".join(
+        f"{kind} ({count} hit{'s' if count != 1 else ''})"
+        for kind, count in sorted(counts.items())
+    )
+
+
+def _quarantine_snippet(payload: list[dict[str, Any]], config: UMXConfig) -> str:
+    try:
+        redacted_payload, _ = redact_jsonl_lines_with_issues(payload, config)
+    except RedactionError:
+        return "[snippet unavailable: could not safely redact]"
+    snippet = _payload_snippet(redacted_payload)
+    if not snippet:
+        return "[snippet unavailable: no preview text]"
+    return snippet[:157] + "..." if len(snippet) > 160 else snippet
+
+
+def list_quarantined_sessions(
+    repo_dir: Path,
+    *,
+    config: UMXConfig | None = None,
+) -> list[QuarantineEntry]:
+    quarantine_dir = repo_dir / "local" / "quarantine"
+    if not quarantine_dir.exists():
+        return []
+    preview_cfg = _preview_redaction_config(config)
+    entries: list[QuarantineEntry] = []
+    for path in sorted(quarantine_dir.glob("*.jsonl"), reverse=True):
+        try:
+            payload = read_session(path)
+        except json.JSONDecodeError:
+            payload = []
+        meta = _payload_meta(payload)
+        session_id = str(meta.get("session_id") or path.stem)
+        metadata = _load_quarantine_metadata(repo_dir, session_id)
+        reason = str(metadata.get("reason") or "").strip() or _reason_from_issues(payload, preview_cfg)
+        entries.append(
+            QuarantineEntry(
+                session_id=session_id,
+                path=path,
+                reason=reason,
+                snippet=_quarantine_snippet(payload, preview_cfg),
+                tool=str(metadata.get("tool") or meta.get("tool") or "") or None,
+                started=str(metadata.get("started") or meta.get("started") or "") or None,
+                quarantined_at=str(metadata.get("quarantined_at") or "") or None,
+            )
+        )
+    return sorted(
+        entries,
+        key=lambda entry: ((entry.quarantined_at or ""), entry.session_id),
+        reverse=True,
+    )
+
+
+def _append_quarantine_decision(
+    repo_dir: Path,
+    *,
+    action: str,
+    session_id: str,
+    reason: str,
+    tool: str | None,
+    started: str | None,
+) -> None:
+    path = quarantine_decision_log_path(repo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": _iso_now(),
+        "action": action,
+        "session_id": session_id,
+        "reason": reason,
+        "source": "viewer",
+        "tool": tool,
+        "started": started,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+
+
+def release_quarantined_session(
+    repo_dir: Path,
+    session_id: str,
+    *,
+    confirm: bool,
+    config: UMXConfig | None = None,
+) -> QuarantineActionResult:
+    if not confirm:
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message="release requires explicit confirm",
+            session_id=session_id,
+        )
+    path = quarantine_path(repo_dir, session_id)
+    if not path.exists():
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message=f"quarantined session not found: {session_id}",
+            session_id=session_id,
+        )
+    cfg = config or load_config(config_path())
+    if cfg.sessions.redaction == "none":
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message="release requires sessions.redaction to stay enabled",
+            session_id=session_id,
+        )
+    payload = read_session(path)
+    meta = _payload_meta(payload)
+    resolved_session_id = str(meta.get("session_id") or session_id)
+    destination = session_path(repo_dir, resolved_session_id)
+    if destination.exists():
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message=f"session already exists: {resolved_session_id}",
+            session_id=resolved_session_id,
+        )
+    try:
+        redacted = redact_jsonl_lines(payload, cfg)
+    except RedactionError as exc:
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message=f"release failed: {exc}",
+            session_id=resolved_session_id,
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text("\n".join(json.dumps(line, sort_keys=True) for line in redacted) + "\n")
+    result = git_add_and_commit(
+        repo_dir,
+        paths=[destination],
+        message=f"umx: release quarantined session {resolved_session_id}",
+        config=cfg,
+    )
+    if result.failed:
+        destination.unlink(missing_ok=True)
+        return QuarantineActionResult(
+            ok=False,
+            action="release",
+            message=git_commit_failure_message(result, context="commit failed"),
+            session_id=resolved_session_id,
+        )
+    metadata = _load_quarantine_metadata(repo_dir, resolved_session_id)
+    path.unlink(missing_ok=True)
+    quarantine_metadata_path(repo_dir, resolved_session_id).unlink(missing_ok=True)
+    _append_quarantine_decision(
+        repo_dir,
+        action="release",
+        session_id=resolved_session_id,
+        reason=str(metadata.get("reason") or "released after manual review"),
+        tool=str(metadata.get("tool") or meta.get("tool") or "") or None,
+        started=str(metadata.get("started") or meta.get("started") or "") or None,
+    )
+    return QuarantineActionResult(
+        ok=True,
+        action="release",
+        message=f"released {resolved_session_id}",
+        session_id=resolved_session_id,
+    )
+
+
+def discard_quarantined_session(repo_dir: Path, session_id: str) -> QuarantineActionResult:
+    path = quarantine_path(repo_dir, session_id)
+    if not path.exists():
+        return QuarantineActionResult(
+            ok=False,
+            action="discard",
+            message=f"quarantined session not found: {session_id}",
+            session_id=session_id,
+        )
+    metadata = _load_quarantine_metadata(repo_dir, session_id)
+    payload = read_session(path)
+    meta = _payload_meta(payload)
+    path.unlink(missing_ok=True)
+    quarantine_metadata_path(repo_dir, session_id).unlink(missing_ok=True)
+    _append_quarantine_decision(
+        repo_dir,
+        action="discard",
+        session_id=session_id,
+        reason=str(metadata.get("reason") or "discarded after manual review"),
+        tool=str(metadata.get("tool") or meta.get("tool") or "") or None,
+        started=str(metadata.get("started") or meta.get("started") or "") or None,
+    )
+    return QuarantineActionResult(
+        ok=True,
+        action="discard",
+        message=f"discarded {session_id}",
+        session_id=session_id,
+    )
+
+
 def write_session(
     repo_dir: Path,
     meta: dict[str, Any],
@@ -90,23 +390,21 @@ def write_session(
     payload = [{"_meta": normalized_meta}, *normalized_events]
     try:
         redacted = payload if cfg.sessions.redaction == "none" else redact_jsonl_lines(payload, cfg)
-    except RedactionError:
+    except RedactionError as exc:
         path = quarantine_path(repo_dir, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(json.dumps(line, sort_keys=True) for line in payload) + "\n")
+        _write_quarantine_metadata(repo_dir, session_id, reason=str(exc), meta=normalized_meta)
         raise
     path = session_path(repo_dir, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(line, sort_keys=True) for line in redacted) + "\n")
     if auto_commit:
-        from umx.git_ops import git_add_and_commit, git_commit_failure_message
-        from umx.scope import config_path
-
         result = git_add_and_commit(
             repo_dir,
             paths=[path],
             message=f"umx: session {session_id}",
-            config=load_config(config_path()),
+            config=cfg,
         )
         if result.failed:
             raise RuntimeError(git_commit_failure_message(result, context="commit failed"))

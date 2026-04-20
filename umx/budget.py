@@ -5,6 +5,8 @@ from umx.config import UMXConfig, default_config
 from umx.inline_metadata import strip_inline_metadata as strip_umx_inline_metadata
 from umx.models import Fact
 
+_FACT_TOKEN_CACHE: dict[tuple[str, str], int] = {}
+
 
 def strip_inline_metadata(text: str) -> str:
     return strip_umx_inline_metadata(text)
@@ -18,7 +20,13 @@ def estimate_tokens(text: str) -> int:
 
 
 def estimate_fact_tokens(fact: Fact) -> int:
-    return estimate_tokens(fact.text)
+    cache_key = (fact.fact_id, fact.text)
+    cached = _FACT_TOKEN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    tokens = estimate_tokens(fact.text)
+    _FACT_TOKEN_CACHE[cache_key] = tokens
+    return tokens
 
 
 @dataclass(slots=True)

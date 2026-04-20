@@ -23,6 +23,7 @@ SOURCE_TYPE_WEIGHTS = {
     SourceType.DREAM_CONSOLIDATION: 0.0,
     SourceType.LLM_INFERENCE: 0.0,
 }
+_FACT_TEXT_TERMS_CACHE: dict[tuple[str, str], frozenset[str]] = {}
 
 VERIFICATION_BONUS = {
     Verification.SELF_REPORTED: 0.0,
@@ -97,7 +98,11 @@ def relevance_score(
     keywords = keywords or set()
     scope_distance = abs(SCOPE_PROXIMITY[fact.scope] - SCOPE_PROXIMITY[target_scope])
     scope_component = max(0.0, 1.0 - 0.25 * scope_distance)
-    text_terms = set(re.findall(r"[a-zA-Z0-9_]+", fact.text.lower()))
+    cache_key = (fact.fact_id, fact.text)
+    text_terms = _FACT_TEXT_TERMS_CACHE.get(cache_key)
+    if text_terms is None:
+        text_terms = frozenset(re.findall(r"[a-zA-Z0-9_]+", fact.text.lower()))
+        _FACT_TEXT_TERMS_CACHE[cache_key] = text_terms
     tag_terms = {tag.lower() for tag in fact.tags}
     overlap_count = len(keywords & (text_terms | tag_terms))
     keyword_component = overlap_count / max(1, len(keywords))

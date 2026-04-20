@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+
+_CONFIG_CACHE: dict[Path, tuple[str, "UMXConfig"]] = {}
 
 
 @dataclass(slots=True)
@@ -21,6 +25,7 @@ class DreamConfig:
     local_model: str | None = None
     paid_provider: str | None = None
     paid_api_key: str | None = None
+    l2_model: str = "claude-opus-4-7"
     lint_interval: str = "weekly"
 
 
@@ -210,7 +215,12 @@ def default_config() -> UMXConfig:
 def load_config(path: Path | None) -> UMXConfig:
     if path is None or not path.exists():
         return default_config()
-    raw = yaml.safe_load(path.read_text()) or {}
+    resolved = path.resolve()
+    raw_text = path.read_text()
+    cached = _CONFIG_CACHE.get(resolved)
+    if cached is not None and cached[0] == raw_text:
+        return copy.deepcopy(cached[1])
+    raw = yaml.safe_load(raw_text) or {}
     if "decay" in raw and "lambda" in raw["decay"]:
         raw["decay"]["decay_lambda"] = raw["decay"].pop("lambda")
     if "inject" in raw:
@@ -222,9 +232,13 @@ def load_config(path: Path | None) -> UMXConfig:
     merged = _deep_merge(default_config().to_dict(), raw)
     if "decay" in merged and "lambda" in merged["decay"]:
         merged["decay"]["decay_lambda"] = merged["decay"].pop("lambda")
-    return _from_dict(UMXConfig, merged)
+    config = _from_dict(UMXConfig, merged)
+    _CONFIG_CACHE[resolved] = (raw_text, config)
+    return copy.deepcopy(config)
 
 
 def save_config(path: Path, config: UMXConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(config.to_dict(), sort_keys=False))
+    text = yaml.safe_dump(config.to_dict(), sort_keys=False)
+    path.write_text(text)
+    _CONFIG_CACHE[path.resolve()] = (text, copy.deepcopy(config))

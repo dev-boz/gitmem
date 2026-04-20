@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import umx.search as search
+
 from umx.budget import estimate_tokens
 from umx.conventions import summarize_conventions
 from umx.inject import _fact_token_cost, build_injection_block
@@ -15,9 +17,10 @@ from umx.models import (
     TaskStatus,
     Verification,
 )
-from umx.scope import user_memory_dir
+from umx.scope import encode_scope_path, user_memory_dir
 from umx.search import query_index, rebuild_index, session_replay, session_snapshot, usage_snapshot
 from umx.hooks.session_end import run as session_end_run
+from umx.tombstones import forget_fact
 
 
 def make_fact(text: str, topic: str = "general", **overrides) -> Fact:
@@ -70,6 +73,14 @@ def test_injection_marks_fragile_and_tracks_injected_not_referenced(project_repo
     usage = usage_snapshot(project_repo)
     assert usage[project_fact.fact_id]["injected_count"] >= 1
     assert usage[project_fact.fact_id]["last_referenced"] is None
+    conn = search._connect(search.usage_path(project_repo))
+    try:
+        inject_events = conn.execute(
+            "SELECT COUNT(*) AS count FROM usage_events WHERE event_kind = 'inject'"
+        ).fetchone()["count"]
+    finally:
+        conn.close()
+    assert inject_events == 0
 
 
 def test_search_rebuild_excludes_superseded(project_repo: Path) -> None:
@@ -125,6 +136,376 @@ def test_session_reference_updates_usage_and_replay(project_repo: Path, project_
     assert any(row["event_kind"] == "reference" for row in replay)
 
 
+def test_record_injections_batches_usage_updates(project_repo: Path) -> None:
+    search.record_injections(
+        project_repo,
+        [
+            {
+                "fact_id": "fact-a",
+                "session_id": "sess-batch-001",
+                "turn_index": 0,
+                "session_tokens": 120,
+                "token_count": 20,
+            },
+            {
+                "fact_id": "fact-b",
+                "session_id": "sess-batch-001",
+                "turn_index": 0,
+                "session_tokens": 120,
+                "token_count": 22,
+            },
+        ],
+    )
+
+    usage = usage_snapshot(project_repo)
+    replay = session_replay(project_repo, "sess-batch-001")
+
+    assert usage["fact-a"]["injected_count"] == 1
+    assert usage["fact-b"]["injected_count"] == 1
+    assert sum(1 for row in replay if row["event_kind"] == "inject") == 2
+
+
+def test_file_scoped_facts_are_not_duplicated_when_path_targeted(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "src/app.py uses postgres connection pooling",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000010",
+        scope=Scope.FILE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres connection pooling",
+        file_paths=["src/app.py"],
+        session_id="sess-file-001",
+    )
+    replay = session_replay(project_repo, "sess-file-001")
+
+    assert block.count("src/app.py uses postgres connection pooling") == 1
+    assert sum(1 for row in replay if row["event_kind"] == "inject") == 1
+
+
+def test_scoped_superseded_fact_stays_hidden_when_path_targeted(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    stale = make_fact(
+        "src/app.py uses postgres 5432",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000012",
+        scope=Scope.FILE,
+        superseded_by="01TESTFACT0000000000000013",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    current = make_fact(
+        "src/app.py uses postgres 5433",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000013",
+        scope=Scope.FILE,
+        supersedes=stale.fact_id,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, stale)
+    add_fact(project_repo, current)
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres",
+        file_paths=["src/app.py"],
+    )
+
+    assert "src/app.py uses postgres 5432" not in block
+    assert "src/app.py uses postgres 5433" in block
+
+
+def test_scoped_tombstoned_fact_stays_hidden_when_path_targeted(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "src/app.py uses deprecated postgres settings",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000014",
+        scope=Scope.FILE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+    forget_fact(project_repo, fact.fact_id)
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres",
+        file_paths=["src/app.py"],
+    )
+
+    assert "deprecated postgres settings" not in block
+
+
+def test_collect_facts_for_injection_reuses_base_inventory_cache(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    fact = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000011",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+    calls = 0
+    original = build_injection_block.__globals__["load_all_facts"]
+
+    def counted_load_all_facts(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "load_all_facts",
+        counted_load_all_facts,
+    )
+
+    first = build_injection_block(project_dir, prompt="postgres")
+    second = build_injection_block(project_dir, prompt="postgres")
+
+    assert "postgres runs on 5433 in dev" in first
+    assert "postgres runs on 5433 in dev" in second
+    assert calls == 2
+
+
+def test_project_preselection_limits_scoring_to_shortlist_and_user_facts(
+    project_repo: Path,
+    user_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    shortlisted = make_fact(
+        "postgres connection pooling is enabled",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000015",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    omitted = make_fact(
+        "redis queue names must stay stable",
+        topic="queues",
+        fact_id="01TESTFACT0000000000000016",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    user_fact = make_fact(
+        "always prefer concise status handoffs",
+        topic="style",
+        fact_id="01TESTFACT0000000000000017",
+        scope=Scope.USER,
+        encoding_strength=5,
+        verification=Verification.HUMAN_CONFIRMED,
+        source_type=SourceType.USER_PROMPT,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, shortlisted)
+    add_fact(project_repo, omitted)
+    add_fact(user_repo, user_fact)
+
+    scored: list[str] = []
+    original = build_injection_block.__globals__["relevance_score"]
+
+    def tracked_relevance(fact, *args, **kwargs):
+        scored.append(fact.fact_id)
+        return original(fact, *args, **kwargs)
+
+    monkeypatch.setitem(build_injection_block.__globals__, "_inject_candidate_limit", lambda cfg: 1)
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "inject_candidate_ids",
+        lambda *args, **kwargs: [shortlisted.fact_id],
+    )
+    monkeypatch.setitem(build_injection_block.__globals__, "relevance_score", tracked_relevance)
+
+    block = build_injection_block(project_dir, prompt="postgres")
+
+    assert "postgres connection pooling is enabled" in block
+    assert omitted.fact_id not in scored
+    assert set(scored) == {shortlisted.fact_id, user_fact.fact_id}
+
+
+def test_project_preselection_preserves_scoped_facts_and_open_tasks(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    shortlisted = make_fact(
+        "postgres service owns the shared connection pool",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000018",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    open_task = make_fact(
+        "finish postgres pooling migration",
+        topic="tasks",
+        fact_id="01TESTFACT0000000000000019",
+        task_status=TaskStatus.OPEN,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    scoped = make_fact(
+        "src/app.py handles postgres connection pooling",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000020",
+        scope=Scope.FILE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    omitted = make_fact(
+        "redis cache warmup is optional",
+        topic="caching",
+        fact_id="01TESTFACT0000000000000021",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, shortlisted)
+    add_fact(project_repo, open_task)
+    add_fact(project_repo, scoped)
+    add_fact(project_repo, omitted)
+
+    monkeypatch.setitem(build_injection_block.__globals__, "_inject_candidate_limit", lambda cfg: 1)
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "inject_candidate_ids",
+        lambda *args, **kwargs: [shortlisted.fact_id],
+    )
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres pooling",
+        file_paths=["src/app.py"],
+    )
+
+    assert "src/app.py handles postgres connection pooling" in block
+    assert "## Open Tasks" in block
+    assert "- finish postgres pooling migration" in block
+
+
+def test_project_preselection_falls_back_to_full_scan_without_shortlist(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    first = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000022",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    second = make_fact(
+        "redis queue stays in a separate worker",
+        topic="queues",
+        fact_id="01TESTFACT0000000000000023",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, first)
+    add_fact(project_repo, second)
+
+    scored: list[str] = []
+    original = build_injection_block.__globals__["relevance_score"]
+
+    def tracked_relevance(fact, *args, **kwargs):
+        scored.append(fact.fact_id)
+        return original(fact, *args, **kwargs)
+
+    monkeypatch.setitem(build_injection_block.__globals__, "_inject_candidate_limit", lambda cfg: 1)
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "inject_candidate_ids",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setitem(build_injection_block.__globals__, "relevance_score", tracked_relevance)
+
+    build_injection_block(project_dir, prompt="postgres redis")
+
+    assert {first.fact_id, second.fact_id}.issubset(set(scored))
+
+
+def test_project_preselection_preserves_attention_refresh_facts(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    refreshed = make_fact(
+        "vault stores postgres credentials for staging",
+        topic="security",
+        fact_id="01TESTFACT0000000000000024",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    shortlisted = make_fact(
+        "redis queue settings control worker throughput",
+        topic="queues",
+        fact_id="01TESTFACT0000000000000025",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, refreshed)
+    add_fact(project_repo, shortlisted)
+
+    monkeypatch.setitem(build_injection_block.__globals__, "_inject_candidate_limit", lambda cfg: 1)
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "inject_candidate_ids",
+        lambda *args, **kwargs: [shortlisted.fact_id],
+    )
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "_attention_refresh_ids",
+        lambda *args, **kwargs: {refreshed.fact_id},
+    )
+
+    block = build_injection_block(
+        project_dir,
+        prompt="redis workers",
+        session_id="sess-refresh-001",
+        context_window_tokens=16000,
+    )
+
+    assert "vault stores postgres credentials for staging" in block
+
+
+def test_restrict_to_ids_bypasses_project_preselection(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    kept = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000026",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    dropped = make_fact(
+        "redis queue names must stay stable",
+        topic="queues",
+        fact_id="01TESTFACT0000000000000027",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, kept)
+    add_fact(project_repo, dropped)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("project preselection should be bypassed when restrict_to_ids is set")
+
+    monkeypatch.setitem(build_injection_block.__globals__, "_inject_candidate_limit", lambda cfg: 1)
+    monkeypatch.setitem(build_injection_block.__globals__, "inject_candidate_ids", fail_if_called)
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres redis",
+        restrict_to_ids={kept.fact_id},
+    )
+
+    assert "postgres runs on 5433 in dev" in block
+    assert "redis queue names must stay stable" not in block
+
+
 def test_repeated_injection_does_not_advance_session_without_events(project_repo: Path, project_dir: Path) -> None:
     fact = make_fact(
         "postgres runs on 5433 in dev",
@@ -154,6 +535,22 @@ def test_repeated_injection_does_not_advance_session_without_events(project_repo
     assert second["turn_index"] == 0
     assert first["estimated_tokens"] == 0
     assert second["estimated_tokens"] == 0
+
+
+def test_ensure_usage_db_skips_repeat_bootstrap(project_repo: Path, monkeypatch) -> None:
+    original_connect = search._connect
+    calls: list[Path] = []
+
+    def counted_connect(path: Path):
+        calls.append(path)
+        return original_connect(path)
+
+    monkeypatch.setattr(search, "_connect", counted_connect)
+
+    search.ensure_usage_db(project_repo)
+    search.ensure_usage_db(project_repo)
+
+    assert len(calls) == 1
 
 
 def test_l1_fact_render_includes_source_type(project_repo: Path, project_dir: Path) -> None:

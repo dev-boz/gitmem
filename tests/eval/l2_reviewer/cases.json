@@ -1,0 +1,470 @@
+[
+  {
+    "id": "clean-extraction-approve-01",
+    "bucket": "clean_extraction",
+    "description": "Specific service-local deploy fact with valid taxonomy and local impact.",
+    "expected_action": "approve",
+    "labels": ["confidence:high", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/deploy.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCLEAN00000000000001",
+        "text": "deploys require a smoke check before release",
+        "topic": "deploy"
+      }
+    ]
+  },
+  {
+    "id": "clean-extraction-approve-02",
+    "bucket": "clean_extraction",
+    "description": "Development environment fact is scoped to one service and directly actionable.",
+    "expected_action": "approve",
+    "labels": ["confidence:high", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/devenv.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCLEAN00000000000002",
+        "text": "the local API listens on port 8081 in development",
+        "topic": "devenv"
+      }
+    ]
+  },
+  {
+    "id": "clean-extraction-approve-03",
+    "bucket": "clean_extraction",
+    "description": "Documentation location is concrete and limited in impact.",
+    "expected_action": "approve",
+    "labels": ["confidence:high", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/docs.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCLEAN00000000000003",
+        "text": "release notes live in docs/releases for this service",
+        "topic": "docs"
+      }
+    ]
+  },
+  {
+    "id": "clean-extraction-approve-04",
+    "bucket": "clean_extraction",
+    "description": "Operational health-check fact is atomic and bounded.",
+    "expected_action": "approve",
+    "labels": ["confidence:high", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/ops.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCLEAN00000000000004",
+        "text": "the health check endpoint returns 200 on /healthz",
+        "topic": "ops"
+      }
+    ]
+  },
+  {
+    "id": "conflicting-fact-escalate-01",
+    "bucket": "conflicting_fact",
+    "description": "New staging database version conflicts with an existing strong fact.",
+    "expected_action": "escalate",
+    "labels": ["confidence:medium", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/deploy.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000001",
+        "text": "staging uses PostgreSQL 14",
+        "topic": "deploy",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000002",
+        "text": "staging uses PostgreSQL 15",
+        "topic": "deploy",
+        "encoding_strength": 4
+      }
+    ]
+  },
+  {
+    "id": "conflicting-fact-escalate-02",
+    "bucket": "conflicting_fact",
+    "description": "Existing on-call cadence is contradicted by the new fact.",
+    "expected_action": "escalate",
+    "labels": ["confidence:medium", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/ops.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000003",
+        "text": "the on-call rotation is weekly",
+        "topic": "ops",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000004",
+        "text": "the on-call rotation is daily",
+        "topic": "ops",
+        "encoding_strength": 4
+      }
+    ]
+  },
+  {
+    "id": "conflicting-fact-escalate-03",
+    "bucket": "conflicting_fact",
+    "description": "Approval policy changed in a way that should not auto-merge without a human.",
+    "expected_action": "escalate",
+    "labels": ["confidence:medium", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/release.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000005",
+        "text": "release approvals require one reviewer",
+        "topic": "release",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALCONFLICT0000000006",
+        "text": "release approvals require two reviewers",
+        "topic": "release",
+        "encoding_strength": 4
+      }
+    ]
+  },
+  {
+    "id": "overbroad-scope-reject-01",
+    "bucket": "overbroad_scope",
+    "description": "Claim is organization-wide and too broad for a local governed fact.",
+    "expected_action": "reject",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/ops.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALOVERBROAD000000001",
+        "text": "every service in the organization deploys through a single shared cluster",
+        "topic": "ops",
+        "confidence": 0.4
+      }
+    ]
+  },
+  {
+    "id": "overbroad-scope-reject-02",
+    "bucket": "overbroad_scope",
+    "description": "Ownership claim is too sweeping and not service-specific.",
+    "expected_action": "reject",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/ops.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALOVERBROAD000000002",
+        "text": "all production incidents are owned by the platform team",
+        "topic": "ops",
+        "confidence": 0.4
+      }
+    ]
+  },
+  {
+    "id": "overbroad-scope-reject-03",
+    "bucket": "overbroad_scope",
+    "description": "Broad infrastructure claim should not be accepted as a local memory fact.",
+    "expected_action": "reject",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/deploy.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALOVERBROAD000000003",
+        "text": "the company uses Kubernetes for every workload",
+        "topic": "deploy",
+        "confidence": 0.4
+      }
+    ]
+  },
+  {
+    "id": "redundant-fact-reject-01",
+    "bucket": "redundant_fact",
+    "description": "New documentation fact duplicates an existing fact exactly.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/docs.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000001",
+        "text": "release notes live in docs/releases for this service",
+        "topic": "docs",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000002",
+        "text": "release notes live in docs/releases for this service",
+        "topic": "docs",
+        "encoding_strength": 3
+      }
+    ]
+  },
+  {
+    "id": "redundant-fact-reject-02",
+    "bucket": "redundant_fact",
+    "description": "Port fact is repeated without adding new information.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/devenv.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000003",
+        "text": "the local API listens on port 8081 in development",
+        "topic": "devenv",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000004",
+        "text": "the local API listens on port 8081 in development",
+        "topic": "devenv",
+        "encoding_strength": 3
+      }
+    ]
+  },
+  {
+    "id": "redundant-fact-reject-03",
+    "bucket": "redundant_fact",
+    "description": "Deploy safety fact duplicates existing knowledge.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/deploy.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"],
+      "project_conventions": ["Prefer service-local facts over organization-wide claims."]
+    },
+    "existing_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000005",
+        "text": "deploys require a smoke check before release",
+        "topic": "deploy",
+        "encoding_strength": 5
+      }
+    ],
+    "new_facts": [
+      {
+        "fact_id": "01EVALREDUNDANT000000006",
+        "text": "deploys require a smoke check before release",
+        "topic": "deploy",
+        "encoding_strength": 3
+      }
+    ]
+  },
+  {
+    "id": "taxonomy-miss-reject-01",
+    "bucket": "taxonomy_miss",
+    "description": "Topic is not declared in conventions.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/architecture.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALTAXONOMY0000000001",
+        "text": "the service uses a plug-in architecture for integrations",
+        "topic": "architecture"
+      }
+    ]
+  },
+  {
+    "id": "taxonomy-miss-reject-02",
+    "bucket": "taxonomy_miss",
+    "description": "People/process topic is outside the declared taxonomy.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/people-process.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALTAXONOMY0000000002",
+        "text": "the people/process board approves incident retrospectives",
+        "topic": "people/process"
+      }
+    ]
+  },
+  {
+    "id": "taxonomy-miss-reject-03",
+    "bucket": "taxonomy_miss",
+    "description": "Billing fact uses a topic that is not part of the project taxonomy.",
+    "expected_action": "reject",
+    "labels": ["confidence:medium", "impact:local", "type: extraction"],
+    "files_changed": ["facts/topics/billing.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALTAXONOMY0000000003",
+        "text": "billing retries failed invoices after ten minutes",
+        "topic": "billing"
+      }
+    ]
+  },
+  {
+    "id": "hallucination-review-01",
+    "bucket": "suspected_hallucination",
+    "description": "Absurd infrastructure claim should be rejected as likely hallucinated.",
+    "expected_action": "reject",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/ops.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALHALLUCINATE00000001",
+        "text": "the build pipeline uploads artifacts to an internal moonbase mirror",
+        "topic": "ops",
+        "confidence": 0.2
+      }
+    ]
+  },
+  {
+    "id": "hallucination-review-02",
+    "bucket": "suspected_hallucination",
+    "description": "Clearly ungrounded security claim should be rejected.",
+    "expected_action": "reject",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/security.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALHALLUCINATE00000002",
+        "text": "the service encrypts all traffic with quantum keys",
+        "topic": "security",
+        "confidence": 0.2
+      }
+    ]
+  },
+  {
+    "id": "hallucination-review-03",
+    "bucket": "suspected_hallucination",
+    "description": "High-risk claim about disaster recovery should escalate rather than auto-merge.",
+    "expected_action": "escalate",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/security.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALHALLUCINATE00000003",
+        "text": "customer data replication skips encryption during disaster recovery",
+        "topic": "security",
+        "confidence": 0.3
+      }
+    ]
+  },
+  {
+    "id": "hallucination-review-04",
+    "bucket": "suspected_hallucination",
+    "description": "Emergency bypass claim should escalate because it is severe and uncertain.",
+    "expected_action": "escalate",
+    "labels": ["confidence:low", "impact:global", "type: extraction"],
+    "files_changed": ["facts/topics/release.md"],
+    "conventions": {
+      "topics": ["general", "deploy", "ops", "devenv", "docs", "security", "release"],
+      "phrasing_rules": ["Use present tense"]
+    },
+    "existing_facts": [],
+    "new_facts": [
+      {
+        "fact_id": "01EVALHALLUCINATE00000004",
+        "text": "production deploys bypass code review during emergency mode",
+        "topic": "release",
+        "confidence": 0.3
+      }
+    ]
+  }
+]

@@ -94,7 +94,7 @@ Existing solutions either require cloud infrastructure, are locked to a single t
 - **Storage and presentation are the same layer.** Markdown is the source of truth. JSON is a derived cache. SQLite is a derived search index. Both are local build artifacts, never committed to memory repos.
 - **Redaction fails closed.** If any safety pass (secret scanning, redaction) fails for any reason, the affected content MUST be quarantined — never committed or pushed. Silent failure is a security breach.
 - **Zero injection by default.** Nothing is added to context unless relevant to the current scope.
-- **Separate org, not separate account.** The memory org is owned by your personal GitHub account. Your existing SSH keys and PATs work automatically — zero extra authentication.
+- **Separate org, not separate account.** The memory org is owned by your personal GitHub account. Your existing git transport credentials and authenticated `gh` session work automatically — zero extra gitmem-specific auth bootstrap.
 
 ---
 
@@ -176,7 +176,7 @@ Project memory repos are named by slug matching the project they track. Default:
 The memory org is owned by your personal GitHub account. This means:
 
 - **Locally:** Your existing SSH keys and `gh` auth work. Agents see local directories, not GitHub.
-- **API access:** A single PAT with `repo` scope on the memory org. Stored in `$UMX_HOME/config.yaml` or `UMX_GITHUB_TOKEN` env var.
+- **API access:** Current alpha GitHub operations are routed through authenticated `gh` CLI usage rather than a gitmem-managed PAT field.
 - **GitHub Actions:** Each memory repo gets a `GITHUB_TOKEN` automatically.
 - **Agent tokens (gitmem mode):** Scoped per role — L1 gets PR-write only, L2 gets merge on allowed labels, indexer gets read-only.
 
@@ -1170,7 +1170,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: pip install umx && umx dream --mode remote --tier l1
+      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l1
         env:
           UMX_PROVIDER: groq
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -1195,7 +1195,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'type: supersession')
     steps:
       - uses: actions/checkout@v4
-      - run: pip install umx && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }}
+      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }}
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -1580,7 +1580,7 @@ Before a session file is committed, a **synchronous local pattern scanner** MUST
 - Bearer tokens and JWTs
 - Connection strings with credentials
 - Private keys (PEM headers)
-- User-defined patterns from `config.yaml` `sessions.redaction_patterns`
+- User-defined patterns from `config.yaml` `sessions.redaction_patterns` (for example via `umx config set redaction.patterns ...`; implementations MAY reject unsafe regex constructs such as quantified groups, backreferences, lookarounds, and wildcard repeaters)
 
 **Shannon entropy scanning.** Regex alone cannot detect custom enterprise secrets, asymmetric keys without standard headers, or arbitrary high-entropy tokens. The redaction pass MUST additionally apply a Shannon entropy check to catch secrets that no regex pattern covers.
 
@@ -2021,12 +2021,8 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 | Tool | Cross-tool | Hierarchical | Git-native | Auto-extract | Audit trail | Encoding strength | PR governance | Free compute* |
 |------|-----------|-------------|-----------|-------------|-------------|-------------------|---------------|:---:|
 | **umx + gitmem** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| MemPalace | ✗ | ✓ | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
-| DiffMem | ✗ | ✗ | ✓ | ~ | ✗ | ✗ | ✗ | ~ |
-| Mem0 | ~ | ✗ | ✗ | ✓ | ✗ | ~ | ✗ | ✗ |
 | Karpathy LLM Wiki | ✗ | ✗ | ~ | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Copilot cross-agent | ✗ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ | ✗ |
-| CLAUDE.md hierarchy | ✗ | ✓ | ✓ | ✗ | ✗ | ✗ | ✗ | ✓ |
+
 
 `✓` fully supported · `~` partial · `✗` not supported
 
@@ -2041,7 +2037,7 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 ```
 umx/
 ├── __init__.py
-├── cli.py                  # `umx` and `aip mem` subcommands
+├── cli.py                  # `umx` / `gitmem` subcommands
 ├── scope.py                # scope hierarchy + project discovery + slug collision
 ├── memory.py               # read/write MEMORY.md + topic files
 ├── strength.py             # encoding strength + composite scoring + verification
@@ -2057,6 +2053,12 @@ umx/
 ├── supersession.py         # supersedes/superseded_by chain walking (umx history)
 ├── conventions.py          # CONVENTIONS.md parse + enforcement hooks
 ├── tasks.py                # task_status lifecycle (open/blocked/resolved/abandoned, umx resume)
+├── git_ops.py              # local git helpers: init, commit, push, refs, branch state
+├── github_ops.py           # GitHub repo/bootstrap/workflow helpers
+├── governance.py           # L1/L2/L3 tier logic + PR metadata
+├── audit.py                # session → fact audit + re-derive comparisons
+├── cross_project.py        # cross-project promotion audit + proposal materialization
+├── actions.py              # GitHub Actions workflow generation
 ├── adapters/
 │   ├── claude_code.py
 │   ├── aider.py
@@ -2069,18 +2071,10 @@ umx/
 │   ├── gitignore.py        # .gitignore parsing → exclusion rules
 │   ├── conflict.py         # conflict detection + conflicts_with + supersession chains
 │   ├── lint.py             # Lint sub-phase: contradictions, orphans, tag drift, convention checks
-│   ├── arbitrator.py       # merge conflict resolution
 │   ├── providers.py        # provider rotation + local fallback
 │   ├── decay.py            # exponential recency decay
 │   ├── consolidation.py    # fragile → stable lifecycle (3-rule transition)
 │   └── notice.py           # NOTICE writer
-├── gitmem/
-│   ├── sync.py             # push queue, pull on session start
-│   ├── pr.py               # open/review/merge PRs
-│   ├── governance.py       # L1/L2/L3 tier logic
-│   ├── audit.py            # session → fact audit + deep therapy
-│   ├── org.py              # org layout, repo creation, bootstrap, slug collision
-│   └── actions.py          # GitHub Actions workflow generation
 ├── hooks/
 │   ├── session_start.py
 │   ├── post_tool_use.py
@@ -2099,32 +2093,47 @@ umx/
 ### CLI surface
 
 ```bash
-umx init          --org <n>
-umx init-project  --slug <n>
-umx inject        --cwd . --tool aider [--max-tokens N]
-umx collect       --cwd . --tool aider
-umx dream         --cwd . [--force] [--mode local|remote|hybrid] [--tier l1|l2]
-umx view          --cwd . [--scope project] [--min-strength N]
-umx tui           --cwd .
-umx status        --cwd .
-umx conflicts     --cwd .
-umx gaps          --cwd .                                    # list pending gap proposals
-umx forget        --cwd . --fact <id> | --topic <topic>
-umx promote       --cwd . --fact <id> --to user
-umx confirm       --cwd . --fact <id>                        # manual stabilise: fragile → stable + S:5
-umx history       --cwd . --fact <id>                        # walk supersedes/superseded_by chain
-umx resume        --cwd . [--include-abandoned]              # list open/blocked tasks from recent sessions
-umx meta          --cwd . --topic <name>                     # manifest entry for a topic
-umx merge         --cwd .
-umx audit         --cwd . [--session <id>] [--rederive] [--all] [--model <n>]
-umx sync          [--all]
-umx purge         --session <id>                             # emergency secret removal
-umx rebuild-index [--force] [--embeddings]
-umx migrate-scope --from <old-path> --to <new-path>
-umx doctor        [--fix]                                  # diagnostics: auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embeddings
-umx secret        get <key> | set <key> <value>              # local/secret/ access
-umx import        --tool claude-code                         # bulk import existing memory
+umx init             [--org <n>] [--mode local|remote|hybrid]
+umx init-project     [--cwd .] [--slug <n>] [--yes]
+umx inject           --cwd . [--tool <tool>] [--prompt <text>] [--command <text>] [--session <id>] [--context-window N] [--expand-fact <id>...] [--file <path>...] [--max-tokens N]
+umx collect          --cwd . --tool <tool> [--file <path>] [--format auto|text|jsonl] [--role assistant|tool_result|user] [--session-id <id>] [--meta key=value] [--dry-run]
+umx dream            --cwd . [--force] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>]
+umx view             --cwd . [--fact <id>] [--list] [--min-strength N]
+umx tui              --cwd .
+umx status           --cwd .
+umx health           --cwd .
+umx conflicts        --cwd .
+umx gaps             --cwd .
+umx forget           --cwd . --fact <id> | --topic <topic>
+umx promote          --cwd . --fact <id> --to user|project|principle
+umx confirm          --cwd . --fact <id>
+umx history          --cwd . --fact <id>
+umx resume           --cwd . [--include-abandoned]
+umx meta             --cwd . --topic <name>
+umx merge            --cwd . [--dry-run]
+umx audit            --cwd . [--session <id> ...] [--rederive] [--cross-project] [--proposal-key <key>]
+umx propose          --cwd . --cross-project --proposal-key <key> [--push] [--open-pr]
+umx sync             --cwd .
+umx setup-remote     --cwd . [--mode remote|hybrid]
+umx purge            --cwd . --session <id> [--dry-run]
+umx rebuild-index    --cwd . [--embeddings]
+umx archive-sessions --cwd .
+umx init-actions     [--dir <path>]
+umx migrate-scope    --cwd . --from <old-path> --to <new-path>
+umx doctor           [--cwd .] [--fix]
+umx secret           get <key> | set <key> <value>
+umx import           --cwd . --adapter claude-code|copilot|aider|generic [--dry-run]
+umx mcp
 ```
+
+Additional integration surfaces are part of the shipped CLI and versioned with the Python package:
+
+- `umx capture <codex|copilot|claude-code|gemini|opencode|amp> ...`
+- `umx hooks claude-code <print|install|session-start|pre-tool-use|pre-compact|session-end> ...`
+- `umx bridge <sync|remove|import> ...`
+- `umx shim <aider|generic|amp|cursor|jules|qodo> ...`
+
+`docs/spec-parity.md` is the exhaustive command/flag matrix for the v0.9.2 parity pass.
 
 ---
 
@@ -2190,7 +2199,7 @@ Complete `$UMX_HOME/config.yaml` schema:
 ```yaml
 # Organisation
 org: my-memory-org                    # GitHub org name (required)
-github_token: null                    # PAT. Override: UMX_GITHUB_TOKEN env var
+github_token: null                    # reserved; current GitHub operations use authenticated `gh`
 
 # Project defaults
 project:
@@ -2230,7 +2239,7 @@ memory:
 # Sessions
 sessions:
   redaction: default                  # default | none (none = local-only, no push)
-  redaction_patterns: []              # additional regex patterns beyond built-in set
+  redaction_patterns: []              # additional regex patterns beyond built-in set (`umx config set redaction.patterns ...`)
   entropy_threshold: 4.5              # Shannon bits/char above which a string is flagged (§19)
   entropy_min_length: 16             # minimum string length for entropy check
   entropy_assignment_patterns: []    # additional assignment-context patterns (beyond built-ins)

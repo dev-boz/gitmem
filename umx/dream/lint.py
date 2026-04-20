@@ -2,12 +2,78 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from umx.conventions import ConventionSet, validate_fact
 from umx.dream.conflict import facts_conflict
-from umx.models import Fact
-from umx.models import SourceType
+from umx.models import Fact, SourceType, parse_datetime
 from umx.scope import find_orphaned_scoped_memory
+from umx.search_semantic import load_semantic_cache, save_semantic_cache
+
+
+_LINT_INTERVALS = {
+    "daily": timedelta(days=1),
+    "weekly": timedelta(days=7),
+    "never": None,
+}
+
+
+def _dream_cache(repo_dir: Path) -> dict[str, Any]:
+    payload = load_semantic_cache(repo_dir)
+    dream = payload.get("dream")
+    if not isinstance(dream, dict):
+        payload["dream"] = {}
+    return payload
+
+
+def read_last_lint(repo_dir: Path) -> datetime | None:
+    payload = _dream_cache(repo_dir)
+    dream = payload.get("dream")
+    if not isinstance(dream, dict):
+        return None
+    value = dream.get("last_lint")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = parse_datetime(value)
+    except ValueError:
+        return None
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def mark_lint_complete(repo_dir: Path, when: datetime) -> None:
+    payload = _dream_cache(repo_dir)
+    dream = payload.setdefault("dream", {})
+    if not isinstance(dream, dict):
+        dream = {}
+        payload["dream"] = dream
+    dream["last_lint"] = when.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    save_semantic_cache(repo_dir, payload)
+
+
+def should_run(
+    repo_dir: Path,
+    *,
+    interval: str,
+    force: bool = False,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    if force:
+        return True, "forced"
+    if interval not in _LINT_INTERVALS:
+        raise ValueError(f"unsupported dream.lint_interval: {interval}")
+    if interval == "never":
+        return False, "configured-never"
+    last_lint = read_last_lint(repo_dir)
+    if last_lint is None:
+        return True, "first-run"
+    current = now or datetime.now(tz=UTC)
+    cutoff = current - _LINT_INTERVALS[interval]
+    if last_lint <= cutoff:
+        return True, f"{interval}-due"
+    return False, f"{interval}-not-due"
 
 
 def generate_lint_findings(

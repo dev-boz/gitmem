@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from tests.secret_literals import AWS_ACCESS_KEY_ID
 from umx.cli import main
 from umx.config import default_config
 from umx.cross_project import (
@@ -15,8 +16,11 @@ from umx.cross_project import (
     collect_promotion_candidates,
     cross_project_audit_report,
 )
+from umx.governance import GovernancePRConflictError
+from umx.github_ops import GitHubError
+from umx.governance import GovernancePROverlap, assert_governance_pr_body
 from umx.git_ops import GitCommitResult
-from umx.memory import add_fact, load_all_facts
+from umx.memory import add_fact, load_all_facts, replace_fact
 from umx.models import (
     ConsolidationStatus,
     Fact,
@@ -1026,6 +1030,11 @@ def test_propose_cross_project_opens_pull_request_for_pushed_branch(
     assert "read-only preview" not in create_args[4]
     assert str(user_repo) not in create_args[4]
     assert "Target repo: `user memory repo`" in create_args[4]
+    payload = assert_governance_pr_body(create_args[4])
+    assert payload is not None
+    assert payload["added"][0]["path"] == "facts/topics/ops.md"
+    assert isinstance(payload["added"][0]["fact_id"], str)
+    assert payload["added"][0]["fact_id"]
 
 
 def test_propose_cross_project_open_pr_uses_pushed_branch_even_if_candidate_is_now_blocked(
@@ -1120,6 +1129,173 @@ def test_propose_cross_project_open_pr_uses_pushed_branch_even_if_candidate_is_n
     payload = json.loads(opened.output)
     assert payload["pr_number"] == 43
     assert payload["branch"] == pushed_payload["branch"]
+
+
+def test_propose_cross_project_open_pr_uses_saved_pushed_preview_even_if_candidate_text_changes(
+    umx_home: Path,
+    tmp_path: Path,
+    user_repo: Path,
+) -> None:
+    original_text = "Shared pager rotation lives in docs/oncall"
+    replacement_text = "Shared escalation map lives in docs/escalations"
+
+    _git_commit_all(user_repo, "test: clean user baseline")
+    remote = tmp_path / "user-remote-pr-drift.git"
+    _connect_origin(user_repo, remote)
+    subprocess.run(
+        ["git", "-C", str(user_repo), "push", "--set-upstream", "origin", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    project_dir, repo = _init_project(tmp_path, "alpha")
+    add_fact(repo, _make_fact("FACT_DRIFT_ALPHA", original_text, topic="ops"), auto_commit=False)
+    repo_facts = [(repo, "FACT_DRIFT_ALPHA")]
+    for index, repo_name in enumerate(("beta", "gamma"), start=1):
+        _, other_repo = _init_project(tmp_path, repo_name)
+        fact_id = f"FACT_DRIFT_{index}"
+        add_fact(other_repo, _make_fact(fact_id, original_text, topic="ops"), auto_commit=False)
+        repo_facts.append((other_repo, fact_id))
+
+    runner = CliRunner()
+    pushed = runner.invoke(
+        main,
+        [
+            "propose",
+            "--cwd",
+            str(project_dir),
+            "--cross-project",
+            "--proposal-key",
+            original_text,
+            "--push",
+        ],
+    )
+    assert pushed.exit_code == 0, pushed.output
+    pushed_payload = json.loads(pushed.output)
+
+    for repo_dir, fact_id in repo_facts:
+        fact = next(fact for fact in load_all_facts(repo_dir, include_superseded=False) if fact.fact_id == fact_id)
+        assert replace_fact(repo_dir, fact.clone(text=replacement_text)) is True
+        _git_commit_all(repo_dir, f"test: drift candidate in {repo_dir.name}")
+
+    with patch("umx.git_ops.git_remote_url", return_value="https://github.com/memory-org/umx-user.git"), patch(
+        "umx.github_ops.gh_available",
+        return_value=True,
+    ), patch(
+        "umx.github_ops.create_pr",
+        return_value=44,
+    ) as mock_create_pr:
+        opened = runner.invoke(
+            main,
+            [
+                "propose",
+                "--cwd",
+                str(project_dir),
+                "--cross-project",
+                "--proposal-key",
+                original_text,
+                "--open-pr",
+            ],
+        )
+
+    assert opened.exit_code == 0, opened.output
+    payload = json.loads(opened.output)
+    assert payload["pr_number"] == 44
+    assert payload["branch"] == pushed_payload["branch"]
+
+    create_args = mock_create_pr.call_args.args
+    assert original_text in create_args[4]
+    assert replacement_text not in create_args[4]
+    fact_delta = assert_governance_pr_body(create_args[4])
+    assert fact_delta is not None
+    assert fact_delta["added"][0]["summary"] == original_text
+    assert isinstance(fact_delta["added"][0]["fact_id"], str)
+    assert fact_delta["added"][0]["fact_id"]
+
+
+def test_propose_cross_project_open_pr_surfaces_conflicting_pr_url(
+    umx_home: Path,
+    tmp_path: Path,
+    user_repo: Path,
+) -> None:
+    _git_commit_all(user_repo, "test: clean user baseline")
+    remote = tmp_path / "user-remote-pr-conflict.git"
+    _connect_origin(user_repo, remote)
+    subprocess.run(
+        ["git", "-C", str(user_repo), "push", "--set-upstream", "origin", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    project_dir, repo = _init_project(tmp_path, "alpha")
+    add_fact(
+        repo,
+        _make_fact("FACT_OPEN_CONFLICT_ALPHA", "Shared incident runbook lives in docs/incidents", topic="ops"),
+        auto_commit=False,
+    )
+    for index, repo_name in enumerate(("beta", "gamma"), start=1):
+        _, other_repo = _init_project(tmp_path, repo_name)
+        add_fact(
+            other_repo,
+            _make_fact(
+                f"FACT_OPEN_CONFLICT_{index}",
+                "Shared incident runbook lives in docs/incidents",
+                topic="ops",
+            ),
+            auto_commit=False,
+        )
+
+    runner = CliRunner()
+    pushed = runner.invoke(
+        main,
+        [
+            "propose",
+            "--cwd",
+            str(project_dir),
+            "--cross-project",
+            "--proposal-key",
+            "shared incident runbook lives in docs/incidents",
+            "--push",
+        ],
+    )
+    assert pushed.exit_code == 0, pushed.output
+
+    conflict = GovernancePRConflictError(
+        [
+            GovernancePROverlap(
+                pr_number=41,
+                pr_url="https://github.com/memory-org/umx-user/pull/41",
+                pr_title="Existing governance PR",
+                head_ref="proposal/existing",
+                overlapping_fact_ids=("FACT-CONFLICT-1",),
+            )
+        ]
+    )
+
+    with patch("umx.git_ops.git_remote_url", return_value="https://github.com/memory-org/umx-user.git"), patch(
+        "umx.github_ops.gh_available",
+        return_value=True,
+    ), patch(
+        "umx.github_ops.create_pr",
+        side_effect=conflict,
+    ):
+        opened = runner.invoke(
+            main,
+            [
+                "propose",
+                "--cwd",
+                str(project_dir),
+                "--cross-project",
+                "--proposal-key",
+                "shared incident runbook lives in docs/incidents",
+                "--open-pr",
+            ],
+        )
+
+    assert opened.exit_code != 0
+    assert "PR #41 https://github.com/memory-org/umx-user/pull/41" in opened.output
 
 
 def test_propose_cross_project_open_pr_requires_pushed_remote_branch(
@@ -1241,6 +1417,78 @@ def test_propose_cross_project_open_pr_requires_gh(
 
     assert result.exit_code != 0
     assert "gh CLI is not available or not authenticated" in result.output
+
+
+def test_propose_cross_project_open_pr_surfaces_gh_retry_next_steps(
+    umx_home: Path,
+    tmp_path: Path,
+    user_repo: Path,
+) -> None:
+    _git_commit_all(user_repo, "test: clean user baseline")
+    remote = tmp_path / "user-remote-pr-gh-error.git"
+    _connect_origin(user_repo, remote)
+    subprocess.run(
+        ["git", "-C", str(user_repo), "push", "--set-upstream", "origin", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    project_dir, repo = _init_project(tmp_path, "alpha")
+    add_fact(
+        repo,
+        _make_fact("FACT_OPEN_GH_ERROR_ALPHA", "Shared release train lives in docs/releases", topic="release"),
+        auto_commit=False,
+    )
+    for index, repo_name in enumerate(("beta", "gamma"), start=1):
+        _, other_repo = _init_project(tmp_path, repo_name)
+        add_fact(
+            other_repo,
+            _make_fact(
+                f"FACT_OPEN_GH_ERROR_{index}",
+                "Shared release train lives in docs/releases",
+                topic="release",
+            ),
+            auto_commit=False,
+        )
+
+    runner = CliRunner()
+    pushed = runner.invoke(
+        main,
+        [
+            "propose",
+            "--cwd",
+            str(project_dir),
+            "--cross-project",
+            "--proposal-key",
+            "shared release train lives in docs/releases",
+            "--push",
+        ],
+    )
+    assert pushed.exit_code == 0, pushed.output
+
+    with patch("umx.git_ops.git_remote_url", return_value="https://github.com/memory-org/umx-user.git"), patch(
+        "umx.github_ops.gh_available",
+        side_effect=GitHubError(
+            "gh auth status: 503 service unavailable (after 3 attempts). "
+            "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry."
+        ),
+    ):
+        result = runner.invoke(
+            main,
+            [
+                "propose",
+                "--cwd",
+                str(project_dir),
+                "--cross-project",
+                "--proposal-key",
+                "shared release train lives in docs/releases",
+                "--open-pr",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry." in result.output
 
 
 def test_propose_cross_project_open_pr_requires_github_origin(
@@ -1750,7 +1998,7 @@ def test_propose_cross_project_preserves_local_branch_when_push_safety_blocks(
         repo,
         _make_fact(
             "FACT_PUSH_BLOCK_ALPHA",
-            "Shared aws key AKIA1234567890ABCDEF lives in docs/secrets",
+            f"Shared aws key {AWS_ACCESS_KEY_ID} lives in docs/secrets",
             topic="deploy",
         ),
         auto_commit=False,
@@ -1761,7 +2009,7 @@ def test_propose_cross_project_preserves_local_branch_when_push_safety_blocks(
             other_repo,
             _make_fact(
                 f"FACT_PUSH_BLOCK_{index}",
-                "Shared aws key AKIA1234567890ABCDEF lives in docs/secrets",
+                f"Shared aws key {AWS_ACCESS_KEY_ID} lives in docs/secrets",
                 topic="deploy",
             ),
             auto_commit=False,
@@ -1770,7 +2018,7 @@ def test_propose_cross_project_preserves_local_branch_when_push_safety_blocks(
     preview = build_cross_project_promotion_report(
         umx_home,
         default_config(),
-        candidate_key="shared aws key akia1234567890abcdef lives in docs/secrets",
+        candidate_key=f"shared aws key {AWS_ACCESS_KEY_ID.lower()} lives in docs/secrets",
     )
     branch = preview["proposal"]["branch"]
 

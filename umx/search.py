@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import re
 import sqlite3
+import threading
+from collections import OrderedDict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -45,10 +48,50 @@ REFERENCE_STOPWORDS = {
     "with",
 }
 TERM_RE = re.compile(r"[a-zA-Z0-9_]+")
+_ENSURED_INDEX_PATHS: set[Path] = set()
+_ENSURED_USAGE_PATHS: set[Path] = set()
+_INJECT_INDEX_READY: dict[Path, tuple[tuple[tuple[str, int, int], ...], bool]] = {}
+_HOT_CONNECTIONS: "OrderedDict[tuple[Path, int], sqlite3.Connection]" = OrderedDict()
+_HOT_CONNECTION_LIMIT = 16
 
 
 def _utcnow_iso() -> str:
     return datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def _fact_file_stat_fingerprint(repo_dir: Path) -> tuple[tuple[str, int, int], ...]:
+    entries: list[tuple[str, int, int]] = []
+    for path in iter_fact_files(repo_dir):
+        stat = path.stat()
+        entries.append((str(path.relative_to(repo_dir)), stat.st_mtime_ns, stat.st_size))
+    return tuple(entries)
+
+
+def _mark_inject_index_ready(repo_dir: Path, ready: bool) -> None:
+    _INJECT_INDEX_READY[index_path(repo_dir).resolve()] = (
+        _fact_file_stat_fingerprint(repo_dir),
+        ready,
+    )
+
+
+def _inject_index_is_ready(
+    repo_dir: Path,
+    *,
+    stat_fingerprint: tuple[tuple[str, int, int], ...] | None = None,
+) -> bool:
+    path = index_path(repo_dir).resolve()
+    if not path.exists():
+        return False
+    fingerprint = stat_fingerprint or _fact_file_stat_fingerprint(repo_dir)
+    cached = _INJECT_INDEX_READY.get(path)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    conn = _connect(path)
+    stored = _load_file_hashes(conn)
+    conn.close()
+    ready = stored is not None and stored == _compute_file_hashes(repo_dir)
+    _INJECT_INDEX_READY[path] = (fingerprint, ready)
+    return ready
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -79,8 +122,41 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _close_hot_connections() -> None:
+    while _HOT_CONNECTIONS:
+        _, conn = _HOT_CONNECTIONS.popitem(last=False)
+        try:
+            conn.close()
+        except sqlite3.Error:
+            continue
+
+
+atexit.register(_close_hot_connections)
+
+
+def _hot_connect(path: Path) -> sqlite3.Connection:
+    resolved = path.resolve()
+    key = (resolved, threading.get_ident())
+    conn = _HOT_CONNECTIONS.get(key)
+    if conn is not None:
+        _HOT_CONNECTIONS.move_to_end(key)
+        return conn
+    conn = _connect(resolved)
+    _HOT_CONNECTIONS[key] = conn
+    while len(_HOT_CONNECTIONS) > _HOT_CONNECTION_LIMIT:
+        _, stale = _HOT_CONNECTIONS.popitem(last=False)
+        try:
+            stale.close()
+        except sqlite3.Error:
+            continue
+    return conn
+
+
 def ensure_index(repo_dir: Path) -> None:
-    conn = _connect(index_path(repo_dir))
+    path = index_path(repo_dir).resolve()
+    if path in _ENSURED_INDEX_PATHS and path.exists():
+        return
+    conn = _connect(path)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS _meta (
@@ -131,10 +207,14 @@ def ensure_index(repo_dir: Path) -> None:
     )
     conn.commit()
     conn.close()
+    _ENSURED_INDEX_PATHS.add(path)
 
 
 def ensure_usage_db(repo_dir: Path) -> None:
-    conn = _connect(usage_path(repo_dir))
+    path = usage_path(repo_dir).resolve()
+    if path in _ENSURED_USAGE_PATHS and path.exists():
+        return
+    conn = _connect(path)
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS usage (
@@ -224,6 +304,7 @@ def ensure_usage_db(repo_dir: Path) -> None:
     )
     conn.commit()
     conn.close()
+    _ENSURED_USAGE_PATHS.add(path)
 
 
 def _insert_fact(conn: sqlite3.Connection, fact, repo_dir: Path) -> None:
@@ -303,6 +384,7 @@ def rebuild_index(
     _store_file_hashes(conn, _compute_file_hashes(repo_dir))
     conn.commit()
     conn.close()
+    _mark_inject_index_ready(repo_dir, True)
     if with_embeddings:
         ensure_embeddings(
             repo_dir,
@@ -383,6 +465,36 @@ def query_index(
         if len(ordered) >= limit:
             break
     return ordered
+
+
+def inject_candidate_ids(
+    repo_dir: Path,
+    query: str,
+    *,
+    limit: int,
+    config: UMXConfig | None = None,
+    stat_fingerprint: tuple[tuple[str, int, int], ...] | None = None,
+) -> list[str]:
+    cfg = config or load_config(config_path())
+    if limit <= 0 or not query.strip() or cfg.search.backend != "fts5":
+        return []
+    if not _inject_index_is_ready(repo_dir, stat_fingerprint=stat_fingerprint):
+        return []
+    conn = _hot_connect(index_path(repo_dir))
+    sql = """
+        SELECT m.id, bm25(memories_fts) AS rank
+        FROM memories_fts
+        JOIN memories m ON m.rowid = memories_fts.rowid
+        WHERE memories_fts MATCH ?
+          AND m.superseded_by IS NULL
+        ORDER BY rank
+        LIMIT ?
+        """
+    try:
+        rows = conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(sql, (_fallback_match_query(query), limit)).fetchall()
+    return [str(row["id"]) for row in rows]
 
 
 def _fallback_match_query(query: str) -> str:
@@ -586,8 +698,8 @@ def advance_session_state(
     return snapshot
 
 
-def record_usage(
-    repo_dir: Path,
+def _record_usage_row(
+    conn: sqlite3.Connection,
     fact_id: str,
     *,
     injected: bool = False,
@@ -596,8 +708,6 @@ def record_usage(
     referenced_at: str | None = None,
     item_kind: str = "fact",
 ) -> None:
-    ensure_usage_db(repo_dir)
-    conn = _connect(usage_path(repo_dir))
     conn.execute(
         """
         INSERT INTO usage (fact_id, last_referenced, reference_count, injected_count, cited_count, last_session, item_kind)
@@ -620,12 +730,35 @@ def record_usage(
             item_kind,
         ),
     )
+
+
+def record_usage(
+    repo_dir: Path,
+    fact_id: str,
+    *,
+    injected: bool = False,
+    cited: bool = False,
+    session_id: str | None = None,
+    referenced_at: str | None = None,
+    item_kind: str = "fact",
+) -> None:
+    ensure_usage_db(repo_dir)
+    conn = _connect(usage_path(repo_dir))
+    _record_usage_row(
+        conn,
+        fact_id,
+        injected=injected,
+        cited=cited,
+        session_id=session_id,
+        referenced_at=referenced_at,
+        item_kind=item_kind,
+    )
     conn.commit()
     conn.close()
 
 
-def record_injection(
-    repo_dir: Path,
+def _record_injection_event(
+    conn: sqlite3.Connection,
     fact_id: str,
     *,
     session_id: str | None = None,
@@ -638,9 +771,8 @@ def record_injection(
     token_count: int = 0,
     item_kind: str = "fact",
 ) -> int | None:
-    record_usage(repo_dir, fact_id, injected=True, session_id=session_id, item_kind=item_kind)
-    ensure_usage_db(repo_dir)
-    conn = _connect(usage_path(repo_dir))
+    if session_id is None:
+        return None
     now = _utcnow_iso()
     cursor = conn.execute(
         """
@@ -696,10 +828,122 @@ def record_injection(
                 refresh_delta,
             ),
         )
+    return int(cursor.lastrowid) if cursor.lastrowid is not None else None
+
+
+def record_injection(
+    repo_dir: Path,
+    fact_id: str,
+    *,
+    session_id: str | None = None,
+    turn_index: int | None = None,
+    session_tokens: int | None = None,
+    injection_point: str = "prompt",
+    disclosure_level: str = "l1",
+    tool: str | None = None,
+    parent_session_id: str | None = None,
+    token_count: int = 0,
+    item_kind: str = "fact",
+) -> int | None:
+    ensure_usage_db(repo_dir)
+    conn = _hot_connect(usage_path(repo_dir))
+    _record_usage_row(
+        conn,
+        fact_id,
+        injected=True,
+        session_id=session_id,
+        item_kind=item_kind,
+    )
+    event_id = _record_injection_event(
+        conn,
+        fact_id,
+        session_id=session_id,
+        turn_index=turn_index,
+        session_tokens=session_tokens,
+        injection_point=injection_point,
+        disclosure_level=disclosure_level,
+        tool=tool,
+        parent_session_id=parent_session_id,
+        token_count=token_count,
+        item_kind=item_kind,
+    )
     conn.commit()
-    event_id = int(cursor.lastrowid) if cursor.lastrowid is not None else None
-    conn.close()
     return event_id
+
+
+def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[int | None]:
+    if not injections:
+        return []
+    ensure_usage_db(repo_dir)
+    conn = _hot_connect(usage_path(repo_dir))
+    if all(injection.get("session_id") is None for injection in injections):
+        aggregated: dict[tuple[str, str], int] = {}
+        for injection in injections:
+            fact_id = str(injection["fact_id"])
+            item_kind = str(injection.get("item_kind") or "fact")
+            key = (fact_id, item_kind)
+            aggregated[key] = aggregated.get(key, 0) + 1
+        conn.executemany(
+            """
+            INSERT INTO usage (
+              fact_id, last_referenced, reference_count, injected_count, cited_count, last_session, item_kind
+            ) VALUES (?, NULL, 0, ?, 0, NULL, ?)
+            ON CONFLICT(fact_id) DO UPDATE SET
+              injected_count = usage.injected_count + excluded.injected_count,
+              item_kind = COALESCE(excluded.item_kind, usage.item_kind)
+            """,
+            [
+                (fact_id, injected_count, item_kind)
+                for (fact_id, item_kind), injected_count in aggregated.items()
+            ],
+        )
+        conn.commit()
+        return [None] * len(injections)
+    event_ids: list[int | None] = []
+    for injection in injections:
+        fact_id = str(injection["fact_id"])
+        session_id = (
+            str(injection["session_id"])
+            if injection.get("session_id") is not None
+            else None
+        )
+        item_kind = str(injection.get("item_kind") or "fact")
+        _record_usage_row(
+            conn,
+            fact_id,
+            injected=True,
+            session_id=session_id,
+            item_kind=item_kind,
+        )
+        event_ids.append(
+            _record_injection_event(
+                conn,
+                fact_id,
+                session_id=session_id,
+                turn_index=(
+                    int(injection["turn_index"])
+                    if injection.get("turn_index") is not None
+                    else None
+                ),
+                session_tokens=(
+                    int(injection["session_tokens"])
+                    if injection.get("session_tokens") is not None
+                    else None
+                ),
+                injection_point=str(injection.get("injection_point") or "prompt"),
+                disclosure_level=str(injection.get("disclosure_level") or "l1"),
+                tool=str(injection["tool"]) if injection.get("tool") is not None else None,
+                parent_session_id=(
+                    str(injection["parent_session_id"])
+                    if injection.get("parent_session_id") is not None
+                    else None
+                ),
+                token_count=int(injection.get("token_count") or 0),
+                item_kind=item_kind,
+            )
+        )
+    conn.commit()
+    return event_ids
 
 
 def _mark_latest_injection_used(conn: sqlite3.Connection, session_id: str, fact_id: str) -> None:
@@ -1035,6 +1279,7 @@ def incremental_rebuild(repo_dir: Path) -> int:
     _store_file_hashes(conn, current)
     conn.commit()
     conn.close()
+    _mark_inject_index_ready(repo_dir, True)
     return len(changed) + len(deleted)
 
 

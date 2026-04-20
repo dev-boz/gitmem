@@ -1,0 +1,26 @@
+[
+  {
+    "topic": "deploy",
+    "text": "Deploys run through staging before production and require a smoke test."
+  },
+  {
+    "topic": "database",
+    "text": "Postgres migrations run before background workers restart."
+  },
+  {
+    "topic": "search",
+    "text": "Search index rebuilds should complete before users rely on new facts."
+  },
+  {
+    "topic": "rollback",
+    "text": "Rollback plans keep the previous release artifact available for one hour."
+  },
+  {
+    "topic": "observability",
+    "text": "Incident review notes must capture latency regressions and retry behavior."
+  },
+  {
+    "topic": "security",
+    "text": "Production secrets stay redacted from captured sessions and generated memory."
+  }
+]

@@ -9,7 +9,7 @@ from umx.config import load_config
 from umx.conventions import validate_conventions_file
 from umx.dream.gates import DreamLock
 from umx.dream.processing import summarize_processing_log
-from umx.git_ops import git_signing_payload
+from umx.git_ops import git_signing_payload, git_signing_readiness
 from umx.metrics import compute_metrics, health_flags
 from umx.schema import detect_schema_state, repair_schema
 from umx.search_semantic import embeddings_available
@@ -23,7 +23,7 @@ def _quarantine_summary(repo_dir: Path) -> dict[str, object]:
     files = sorted(
         path.relative_to(repo_dir).as_posix()
         for path in quarantine_dir.iterdir()
-        if path.is_file()
+        if path.is_file() and not path.name.endswith(".meta.json")
     )
     return {"count": len(files), "files": files[:10]}
 
@@ -73,6 +73,17 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         "exists": home.exists(),
         "config_exists": (home / "config.yaml").exists(),
         "git_signing": git_signing_payload(cfg),
+        "git_signing_readiness": {
+            "format": "openpgp",
+            "signing_key": None,
+            "signer_program": "gpg",
+            "signer_program_configured": None,
+            "signer_available": False,
+            "user_name": None,
+            "user_email": None,
+            "ready": False,
+            "issues": [],
+        },
         "fixes_applied": [],
     }
 
@@ -80,6 +91,18 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
     try:
         project_root = find_project_root(cwd)
         repo_dir = project_memory_dir(cwd)
+        readiness = git_signing_readiness(repo_dir, cfg)
+        result["git_signing_readiness"] = {
+            "format": readiness.format,
+            "signing_key": readiness.signing_key,
+            "signer_program": readiness.signer_program,
+            "signer_program_configured": readiness.signer_program_configured,
+            "signer_available": readiness.signer_available,
+            "user_name": readiness.user_name,
+            "user_email": readiness.user_email,
+            "ready": readiness.ready,
+            "issues": list(readiness.issues),
+        }
         schema_state = detect_schema_state(repo_dir)
         result["schema"] = schema_state.to_dict()
         if fix and schema_state.fixable:

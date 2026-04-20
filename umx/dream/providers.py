@@ -5,6 +5,7 @@ import shutil
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from umx.config import UMXConfig
 from umx.models import Fact, Provenance
@@ -60,6 +61,12 @@ class ProviderReviewResult:
     violations: list[str] = field(default_factory=list)
     attempts: list[ProviderAttempt] = field(default_factory=list)
     model_backed: bool = False
+    comment_body: str | None = None
+    fact_notes: list[dict[str, str]] = field(default_factory=list)
+    usage: dict[str, int] | None = None
+    model: str | None = None
+    prompt_id: str | None = None
+    prompt_version: str | None = None
 
 
 def _extracted_by_label(provider: str, config: UMXConfig) -> str:
@@ -244,9 +251,19 @@ def run_l2_review_with_providers(
 ) -> ProviderReviewResult:
     cfg = config or UMXConfig()
     active_env = env or os.environ
-    registered = reviewers or REVIEW_PROVIDER_REVIEWERS
+    registered = dict(reviewers or REVIEW_PROVIDER_REVIEWERS)
+    if "anthropic" not in registered:
+        from umx.dream.l2_review import anthropic_l2_reviewer
+
+        registered["anthropic"] = anthropic_l2_reviewer
     attempts: list[ProviderAttempt] = []
-    for provider in resolve_provider_plan(cfg, env=active_env, extractors=registered):
+    required_provider = _required_review_provider(cfg, active_env, registered)
+    for provider in _resolve_review_provider_plan(
+        cfg,
+        active_env,
+        registered,
+        required_provider=required_provider,
+    ):
         reviewer = registered.get(provider)
         model = cfg.dream.local_model if provider == PROVIDER_LOCAL else provider
         if reviewer is None:
@@ -258,6 +275,8 @@ def run_l2_review_with_providers(
                     model=model,
                 )
             )
+            if provider == required_provider:
+                raise ProviderUnavailableError(f"{provider} reviewer is not registered")
             continue
         if provider != PROVIDER_LOCAL and not _provider_key(provider, cfg, active_env):
             attempts.append(
@@ -268,9 +287,29 @@ def run_l2_review_with_providers(
                     model=model,
                 )
             )
+            if provider == required_provider:
+                raise ProviderUnavailableError(_missing_review_provider_credentials(provider))
             continue
         try:
-            decision = reviewer(pr, conventions, existing_facts, new_facts, cfg)
+            decision = _invoke_reviewer_with_env(
+                provider,
+                reviewer,
+                pr,
+                conventions,
+                existing_facts,
+                new_facts,
+                cfg,
+                active_env,
+            )
+            action = str(decision["action"])
+            reason = str(decision["reason"])
+            violations = [str(item) for item in list(decision.get("violations", []))]
+            comment_body = _coerce_optional_string(decision.get("comment_body"))
+            fact_notes = _coerce_fact_notes(decision.get("fact_notes"))
+            usage = _coerce_usage(decision.get("usage"))
+            review_model = _coerce_optional_string(decision.get("model")) or model
+            prompt_id = _coerce_optional_string(decision.get("prompt_id"))
+            prompt_version = _coerce_optional_string(decision.get("prompt_version"))
         except ProviderUnavailableError as exc:
             attempts.append(
                 ProviderAttempt(
@@ -280,6 +319,8 @@ def run_l2_review_with_providers(
                     model=model,
                 )
             )
+            if provider == required_provider:
+                raise
             continue
         except Exception as exc:
             attempts.append(
@@ -290,6 +331,8 @@ def run_l2_review_with_providers(
                     model=model,
                 )
             )
+            if provider == required_provider:
+                raise RuntimeError(f"{provider} L2 review failed: {exc}") from exc
             continue
         attempts.append(
             ProviderAttempt(
@@ -299,14 +342,22 @@ def run_l2_review_with_providers(
             )
         )
         return ProviderReviewResult(
-            action=str(decision["action"]),
-            reason=str(decision["reason"]),
+            action=action,
+            reason=reason,
             reviewed_by=_extracted_by_label(provider, cfg),
-            violations=list(decision.get("violations", [])),
+            violations=violations,
             attempts=attempts,
             model_backed=True,
+            comment_body=comment_body,
+            fact_notes=fact_notes,
+            usage=usage,
+            model=review_model,
+            prompt_id=prompt_id,
+            prompt_version=prompt_version,
         )
 
+    if required_provider is not None:
+        raise ProviderUnavailableError(f"{required_provider} L2 review could not be completed")
     fallback = fallback_reviewer(pr, conventions, existing_facts, new_facts)
     return ProviderReviewResult(
         action=str(fallback["action"]),
@@ -316,6 +367,128 @@ def run_l2_review_with_providers(
         attempts=attempts,
         model_backed=False,
     )
+
+
+def _resolve_review_provider_plan(
+    config: UMXConfig,
+    env: Mapping[str, str],
+    reviewers: Mapping[str, ReviewProviderReviewer],
+    *,
+    required_provider: str | None = None,
+) -> list[str]:
+    plan = resolve_provider_plan(config, env=env, extractors=reviewers)
+    preferred_provider = _preferred_review_provider(env, reviewers)
+    for provider in (required_provider, preferred_provider):
+        if provider is not None and provider in reviewers and provider not in plan:
+            plan.insert(0, provider)
+    return list(dict.fromkeys(plan))
+
+
+def _preferred_review_provider(
+    env: Mapping[str, str],
+    reviewers: Mapping[str, ReviewProviderReviewer],
+) -> str | None:
+    if "anthropic" in reviewers and env.get(PROVIDER_API_ENV_VARS["anthropic"]):
+        return "anthropic"
+    return None
+
+
+def _required_review_provider(
+    config: UMXConfig,
+    env: Mapping[str, str],
+    reviewers: Mapping[str, ReviewProviderReviewer],
+) -> str | None:
+    if "anthropic" not in reviewers:
+        return None
+    if env.get(PROVIDER_API_ENV_VARS["anthropic"]):
+        return "anthropic"
+    if config.dream.paid_provider == "anthropic":
+        return "anthropic"
+    return None
+
+
+def _missing_review_provider_credentials(provider: str) -> str:
+    env_var = PROVIDER_API_ENV_VARS.get(provider)
+    if env_var:
+        return f"{env_var} is required for {provider}-backed L2 review"
+    return f"credentials are required for {provider}-backed L2 review"
+
+
+def _coerce_optional_string(value: Any) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("expected a string")
+    stripped = value.strip()
+    return stripped or None
+
+
+def _coerce_usage(value: Any) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise TypeError("usage must be a mapping")
+    usage: dict[str, int] = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens"):
+        if key not in value or value[key] is None:
+            continue
+        usage[key] = int(value[key])
+    if "total_tokens" not in usage and {"input_tokens", "output_tokens"} <= set(usage):
+        usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
+    return usage or None
+
+
+def _coerce_fact_notes(value: Any) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TypeError("fact_notes must be a list")
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise TypeError(f"fact note {index} must be an object")
+        note = _coerce_optional_string(item.get("note"))
+        if note is None:
+            raise TypeError(f"fact note {index} is missing `note`")
+        payload: dict[str, str] = {"note": note}
+        fact_id = _coerce_optional_string(item.get("fact_id"))
+        if fact_id is not None:
+            payload["fact_id"] = fact_id
+        summary = _coerce_optional_string(item.get("summary"))
+        if summary is not None:
+            payload["summary"] = summary
+        normalized.append(payload)
+    return normalized
+
+
+def _invoke_reviewer_with_env(
+    provider: str,
+    reviewer: ReviewProviderReviewer,
+    pr: object,
+    conventions: object,
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+    config: UMXConfig,
+    env: Mapping[str, str],
+) -> dict[str, object]:
+    env_var = PROVIDER_API_ENV_VARS.get(provider)
+    if env_var is None or env_var not in env:
+        return reviewer(pr, conventions, existing_facts, new_facts, config)
+
+    injected = env.get(env_var)
+    if injected is None:
+        return reviewer(pr, conventions, existing_facts, new_facts, config)
+
+    had_original = env_var in os.environ
+    original = os.environ.get(env_var)
+    os.environ[env_var] = injected
+    try:
+        return reviewer(pr, conventions, existing_facts, new_facts, config)
+    finally:
+        if had_original and original is not None:
+            os.environ[env_var] = original
+        else:
+            os.environ.pop(env_var, None)
 
 
 def detected_capture_backends(home: Path | None = None) -> list[str]:

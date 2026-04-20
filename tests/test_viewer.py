@@ -6,7 +6,9 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 import json
+from unittest.mock import patch
 
+from tests.secret_literals import OPENAI_KEY_SHORT
 from umx.config import default_config, save_config
 from umx.hooks.assistant_output import run as assistant_output_run
 from umx.inject import build_injection_block
@@ -22,7 +24,14 @@ from umx.models import (
     Verification,
 )
 from umx.scope import config_path
-from umx.sessions import write_session
+from umx.sessions import (
+    quarantine_decision_log_path,
+    quarantine_metadata_path,
+    quarantine_path,
+    read_session,
+    session_path,
+    write_session,
+)
 from umx.tombstones import forget_fact
 from umx.viewer.server import _build_html, start as start_viewer
 
@@ -32,6 +41,49 @@ def _start_test_viewer(cwd: Path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return url, server, thread
+
+
+def _write_quarantined_session(
+    project_repo: Path,
+    *,
+    session_id: str,
+    content: str,
+    reason: str = "invalid redaction pattern '['",
+) -> None:
+    quarantine = quarantine_path(project_repo, session_id)
+    quarantine.parent.mkdir(parents=True, exist_ok=True)
+    quarantine.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "_meta": {
+                            "session_id": session_id,
+                            "tool": "codex",
+                            "started": "2026-04-11T00:00:00Z",
+                        }
+                    },
+                    sort_keys=True,
+                ),
+                json.dumps({"role": "user", "content": content}, sort_keys=True),
+            ]
+        )
+        + "\n"
+    )
+    quarantine_metadata_path(project_repo, session_id).write_text(
+        json.dumps(
+            {
+                "kind": "session",
+                "session_id": session_id,
+                "quarantined_at": "2026-04-11T00:00:01Z",
+                "reason": reason,
+                "tool": "codex",
+                "started": "2026-04-11T00:00:00Z",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def test_viewer_replay_combines_session_events_and_cross_scope_telemetry(
@@ -152,6 +204,83 @@ def test_viewer_surfaces_health_flags(project_dir: Path, project_repo: Path) -> 
     assert "Hot tier utilisation out of range" in html
     assert "Recommended Actions" in html
     assert "Metric" in html
+
+
+def test_viewer_surfaces_governance_health_panel(project_dir: Path, project_repo: Path) -> None:
+    payload = {
+        "repo": str(project_repo),
+        "mode": "remote",
+        "governed": True,
+        "ok": False,
+        "flags": [
+            "1 governance PR(s) awaiting L2 review",
+            "1 stale local governance branch(es) older than 7d without an open PR",
+        ],
+        "errors": [
+            "PR #14 dream/l1/20260418-needs-review: governance PR body is missing the required fact-delta block"
+        ],
+        "summary": {
+            "open_governance_prs": 1,
+            "reviewer_queue_depth": 1,
+            "human_review_queue_depth": 0,
+            "stale_branch_count": 1,
+            "label_drift_count": 1,
+            "stale_branch_days": 7,
+            "pr_inventory_available": True,
+        },
+        "open_prs": [
+            {
+                "number": 14,
+                "title": "Needs review",
+                "url": "https://example.test/pr/14",
+                "head_ref": "dream/l1/20260418-needs-review",
+                "labels": ["type: extraction", "confidence:high", "state: extraction"],
+                "state": "state: extraction",
+                "human_review": False,
+                "fact_ids": [],
+                "body_error": None,
+            }
+        ],
+        "stale_branches": [
+            {
+                "name": "proposal/old-cleanup",
+                "head": "abc123",
+                "last_commit_ts": "2026-04-01T10:00:00Z",
+                "age_days": 12,
+                "current": False,
+                "upstream": None,
+            }
+        ],
+        "last_l2_review": {
+            "ts": "2026-04-18T12:00:00Z",
+            "status": "completed",
+            "action": "approve",
+            "pr_number": 14,
+            "reviewed_by": "copilot",
+            "review_model": "claude-opus-4-7",
+            "merge_blocked": False,
+        },
+        "label_drift": [
+            {
+                "number": 14,
+                "title": "Needs review",
+                "url": "https://example.test/pr/14",
+                "head_ref": "dream/l1/20260418-needs-review",
+                "labels": ["type: extraction", "confidence:high", "state: extraction"],
+                "issues": ["missing impact label"],
+            }
+        ],
+    }
+
+    with patch("umx.governance_health.build_governance_health_payload", return_value=payload):
+        html = _build_html(project_dir)
+
+    assert "Governance Health" in html
+    assert "Needs review" in html
+    assert "proposal/old-cleanup" in html
+    assert "missing impact label" in html
+    assert "2026-04-18T12:00:00Z" in html
+    assert "governance PR body is missing the required fact-delta block" in html
 
 
 def test_viewer_surfaces_tombstones_audit_sessions_tasks_and_conventions(
@@ -392,3 +521,162 @@ def test_viewer_post_merge_applies_resolution(project_dir: Path, project_repo: P
     facts = load_all_facts(project_repo, include_superseded=True)
     assert any(item.superseded_by for item in facts)
     assert "resolved 1 conflicts" in html
+
+
+def test_viewer_surfaces_quarantine_queue(project_dir: Path, project_repo: Path) -> None:
+    session_id = "2026-04-11-quarantine-viewer"
+    _write_quarantined_session(
+        project_repo,
+        session_id=session_id,
+        content=f'api_key = "{OPENAI_KEY_SHORT}"',
+    )
+
+    html = _build_html(project_dir)
+
+    assert "Quarantine Queue" in html
+    assert session_id in html
+    assert "invalid redaction pattern" in html
+    assert "[REDACTED:openai-key]" in html
+    assert OPENAI_KEY_SHORT not in html
+
+
+def test_viewer_ignores_push_safety_reports_in_quarantine_queue(project_dir: Path, project_repo: Path) -> None:
+    quarantine_dir = project_repo / "local" / "quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    report = quarantine_dir / "push-safety-20260411T000000Z.json"
+    report.write_text(json.dumps({"findings": []}, sort_keys=True) + "\n")
+
+    html = _build_html(project_dir)
+
+    assert "Quarantine Queue" in html
+    assert "No quarantined sessions." in html
+    assert report.name not in html
+
+
+def test_viewer_post_release_requires_confirm(project_dir: Path, project_repo: Path) -> None:
+    session_id = "2026-04-11-quarantine-confirm"
+    _write_quarantined_session(
+        project_repo,
+        session_id=session_id,
+        content=f'api_key = "{OPENAI_KEY_SHORT}"',
+    )
+
+    url, server, thread = _start_test_viewer(project_dir)
+    try:
+        html = urlopen(
+            url,
+            data=urlencode({"action": "release-quarantine", "session_id": session_id}).encode(),
+        ).read().decode()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert "notice-error" in html
+    assert "release requires explicit confirm" in html
+    assert quarantine_path(project_repo, session_id).exists()
+    assert not session_path(project_repo, session_id).exists()
+
+
+def test_viewer_post_release_moves_session_out_of_quarantine(project_dir: Path, project_repo: Path) -> None:
+    session_id = "2026-04-11-quarantine-release"
+    _write_quarantined_session(
+        project_repo,
+        session_id=session_id,
+        content=f'api_key = "{OPENAI_KEY_SHORT}"',
+    )
+
+    url, server, thread = _start_test_viewer(project_dir)
+    try:
+        html = urlopen(
+            url,
+            data=urlencode(
+                {
+                    "action": "release-quarantine",
+                    "session_id": session_id,
+                    "confirm_release": "yes",
+                }
+            ).encode(),
+        ).read().decode()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    released = read_session(session_path(project_repo, session_id))
+    assert released[1]["content"] == 'api_key = "[REDACTED:openai-key]"'
+    assert not quarantine_path(project_repo, session_id).exists()
+    assert not quarantine_metadata_path(project_repo, session_id).exists()
+    decision_log = quarantine_decision_log_path(project_repo)
+    assert decision_log.exists()
+    decisions = [json.loads(line) for line in decision_log.read_text().splitlines() if line.strip()]
+    assert any(item["action"] == "release" and item["session_id"] == session_id for item in decisions)
+    assert "notice-success" in html
+    assert f"released {session_id}" in html
+
+
+def test_viewer_post_release_remains_fail_closed_when_redaction_disabled(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    session_id = "2026-04-11-quarantine-fail-closed"
+    _write_quarantined_session(
+        project_repo,
+        session_id=session_id,
+        content=f'api_key = "{OPENAI_KEY_SHORT}"',
+    )
+    cfg = default_config()
+    cfg.sessions.redaction = "none"
+    save_config(config_path(), cfg)
+
+    url, server, thread = _start_test_viewer(project_dir)
+    try:
+        html = urlopen(
+            url,
+            data=urlencode(
+                {
+                    "action": "release-quarantine",
+                    "session_id": session_id,
+                    "confirm_release": "yes",
+                }
+            ).encode(),
+        ).read().decode()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert "notice-error" in html
+    assert "sessions.redaction to stay enabled" in html
+    assert quarantine_path(project_repo, session_id).exists()
+    assert not session_path(project_repo, session_id).exists()
+
+
+def test_viewer_post_discard_removes_quarantine_and_logs_decision(project_dir: Path, project_repo: Path) -> None:
+    session_id = "2026-04-11-quarantine-discard"
+    _write_quarantined_session(
+        project_repo,
+        session_id=session_id,
+        content=f'api_key = "{OPENAI_KEY_SHORT}"',
+    )
+
+    url, server, thread = _start_test_viewer(project_dir)
+    try:
+        html = urlopen(
+            url,
+            data=urlencode({"action": "discard-quarantine", "session_id": session_id}).encode(),
+        ).read().decode()
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    decision_log = quarantine_decision_log_path(project_repo)
+    assert decision_log.exists()
+    decisions = [json.loads(line) for line in decision_log.read_text().splitlines() if line.strip()]
+    assert any(item["action"] == "discard" and item["session_id"] == session_id for item in decisions)
+    assert not quarantine_path(project_repo, session_id).exists()
+    assert not quarantine_metadata_path(project_repo, session_id).exists()
+    assert not session_path(project_repo, session_id).exists()
+    assert "notice-success" in html
+    assert f"discarded {session_id}" in html

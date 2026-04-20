@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -34,6 +35,10 @@ VERIFICATION_SHORT = {
 }
 VERIFICATION_LONG = {value: key for key, value in VERIFICATION_SHORT.items()}
 FACT_PREFIX_RE = re.compile(r"^\[S:(?P<strength>\d+)\|V:(?P<verification>[a-z-]+)\]\s*")
+_FACT_FILE_CACHE: dict[
+    tuple[Path, bool],
+    tuple[tuple[int, int, str, int, int, str], tuple[dict[str, Any], ...]],
+] = {}
 
 
 def _auto_commit_or_raise(repo_dir: Path, *, paths: list[Path] | None = None, message: str) -> None:
@@ -156,6 +161,45 @@ def _save_cache(path: Path, facts: list[Fact]) -> None:
     cache_path.write_text(json.dumps(_cache_payload(facts, existing), indent=2, sort_keys=True))
 
 
+def _fact_cache_key(path: Path, *, normalize: bool) -> tuple[Path, bool]:
+    return path.resolve(), normalize
+
+
+def _content_digest(path: Path) -> str:
+    return hashlib.md5(path.read_bytes()).hexdigest()
+
+
+def _fact_cache_fingerprint(path: Path) -> tuple[int, int, str, int, int, str]:
+    source_stat = path.stat()
+    source_digest = _content_digest(path)
+    cache_path = cache_path_for(path)
+    if cache_path.exists():
+        cache_stat = cache_path.stat()
+        cache_digest = _content_digest(cache_path)
+        return (
+            source_stat.st_mtime_ns,
+            source_stat.st_size,
+            source_digest,
+            cache_stat.st_mtime_ns,
+            cache_stat.st_size,
+            cache_digest,
+        )
+    return (
+        source_stat.st_mtime_ns,
+        source_stat.st_size,
+        source_digest,
+        -1,
+        -1,
+        "",
+    )
+
+
+def _purge_fact_file_cache(path: Path) -> None:
+    resolved = path.resolve()
+    _FACT_FILE_CACHE.pop((resolved, True), None)
+    _FACT_FILE_CACHE.pop((resolved, False), None)
+
+
 def _parse_verification(value: str) -> Verification:
     if value in VERIFICATION_LONG:
         return VERIFICATION_LONG[value]
@@ -249,6 +293,12 @@ def read_fact_file(
 ) -> list[Fact]:
     if not path.exists():
         return []
+    cache_key = _fact_cache_key(path, normalize=normalize)
+    fingerprint = _fact_cache_fingerprint(path)
+    if use_cache:
+        cached = _FACT_FILE_CACHE.get(cache_key)
+        if cached is not None and cached[0] == fingerprint:
+            return [fact_from_dict(dict(item)) for item in cached[1]]
     parsed = _parse_fact_lines(path, repo_dir)
     if not use_cache:
         return parsed
@@ -284,7 +334,12 @@ def read_fact_file(
                 changed = True
     if normalize and (changed or any(fact.source_session == "manual-edit" for fact in rewritten)):
         write_fact_file(path, rewritten, repo_dir=repo_dir)
-    return rewritten
+        fingerprint = _fact_cache_fingerprint(path)
+    _FACT_FILE_CACHE[cache_key] = (
+        fingerprint,
+        tuple(fact.to_dict() for fact in rewritten),
+    )
+    return [fact_from_dict(fact.to_dict()) for fact in rewritten]
 
 
 def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
@@ -301,6 +356,7 @@ def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
     body = "\n".join(format_fact_line(fact) for fact in ordered)
     path.write_text(f"{header}{body}\n" if body else header)
     _save_cache(path, ordered)
+    _purge_fact_file_cache(path)
 
 
 def add_fact(
@@ -350,6 +406,7 @@ def append_fact_preserving_existing(
             f"# {path.stem}\n\n## Facts\n{format_fact_line(materialized)}\n"
         )
     _save_cache(path, [*existing_facts, materialized])
+    _purge_fact_file_cache(path)
     return path
 
 
@@ -456,6 +513,7 @@ def save_repository_facts(repo_dir: Path, facts: list[Fact], *, auto_commit: boo
     for path in existing - set(grouped):
         path.unlink(missing_ok=True)
         cache_path_for(path).unlink(missing_ok=True)
+        _purge_fact_file_cache(path)
     for path, path_facts in grouped.items():
         write_fact_file(path, path_facts, repo_dir=repo_dir)
     if auto_commit:

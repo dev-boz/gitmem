@@ -8,7 +8,7 @@ from umx.budget import estimate_tokens
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "umx"
-SERVER_VERSION = "0.9.1"
+SERVER_VERSION = "0.9.2"
 
 TOOL_DEFINITIONS = [
     {

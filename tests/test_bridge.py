@@ -5,6 +5,7 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from tests.secret_literals import OPENAI_KEY_SHORT
 from umx.bridge import END_MARKER, START_MARKER
 from umx.cli import main
 from umx.memory import add_fact, load_all_facts
@@ -91,7 +92,7 @@ def test_bridge_import_redacts_secret_text(project_dir: Path, project_repo: Path
     bridge_path = project_dir / "CLAUDE.md"
     bridge_path.write_text(
         START_MARKER
-        + "\n- API token sk-ABCDEFGHIJKLMNOPQRSTUV\n"
+        + f"\n- API token {OPENAI_KEY_SHORT}\n"
         + END_MARKER
         + "\n"
     )

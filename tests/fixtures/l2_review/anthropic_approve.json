@@ -1,0 +1,9 @@
+{
+  "model": "claude-opus-4-7",
+  "text": "{\n  \"action\": \"approve\",\n  \"fact_notes\": [\n    {\n      \"fact_id\": \"01TESTL2FIXTURE0000000001\",\n      \"note\": \"The proposed fact is specific, local in impact, and matches the diff.\",\n      \"summary\": \"fixture fact for Anthropic review\"\n    }\n  ],\n  \"reason\": \"Clear, high-confidence local fact update with no destructive change.\",\n  \"violations\": []\n}",
+  "usage": {
+    "input_tokens": 321,
+    "output_tokens": 87,
+    "total_tokens": 408
+  }
+}

@@ -6,7 +6,16 @@ from pathlib import Path
 import re
 from typing import TYPE_CHECKING, Any
 
+from umx.dream.pr_render import (
+    GovernancePRBodyError,
+    assert_governance_pr_body as assert_rendered_governance_pr_body,
+    build_fact_delta_for_promotion,
+    build_fact_delta_from_facts,
+    build_fact_delta_for_tombstones,
+    render_governance_pr_body,
+)
 from umx.conventions import ConventionSet, validate_fact
+from umx.memory import target_path_for_fact
 from umx.models import Fact
 
 if TYPE_CHECKING:
@@ -30,9 +39,14 @@ LABEL_CONFIDENCE_MEDIUM = "confidence:medium"
 LABEL_CONFIDENCE_LOW = "confidence:low"
 LABEL_IMPACT_LOCAL = "impact:local"
 LABEL_IMPACT_GLOBAL = "impact:global"
+LABEL_STATE_EXTRACTION = "state: extraction"
+LABEL_STATE_REVIEWED = "state: reviewed"
+LABEL_STATE_APPROVED = "state: approved"
 LABEL_HUMAN_REVIEW = "human-review"
+APPROVAL_REQUIRED_LABELS = frozenset({LABEL_STATE_APPROVED})
 
 GOVERNANCE_REVIEW_TRIGGER_LABELS = (
+    LABEL_STATE_EXTRACTION,
     LABEL_TYPE_EXTRACTION,
     LABEL_TYPE_CONSOLIDATION,
     LABEL_TYPE_DELETION,
@@ -42,6 +56,17 @@ GOVERNANCE_REVIEW_TRIGGER_LABELS = (
     LABEL_TYPE_PRINCIPLE,
     LABEL_TYPE_SUPERSESSION,
 )
+
+GOVERNANCE_PR_BODY_REQUIRED_LABELS = frozenset({
+    *GOVERNANCE_REVIEW_TRIGGER_LABELS,
+    LABEL_HUMAN_REVIEW,
+})
+GOVERNANCE_PR_BRANCH_PREFIXES = ("dream/", "proposal/")
+GOVERNANCE_LIFECYCLE_LABELS = frozenset({
+    LABEL_STATE_EXTRACTION,
+    LABEL_STATE_REVIEWED,
+    LABEL_STATE_APPROVED,
+})
 
 GOVERNANCE_LABEL_SPECS: dict[str, tuple[str, str]] = {
     LABEL_TYPE_EXTRACTION: ("1f6feb", "L1 extracted fact proposal"),
@@ -58,8 +83,12 @@ GOVERNANCE_LABEL_SPECS: dict[str, tuple[str, str]] = {
     LABEL_CONFIDENCE_LOW: ("d73a4a", "Low-confidence proposal"),
     LABEL_IMPACT_LOCAL: ("1d76db", "Project-local impact"),
     LABEL_IMPACT_GLOBAL: ("b60205", "Cross-project or global impact"),
+    LABEL_STATE_EXTRACTION: ("1f6feb", "Awaiting automated L2 review"),
+    LABEL_STATE_REVIEWED: ("5319e7", "L2 review completed"),
+    LABEL_STATE_APPROVED: ("0e8a16", "Approved for merge by human review"),
     LABEL_HUMAN_REVIEW: ("5319e7", "Requires L3 human review"),
 }
+GOVERNANCE_MANAGED_LABELS = frozenset(GOVERNANCE_LABEL_SPECS)
 
 GOVERNED_MODES = frozenset({"remote", "hybrid"})
 GOVERNED_FACT_PREFIXES = ("facts/", "episodic/", "principles/")
@@ -84,6 +113,29 @@ class PRProposal:
             "labels": list(self.labels),
             "files_changed": list(self.files_changed),
         }
+
+
+@dataclass(slots=True, frozen=True)
+class GovernancePROverlap:
+    pr_number: int
+    pr_url: str
+    pr_title: str
+    head_ref: str
+    overlapping_fact_ids: tuple[str, ...]
+
+
+class GovernancePRConflictError(RuntimeError):
+    def __init__(self, overlaps: list[GovernancePROverlap] | tuple[GovernancePROverlap, ...]) -> None:
+        ordered = tuple(sorted(overlaps, key=lambda item: item.pr_number))
+        lines = ["governed fact change overlaps an open governance PR:"]
+        for overlap in ordered:
+            lines.append(
+                f"- {', '.join(overlap.overlapping_fact_ids)} -> "
+                f"PR #{overlap.pr_number} {overlap.pr_url}"
+            )
+        lines.append("Close, merge, or retarget the existing PR before opening a new one.")
+        self.overlaps = ordered
+        super().__init__("\n".join(lines))
 
 
 def is_governed_mode(mode: str | None) -> bool:
@@ -159,6 +211,61 @@ def review_audit_note(action: str, pr_number: int, reason: str) -> str:
     return f"L2 review {verb} PR #{pr_number}: {reason}"
 
 
+def approval_gate_missing_labels(labels: list[str] | tuple[str, ...]) -> list[str]:
+    return sorted(APPROVAL_REQUIRED_LABELS - set(labels))
+
+
+def approval_gate_satisfied(labels: list[str] | tuple[str, ...]) -> bool:
+    return not approval_gate_missing_labels(labels)
+
+
+def approval_override_audit_note(pr_number: int, reason: str) -> str:
+    return f"<!-- umx:approval-override -->\nApproval gate override for PR #{pr_number}: {reason}"
+
+
+def pr_body_requires_fact_delta(
+    labels: list[str] | None = None,
+    *,
+    branch: str | None = None,
+) -> bool:
+    if branch is not None and any(branch.startswith(prefix) for prefix in GOVERNANCE_PR_BRANCH_PREFIXES):
+        return True
+    return bool(set(labels or ()) & GOVERNANCE_PR_BODY_REQUIRED_LABELS)
+
+
+def assert_governance_pr_body(body: str, *, allow_legacy: bool = False) -> dict[str, Any] | None:
+    return assert_rendered_governance_pr_body(body, allow_legacy=allow_legacy)
+
+
+def desired_governance_labels(
+    base_labels: list[str] | tuple[str, ...],
+    *,
+    lifecycle_label: str,
+    human_review: bool | None = None,
+) -> list[str]:
+    if lifecycle_label not in GOVERNANCE_LIFECYCLE_LABELS:
+        raise ValueError(f"unknown governance lifecycle label: {lifecycle_label}")
+    labels = set(base_labels)
+    labels.difference_update(GOVERNANCE_LIFECYCLE_LABELS)
+    labels.add(lifecycle_label)
+    if human_review is True:
+        labels.add(LABEL_HUMAN_REVIEW)
+    elif human_review is False:
+        labels.discard(LABEL_HUMAN_REVIEW)
+    return sorted(labels)
+
+
+def reconcile_governance_label_set(
+    current_labels: list[str] | tuple[str, ...],
+    desired_labels: list[str] | tuple[str, ...],
+) -> tuple[list[str], list[str]]:
+    current = set(current_labels)
+    desired = set(desired_labels)
+    add = sorted(desired - current)
+    remove = sorted((current - desired) & GOVERNANCE_MANAGED_LABELS)
+    return add, remove
+
+
 def _slugify_branch_description(description: str, *, limit: int = 40) -> str:
     return re.sub(r"[^a-z0-9]+", "-", description.lower()).strip("-")[:limit] or "change"
 
@@ -179,17 +286,31 @@ def classify_pr_labels(facts: list[Fact]) -> list[str]:
     """Classify facts into PR label categories per spec §12."""
     labels: set[str] = set()
 
+    def _is_cross_project_promotion(fact: Fact) -> bool:
+        extracted_by = getattr(fact.provenance, "extracted_by", "")
+        return (
+            fact.source_tool == "cross-project-promotion"
+            or fact.source_session == "cross-project-promotion"
+            or extracted_by == "cross-project-promotion"
+        )
+
     has_principle = any(
         fact.file_path and "principles/topics/" in fact.file_path.as_posix()
         for fact in facts
     )
-    has_consolidation = any(f.source_type.value == "dream_consolidation" for f in facts)
+    has_promotion = any(_is_cross_project_promotion(f) for f in facts)
+    has_consolidation = any(
+        f.source_type.value == "dream_consolidation" and not _is_cross_project_promotion(f)
+        for f in facts
+    )
     has_gap_fill = any("gap" in (f.source_tool or "") for f in facts)
     has_extraction = any(f.source_type.value in ("user_prompt", "tool_output", "ground_truth_code") for f in facts)
     has_supersession = any(f.superseded_by is not None for f in facts)
 
     if has_principle:
         labels.add(LABEL_TYPE_PRINCIPLE)
+    if has_promotion:
+        labels.add(LABEL_TYPE_PROMOTION)
     if has_consolidation:
         labels.add(LABEL_TYPE_CONSOLIDATION)
     if has_gap_fill:
@@ -233,9 +354,7 @@ def generate_l1_pr(
     strengths = [f.encoding_strength for f in facts]
     strength_range = f"{min(strengths)}-{max(strengths)}" if strengths else "0-0"
 
-    body_lines = [
-        "## Dream L1 Extraction",
-        "",
+    summary_lines = [
         f"**Date:** {date_str}",
         f"**Source sessions:** {', '.join(session_ids)}",
         f"**Facts extracted:** {len(facts)}",
@@ -245,12 +364,12 @@ def generate_l1_pr(
         "",
     ]
     for fact in facts:
-        body_lines.append(
+        summary_lines.append(
             f"- `{fact.fact_id}` [{fact.topic}] (S:{fact.encoding_strength}, "
             f"C:{fact.confidence:.1f}) {fact.text}"
         )
 
-    body_lines.extend([
+    summary_lines.extend([
         "",
         "### Provenance",
         "",
@@ -268,9 +387,13 @@ def generate_l1_pr(
 
     return PRProposal(
         title=title,
-        body="\n".join(body_lines),
+        body=render_governance_pr_body(
+            heading="Dream L1 Extraction",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_from_facts(facts, repo_dir),
+        ),
         branch=branch,
-        labels=labels,
+        labels=desired_governance_labels(labels, lifecycle_label=LABEL_STATE_EXTRACTION),
         files_changed=files_changed,
     )
 
@@ -280,15 +403,14 @@ def build_promotion_pr_proposal_preview(
     *,
     target_topic: str,
     target_repo: Path,
+    fact_id: str | None = None,
 ) -> PRProposal:
     _ = target_repo
     title_text = candidate.text.rstrip(".")
     if len(title_text) > 72:
         title_text = f"{title_text[:69].rstrip()}..."
     title = f"[promotion] Promote shared project fact to user memory: {title_text}"
-    body_lines = [
-        "## Cross-project promotion proposal preview",
-        "",
+    summary_lines = [
         "This is a read-only preview for promoting a repeated project fact into user memory.",
         "No branch, commit, push, or pull request has been created.",
         "",
@@ -311,7 +433,7 @@ def build_promotion_pr_proposal_preview(
         )
         if occurrence.file_path:
             evidence = f"{evidence} `{occurrence.file_path}`"
-        body_lines.append(evidence)
+        summary_lines.append(evidence)
 
     labels = [
         LABEL_TYPE_PROMOTION,
@@ -322,12 +444,67 @@ def build_promotion_pr_proposal_preview(
     target_file = Path("facts").joinpath("topics", f"{target_topic}.md")
     return PRProposal(
         title=title,
-        body="\n".join(body_lines),
+        body=render_governance_pr_body(
+            heading="Cross-project promotion proposal preview",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_for_promotion(
+                topic=target_topic,
+                path=target_file.as_posix(),
+                summary=candidate.text,
+                source_fact_ids=[occurrence.fact_id for occurrence in candidate.occurrences],
+                fact_id=fact_id,
+            ),
+        ),
         branch=branch_name_for_proposal(candidate.key),
-        labels=labels,
+        labels=desired_governance_labels(
+            labels,
+            lifecycle_label=LABEL_STATE_EXTRACTION,
+            human_review=True,
+        ),
         files_changed=[
             target_file.as_posix(),
             target_file.with_suffix(".umx.json").as_posix(),
+        ],
+    )
+
+
+def build_tombstone_pr_proposal(fact: Fact, repo_dir: Path) -> PRProposal:
+    target_path = fact.file_path or target_path_for_fact(repo_dir, fact)
+    relative_path = _repo_relative_path(target_path, repo_dir=repo_dir)
+    summary_lines = [
+        "This proposal records a governed tombstone for an existing fact.",
+        "Main stays unchanged until the proposal branch is approved and merged.",
+        "",
+        "### Tombstone target",
+        "",
+        f"- Fact ID: `{fact.fact_id}`",
+        f"- Topic: `{fact.topic}`",
+        f"- File: `{relative_path}`",
+        f"- Text: {fact.text}",
+        "",
+        "### Provenance",
+        "",
+        "- Proposed by: `umx forget --governed`",
+    ]
+    labels = [label for label in classify_pr_labels([fact]) if not label.startswith("type:")]
+    labels.append(LABEL_TYPE_DELETION)
+    title = f"[forget] Tombstone fact {fact.fact_id}"
+    return PRProposal(
+        title=title,
+        body=render_governance_pr_body(
+            heading="Governed fact tombstone proposal",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_for_tombstones([fact], repo_dir),
+        ),
+        branch=branch_name_for_proposal(f"forget-{fact.fact_id}"),
+        labels=desired_governance_labels(
+            labels,
+            lifecycle_label=LABEL_STATE_EXTRACTION,
+            human_review=True,
+        ),
+        files_changed=[
+            relative_path,
+            "meta/tombstones.jsonl",
         ],
     )
 

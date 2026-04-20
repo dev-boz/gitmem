@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from umx.config import default_config
 from umx.dream import providers
@@ -18,6 +21,10 @@ from umx.models import (
     Verification,
 )
 from umx.sessions import write_session
+
+
+L2_FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "l2_review"
+L2_APPROVE_FIXTURE = json.loads((L2_FIXTURES_ROOT / "anthropic_approve.json").read_text())
 
 
 def _provider_fact(repo_dir: Path, session_id: str, text: str) -> Fact:
@@ -298,3 +305,144 @@ def test_run_l2_review_with_provider_reviewer(project_repo: Path) -> None:
     assert result.reason == "provider review approved"
     assert result.reviewed_by == "provider:groq/groq"
     assert result.model_backed is True
+
+
+def test_run_l2_review_prefers_anthropic_when_key_present(project_repo: Path) -> None:
+    cfg = default_config()
+    cfg.dream.provider_rotation = ["groq"]
+    pr = PRProposal(
+        title="[dream/l2] test",
+        body="",
+        branch="dream/l1/provider-review",
+        labels=["confidence:high", "impact:local", "type: extraction"],
+        files_changed=["facts/topics/general.md"],
+    )
+    fact = _provider_fact(project_repo, "sess-review", "review this fact")
+    calls: list[str] = []
+
+    def anthropic_review(_pr, _conventions, _existing_facts, _new_facts, _cfg) -> dict[str, object]:
+        calls.append("anthropic")
+        return {
+            "action": "approve",
+            "reason": "anthropic review approved",
+            "violations": [],
+        }
+
+    def groq_review(_pr, _conventions, _existing_facts, _new_facts, _cfg) -> dict[str, object]:
+        calls.append("groq")
+        return {
+            "action": "reject",
+            "reason": "groq should not run first",
+            "violations": [],
+        }
+
+    result = providers.run_l2_review_with_providers(
+        pr,
+        ConventionSet(),
+        [fact],
+        [fact],
+        cfg,
+        fallback_reviewer=lambda *_args: {
+            "action": "reject",
+            "reason": "fallback should not run",
+            "violations": [],
+        },
+        env={"ANTHROPIC_API_KEY": "test", "GROQ_API_KEY": "test"},
+        reviewers={"anthropic": anthropic_review, "groq": groq_review},
+    )
+
+    assert calls == ["anthropic"]
+    assert result.reviewed_by == "provider:anthropic/anthropic"
+    assert result.model_backed is True
+
+
+def test_run_l2_review_requires_anthropic_key_on_github_actions(project_repo: Path) -> None:
+    cfg = default_config()
+    cfg.dream.paid_provider = "anthropic"
+    pr = PRProposal(
+        title="[dream/l2] test",
+        body="",
+        branch="dream/l1/provider-review",
+        labels=["confidence:high", "impact:local", "type: extraction"],
+        files_changed=["facts/topics/general.md"],
+    )
+    fact = _provider_fact(project_repo, "sess-review", "review this fact")
+
+    with pytest.raises(providers.ProviderUnavailableError, match="ANTHROPIC_API_KEY"):
+        providers.run_l2_review_with_providers(
+            pr,
+            ConventionSet(),
+            [fact],
+            [fact],
+            cfg,
+            fallback_reviewer=lambda *_args: {
+                "action": "reject",
+                "reason": "fallback should not run",
+                "violations": [],
+            },
+            env={},
+            reviewers={
+                "anthropic": lambda *_args: {
+                    "action": "approve",
+                    "reason": "should not run without key",
+                    "violations": [],
+                }
+            },
+        )
+
+
+def test_run_l2_review_with_builtin_anthropic_reviewer_uses_env_mapping(
+    project_repo: Path,
+    monkeypatch,
+) -> None:
+    from umx.providers.anthropic import AnthropicMessageResult
+
+    cfg = default_config()
+    pr = PRProposal(
+        title="[dream/l2] test",
+        body=(L2_FIXTURES_ROOT / "pr_body.md").read_text(),
+        branch="dream/l1/provider-review",
+        labels=["confidence:high", "impact:local", "type: extraction"],
+        files_changed=["facts/topics/general.md"],
+    )
+    fact = Fact(
+        fact_id="01TESTL2FIXTURE0000000001",
+        text="fixture fact for Anthropic review",
+        scope=Scope.PROJECT,
+        topic="general",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.LLM_INFERENCE,
+        confidence=0.9,
+        source_tool="provider-review",
+        source_session="sess-anthropic",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    monkeypatch.setattr(
+        "umx.providers.anthropic.send_anthropic_message",
+        lambda **kwargs: AnthropicMessageResult(
+            text=str(L2_APPROVE_FIXTURE["text"]),
+            model=str(L2_APPROVE_FIXTURE["model"]),
+            usage=dict(L2_APPROVE_FIXTURE["usage"]),
+        ),
+    )
+
+    result = providers.run_l2_review_with_providers(
+        pr,
+        ConventionSet(topics={"general"}),
+        [],
+        [fact],
+        cfg,
+        fallback_reviewer=lambda *_args: {
+            "action": "reject",
+            "reason": "fallback should not run",
+            "violations": [],
+        },
+        env={"ANTHROPIC_API_KEY": "test"},
+    )
+
+    assert result.action == "approve"
+    assert result.reviewed_by == "provider:anthropic/anthropic"
+    assert result.model == "claude-opus-4-7"
+    assert result.usage == {"input_tokens": 321, "output_tokens": 87, "total_tokens": 408}

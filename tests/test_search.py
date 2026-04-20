@@ -15,7 +15,13 @@ from umx.models import (
     SourceType,
     Verification,
 )
-from umx.search import incremental_rebuild, query_index, rebuild_index, search_sessions
+from umx.search import (
+    incremental_rebuild,
+    inject_candidate_ids,
+    query_index,
+    rebuild_index,
+    search_sessions,
+)
 from umx.search_semantic import rerank_candidates
 from umx.sessions import write_session
 
@@ -75,6 +81,31 @@ def test_incremental_rebuild_first_call_does_full(project_repo: Path) -> None:
     # No prior rebuild, so incremental should fall back to full
     count = incremental_rebuild(project_repo)
     assert count >= 1
+
+
+def test_inject_candidate_ids_require_current_index(project_repo: Path) -> None:
+    fact = _make_fact(
+        "redis runs on port 6379",
+        topic="infra",
+        fact_id="01TESTFACT0000000000000013",
+    )
+    add_fact(project_repo, fact)
+
+    assert inject_candidate_ids(project_repo, '"redis"', limit=5) == []
+
+    rebuild_index(project_repo)
+    assert inject_candidate_ids(project_repo, '"redis"', limit=5) == [fact.fact_id]
+
+    updated = _make_fact(
+        "vector search index uses sqlite fts",
+        topic="search",
+        fact_id="01TESTFACT0000000000000014",
+    )
+    add_fact(project_repo, updated)
+    assert inject_candidate_ids(project_repo, '"vector"', limit=5) == []
+
+    incremental_rebuild(project_repo)
+    assert inject_candidate_ids(project_repo, '"vector"', limit=5) == [updated.fact_id]
 
 
 def test_search_sessions_finds_content(project_repo: Path) -> None:

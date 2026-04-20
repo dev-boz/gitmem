@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  issues: write
   pull-requests: write
 
 concurrency:
@@ -20,8 +21,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install umx
-        run: python -m pip install umx
+      - name: Install gitmem
+        run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"
       - name: Run L1 dream
         run: umx dream --mode remote --tier l1
         env:

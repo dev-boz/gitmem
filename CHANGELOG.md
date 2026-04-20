@@ -16,11 +16,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Safe `aip-mem` compatibility entrypoint via `umx.aip`
 - Experimental L2 PR review wiring for `umx dream --tier l2 --pr <number>`
 - Shared status/health/doctor surfaces, calibration guidance, schema repair, and push-safety guardrails for governed flows
+- Formal repo-specific threat model in `docs/threat-model.md`
+- Custom redaction pattern management via `umx config set redaction.patterns`, with validation and safe-regex restrictions
+- Adversarial synthetic secret corpus covering built-ins, safe custom token shapes, entropy-only masking, and fail-closed quarantine metadata
+- Quarantine review queue in the viewer with masked previews, explicit release/discard actions, and local decision logging
+- PR-only supply-chain CI with `pip-audit` and CycloneDX SBOM artifact upload
 
 ### Changed
 - README now documents live Claude hooks, manual collect, Amp/Gemini/OpenCode capture, cross-project governance commands, signed commits, richer viewer surfaces, `aip-mem`, and the current experimental status of remote/hybrid governance
+- Remote-mode auth docs now correctly point to authenticated `gh` CLI usage; plaintext PAT config/env wiring remains reserved, not active
+- Generated remote review/dream workflows now install gitmem from the source repo instead of an unpinned package-index `umx`
 - Remote/hybrid `pre_compact` now syncs session files without pushing fact-file changes straight to `main`
 - L2 workflow templates and governance labels now align on `type: extraction`
+- Dream lint cadence is now tracked in `.umx.json`, `umx dream` supports `--force-lint`, and hybrid embedding prewarm runs against the final persisted fact set
+- Entropy-only assignment detections are now explicitly documented and fixture-tested as `[REDACTED:high-entropy]` review surfaces rather than quarantine triggers
+- Quarantine metadata sidecars preserve failure reasons for later review, while `umx doctor` excludes those sidecars from its quarantine counts
 
 ### Fixed
 - `umx promote` now rejects invalid destinations before mutating state and safely handles same-repo promotions
@@ -28,7 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `umx doctor --fix` now repairs missing/stale schema markers, and Dream now refuses to process missing or unsupported repo schemas silently
 - Cross-project proposal publication now prevents local-main leakage, redacts credentialed remotes, avoids leaking local absolute paths, and supports retryable PR-open for already-pushed proposal branches
 - L2 review now evaluates fact-level deltas safely: resolved conflicts no longer falsely escalate, weak in-place supersessions stay non-destructive, and strong same-ID rewrites escalate for human review
-- Full test suite coverage now stands at 477 passing tests
+- `sync`, remote bootstrap, Dream push paths, cross-project proposal push, and pre-compact sync now enforce signed history when `git.require_signed_commits=true`
+- `git pull --rebase` now enables rebase signing when commit signing is active so sync does not strip signatures before push validation
+- GitHub remote identity guards now block project/user memory repos from syncing or opening PRs against the wrong GitHub targets
+- `init-project` now resolves slug collisions interactively or with `--yes` and rejects unsafe slug overrides
+- Packaged installs now include the governance protection reference asset required by remote setup and ruleset-management flows
+- Full test suite is currently green at 661 passing tests
 
 ## [0.9.1-alpha] - 2026-04-12
 

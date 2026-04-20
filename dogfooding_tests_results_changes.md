@@ -225,6 +225,45 @@ For each entry, capture:
 - Follow-up:
   Keep using real local rollouts as the extraction benchmark. The next worthwhile calibration pass should target any remaining status-like memory that survives a live dogfood run, not synthetic edge cases in isolation.
 
+### 2026-04-13 — Codex Git Workflow Commentary No Longer Survives Dream
+
+- Test name:
+  `live codex git-workflow commentary extraction tightening`
+- Environment:
+  workspace code in `/home/dinkum/projects/gitmem`; fresh hermetic temp homes at `/tmp/gitmem-dogfood-verify-QmCFuX` and `/tmp/gitmem-dogfood-followup-FYhvwS`; live rollout `/home/dinkum/.codex/sessions/2026/04/13/rollout-2026-04-13T13-34-47-019d84e7-f3c1-7c23-bfbd-dd6583d6adb1.jsonl`
+- Input / scenario:
+  Re-ran the latest April 13 Codex rollout after the earlier progress-only fix. The rollout had grown to include commit/push/worktree commentary from the same session, so the local loop was re-tested with `capture codex` -> `dream --force` in a fresh temp `UMX_HOME`.
+- Observed result:
+  Before the follow-up tightening, the hermetic pass imported `33` events and retained `6` low-value facts with topics such as `bot_contributor_notes`, `commit`, `dogfooding_tests_results_changes`, `if`, `repo`, and `stricter`. Representative leaked sentences included:
+  `The commit is created as 26129aa`
+  and
+  `Only the full-suite tail is left before I update dogfooding_tests_results_changes.md`.
+
+  After the change, the same live rollout still imported `33` events but `dream --force` retained `0` facts and `view --list` was empty.
+- Judgment:
+  The earlier progress-only suppression was necessary but not sufficient. Live Codex transcripts can still contain git-workflow/audit commentary that looks factual enough to survive generic sentence filtering, and that commentary should not become memory.
+- Change made:
+  Tightened [umx/dream/extract.py](/home/dinkum/projects/gitmem/umx/dream/extract.py) so Codex rollout sessions now reject commit/worktree/audit meta commentary more directly:
+  - expanded first-person progress detection to cover staging/committing/pushing/reporting verbs
+  - added Codex-specific low-signal and operational-meta suppression for patterns like `commit is created`, `repo is using ... identity`, `left untouched`, and audit-log update chatter
+
+  Added regression coverage in [tests/test_dream.py](/home/dinkum/projects/gitmem/tests/test_dream.py) for:
+  - Codex git-workflow meta that must now be ignored
+  - a mixed Codex assistant message where a real project fact survives while adjacent commit commentary is dropped
+- Verification:
+  Focused verification:
+  `pytest -q tests/test_dream.py tests/test_golden_extraction.py tests/test_codex_capture.py tests/test_source_extraction.py`
+  passed with `29 passed in 10.17s`.
+
+  Manual hermetic verification:
+  `capture codex` imported `33` events from the live rollout and `dream --force` returned `0 facts retained`.
+
+  Full verification:
+  `pytest -q`
+  passed with `296 passed in 160.62s`.
+- Follow-up:
+  Keep the real live rollout as the benchmark. The next extraction pass should only target genuinely useful-but-misranked versus obviously meta Codex chatter; the latter is now suppressed to zero on this reproduction case.
+
 ## Current Themes
 
 - Local mode is the correct dogfooding target.

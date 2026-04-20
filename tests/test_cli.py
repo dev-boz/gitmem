@@ -6,8 +6,10 @@ from unittest.mock import Mock, patch
 
 from click.testing import CliRunner
 
-from umx.config import default_config, save_config
+from tests.secret_literals import AWS_ACCESS_KEY_ID
+from umx.config import default_config, load_config, save_config
 from umx.cli import main
+from umx.github_ops import GitHubError
 from umx.scope import config_path, project_memory_dir
 from umx.sessions import write_session
 
@@ -107,6 +109,83 @@ def test_cli_view_fact_and_health(project_dir, project_repo) -> None:
     assert "guidance" in health
 
 
+def test_cli_health_governance_json(project_dir, project_repo) -> None:
+    payload = {
+        "repo": str(project_memory_dir(project_dir)),
+        "mode": "remote",
+        "governed": True,
+        "ok": True,
+        "flags": [],
+        "errors": [],
+        "summary": {
+            "open_governance_prs": 1,
+            "reviewer_queue_depth": 0,
+            "human_review_queue_depth": 0,
+            "stale_branch_count": 0,
+            "label_drift_count": 0,
+            "stale_branch_days": 7,
+        },
+        "open_prs": [],
+        "stale_branches": [],
+        "last_l2_review": None,
+        "label_drift": [],
+    }
+    runner = CliRunner()
+    with patch("umx.cli.build_governance_health_payload", return_value=payload) as mock_build:
+        result = runner.invoke(main, ["health", "--cwd", str(project_dir), "--governance"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == payload
+    mock_build.assert_called_once()
+
+
+def test_cli_health_governance_human(project_dir, project_repo) -> None:
+    payload = {
+        "repo": str(project_memory_dir(project_dir)),
+        "mode": "remote",
+        "governed": True,
+        "ok": False,
+        "flags": ["1 governance PR(s) awaiting L2 review"],
+        "errors": [],
+        "summary": {
+            "open_governance_prs": 1,
+            "reviewer_queue_depth": 1,
+            "human_review_queue_depth": 0,
+            "stale_branch_count": 0,
+            "label_drift_count": 0,
+            "stale_branch_days": 7,
+        },
+        "open_prs": [],
+        "stale_branches": [],
+        "last_l2_review": None,
+        "label_drift": [],
+    }
+    runner = CliRunner()
+    with (
+        patch("umx.cli.build_governance_health_payload", return_value=payload),
+        patch(
+            "umx.cli.render_governance_health_human",
+            return_value="Governance health: warn\nOpen governance PRs: 1",
+        ) as mock_render,
+    ):
+        result = runner.invoke(
+            main,
+            ["health", "--cwd", str(project_dir), "--governance", "--format", "human"],
+        )
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "Governance health: warn\nOpen governance PRs: 1"
+    mock_render.assert_called_once_with(payload)
+
+
+def test_cli_health_rejects_human_format_without_governance(project_dir, project_repo) -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["health", "--cwd", str(project_dir), "--format", "human"])
+
+    assert result.exit_code != 0
+    assert "--format is only supported with --governance" in result.output
+
+
 def test_cli_view_launches_viewer_by_default(project_dir, project_repo) -> None:
     runner = CliRunner()
     server = Mock()
@@ -177,6 +256,43 @@ def test_cli_status_surfaces_git_signing_config(project_dir, umx_home) -> None:
     }
 
 
+def test_cli_config_set_redaction_patterns_roundtrips_to_sessions_config(umx_home) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        ["config", "set", "redaction.patterns", r"customer-\d+"],
+    )
+
+    assert result.exit_code == 0
+    cfg = load_config(config_path())
+    assert cfg.sessions.redaction_patterns == [r"customer-\d+"]
+
+    result = runner.invoke(
+        main,
+        ["config", "set", "redaction.patterns", '["customer-\\\\d+", "ticket-[A-Z]+"]'],
+    )
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "redaction.patterns"
+    cfg = load_config(config_path())
+    assert cfg.sessions.redaction_patterns == [r"customer-\d+", r"ticket-[A-Z]+"]
+
+
+def test_cli_config_set_redaction_patterns_rejects_invalid_regex(umx_home) -> None:
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["config", "set", "redaction.patterns", "["])
+
+    assert result.exit_code != 0
+    assert "invalid redaction pattern" in result.output
+
+    result = runner.invoke(main, ["config", "set", "redaction.patterns", r"(a+)+$"])
+
+    assert result.exit_code != 0
+    assert "unsafe regex constructs" in result.output
+
+
 def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path) -> None:
     cfg = default_config()
     cfg.org = "memory-org"
@@ -194,6 +310,8 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
         result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "demo"])
 
     assert result.exit_code == 0, result.output
+    assert "governance-protection: deferred" in result.output
+    assert "direct pushes to main" in result.output
 
     repo = project_memory_dir(project_dir)
     verify = subprocess.run(
@@ -209,6 +327,7 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
         text=True,
         check=True,
     )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
 
@@ -233,6 +352,9 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
         result = runner.invoke(main, ["init", "--org", "memory-org", "--mode", "remote"])
 
     assert result.exit_code == 0, result.output
+    assert "governance-protection: deferred" in result.output
+    assert "direct pushes to main" in result.output
+    assert (user_repo / ".github" / "workflows" / "approval-gate.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l1-dream.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l2-review.yml").exists()
 
@@ -242,8 +364,20 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
         text=True,
         check=True,
     )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
+
+
+def test_cli_dream_rejects_blank_force_reason(umx_home) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["dream", "--tier", "l2", "--pr", "1", "--force", "--force-reason", "   "],
+    )
+
+    assert result.exit_code != 0
+    assert "--force-reason cannot be blank" in result.output
 
 
 def test_cli_doctor_surfaces_git_signing_config(umx_home) -> None:
@@ -280,6 +414,77 @@ def test_cli_init_project_surfaces_git_init_commit_failure(project_dir) -> None:
     assert "git init commit failed: gpg failed to sign the data" in result.output
 
 
+def test_cli_init_project_prompts_for_disambiguated_slug_on_collision(project_dir, umx_home) -> None:
+    ((umx_home / "projects") / project_dir.name).mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init-project", "--cwd", str(project_dir)],
+        input="project-2\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Enter project slug [project-2]" in result.output
+    assert (project_dir / ".umx-project").read_text().strip() == "project-2"
+    assert ((umx_home / "projects") / "project-2").exists()
+
+
+def test_cli_init_project_yes_auto_appends_on_collision(project_dir, umx_home) -> None:
+    projects_dir = umx_home / "projects"
+    (projects_dir / project_dir.name).mkdir(parents=True)
+    (projects_dir / f"{project_dir.name}-2").mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "Enter project slug" not in result.output
+    assert (project_dir / ".umx-project").read_text().strip() == "project-3"
+    assert (projects_dir / "project-3").exists()
+
+
+def test_cli_init_project_slug_override_bypasses_collision_prompt(project_dir, umx_home) -> None:
+    ((umx_home / "projects") / project_dir.name).mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init-project", "--cwd", str(project_dir), "--slug", "project-custom"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Enter project slug" not in result.output
+    assert (project_dir / ".umx-project").read_text().strip() == "project-custom"
+    assert ((umx_home / "projects") / "project-custom").exists()
+
+
+def test_cli_init_project_rejects_unsafe_slug_override(project_dir) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init-project", "--cwd", str(project_dir), "--slug", "../../escape"],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid project slug" in result.output
+
+
+def test_cli_init_project_reprompts_after_invalid_slug_input(project_dir, umx_home) -> None:
+    ((umx_home / "projects") / project_dir.name).mkdir(parents=True)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["init-project", "--cwd", str(project_dir)],
+        input="../../escape\nproject-2\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Invalid project slug" in result.output
+    assert (project_dir / ".umx-project").read_text().strip() == "project-2"
+
+
 def test_cli_setup_remote_blocks_unsafe_bootstrap(project_dir, project_repo, tmp_path) -> None:
     from umx.git_ops import git_add_and_commit
 
@@ -289,7 +494,7 @@ def test_cli_setup_remote_blocks_unsafe_bootstrap(project_dir, project_repo, tmp
 
     fact_path = project_repo / "facts" / "topics" / "deploy.md"
     fact_path.parent.mkdir(parents=True, exist_ok=True)
-    fact_path.write_text("# deploy\n\n## Facts\n- aws key AKIA1234567890ABCDEF\n")
+    fact_path.write_text(f"# deploy\n\n## Facts\n- aws key {AWS_ACCESS_KEY_ID}\n")
     git_add_and_commit(project_repo, message="unsafe bootstrap")
 
     remote = tmp_path / "unsafe-bootstrap.git"
@@ -304,6 +509,120 @@ def test_cli_setup_remote_blocks_unsafe_bootstrap(project_dir, project_repo, tmp
 
     assert result.exit_code != 0
     assert "push safety blocked" in result.output
+
+
+def test_cli_setup_remote_remote_reports_deferred_governance_protection(
+    project_dir,
+    project_repo,
+    tmp_path,
+) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    remote = tmp_path / "setup-remote.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code == 0, result.output
+    assert "governance-protection: deferred" in result.output
+    assert "direct pushes to main" in result.output
+
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+
+
+def test_cli_setup_remote_rejects_unsigned_bootstrap_history(project_dir, project_repo, tmp_path) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.git.require_signed_commits = True
+    save_config(config_path(), cfg)
+
+    memory_path = project_repo / "meta" / "MEMORY.md"
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_path.write_text("# Memory\n\nbootstrap history is currently unsigned\n")
+    subprocess.run(["git", "-C", str(project_repo), "add", str(memory_path)], capture_output=True, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "unsigned bootstrap history",
+        ],
+        capture_output=True,
+        check=True,
+    )
+
+    remote = tmp_path / "unsigned-bootstrap.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli._commit_repo", return_value=False):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code != 0
+    assert "unsigned or invalid commit signatures" in result.output
+
+
+def test_cli_setup_remote_surfaces_github_retry_next_steps(project_dir) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        side_effect=GitHubError(
+            "gh repo create memory-org/demo: 503 service unavailable (after 3 attempts). "
+            "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry."
+        ),
+    ):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code != 0
+    assert "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry." in result.output
+
+
+def test_cli_setup_remote_surfaces_auth_status_retry_next_steps(project_dir) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    with patch(
+        "umx.github_ops.gh_available",
+        side_effect=GitHubError(
+            "gh auth status: 503 service unavailable (after 3 attempts). "
+            "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry."
+        ),
+    ):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code != 0
+    assert "Next steps: verify network connectivity, gh auth, and GitHub rate limits, then retry." in result.output
 
 
 def test_cli_sync_returns_nonzero_when_push_fails(project_dir, project_repo, tmp_path, monkeypatch) -> None:
@@ -335,3 +654,57 @@ def test_cli_sync_returns_nonzero_when_push_fails(project_dir, project_repo, tmp
 
     assert result.exit_code != 0
     assert "push failed" in result.output
+
+
+def test_cli_sync_rejects_unsigned_commits_when_required(
+    project_dir,
+    project_repo,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "sync-signed-history.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "remote", "add", "origin", str(remote)],
+        capture_output=True,
+        check=True,
+    )
+    git_add_and_commit(project_repo, message="sync signed-history baseline")
+    git_push(project_repo)
+
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "remote"
+    cfg.git.require_signed_commits = True
+    save_config(config_path(), cfg)
+
+    sessions_dir = project_repo / "sessions" / "2026" / "01"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_path = sessions_dir / "2026-01-15-signed-history.jsonl"
+    session_path.write_text('{"_meta":{"session_id":"2026-01-15-signed-history"}}\n')
+    subprocess.run(["git", "-C", str(project_repo), "add", str(session_path)], capture_output=True, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--no-gpg-sign",
+            "-m",
+            "unsigned sync commit",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    monkeypatch.setattr("umx.git_ops.git_pull_rebase", lambda *args, **kwargs: True)
+
+    result = CliRunner().invoke(main, ["sync", "--cwd", str(project_dir)])
+
+    assert result.exit_code != 0
+    assert "unsigned or invalid commit signatures" in result.output

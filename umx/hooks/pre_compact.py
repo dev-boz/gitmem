@@ -6,6 +6,8 @@ from typing import Any
 
 from umx.config import load_config
 from umx.git_ops import (
+    GitSignedHistoryError,
+    assert_signed_commit_range,
     changed_paths,
     git_add_and_commit,
     git_commit_failure_message,
@@ -69,6 +71,18 @@ def run(
     # Push if remote/hybrid mode
     try:
         if mode in ("remote", "hybrid") and result["committed"]:
+            from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
+
+            try:
+                assert_expected_github_origin(
+                    repo_dir,
+                    config_org=cfg.org,
+                    repo_label="project memory repo",
+                    operation="pre-compact sync",
+                )
+            except GitHubRemoteIdentityError as exc:
+                result["error"] = str(exc)
+                return result
             if not git_fetch(repo_dir):
                 result["error"] = "fetch failed"
                 return result
@@ -80,11 +94,20 @@ def run(
                 config=cfg,
                 include_bridge=True,
             )
+            assert_signed_commit_range(
+                repo_dir,
+                base_ref="origin/main",
+                head_ref="HEAD",
+                config=cfg,
+                operation="pre-compact sync",
+            )
             pushed = git_push(repo_dir)
             result["pushed"] = pushed
             if not pushed:
                 result["error"] = "push failed"
     except PushSafetyError as exc:
+        result["error"] = str(exc)
+    except GitSignedHistoryError as exc:
         result["error"] = str(exc)
     except Exception:
         logger.debug("pre_compact: push failed", exc_info=True)

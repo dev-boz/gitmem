@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import umx.memory as memory
 from umx.identity import generate_fact_id
 from umx.memory import add_fact, read_fact_file, topic_path
 from umx.models import (
@@ -63,3 +64,31 @@ def test_editing_existing_text_creates_supersession(project_repo: Path) -> None:
     assert old_fact.superseded_by == new_fact.fact_id
     assert new_fact.supersedes == old_fact.fact_id
     assert new_fact.encoding_strength == 5
+
+
+def test_read_fact_file_reuses_process_cache_until_file_changes(
+    project_repo: Path,
+    monkeypatch,
+) -> None:
+    fact = make_fact("postgres runs on port 5433 in dev", topic="devenv")
+    add_fact(project_repo, fact)
+    path = topic_path(project_repo, "devenv")
+    original_parse = memory._parse_fact_lines
+    calls = 0
+
+    def counted_parse(path: Path, repo_dir: Path):
+        nonlocal calls
+        calls += 1
+        return original_parse(path, repo_dir)
+
+    monkeypatch.setattr(memory, "_parse_fact_lines", counted_parse)
+
+    first = read_fact_file(path, repo_dir=project_repo)
+    second = read_fact_file(path, repo_dir=project_repo)
+    path.write_text(path.read_text().replace("5433", "5434"))
+    third = read_fact_file(path, repo_dir=project_repo)
+
+    assert len(first) == 1
+    assert len(second) == 1
+    assert any(entry.text.endswith("5434 in dev") for entry in third)
+    assert calls == 2

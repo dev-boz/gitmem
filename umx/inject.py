@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from umx.budget import BudgetDecision, enforce_budget, estimate_tokens
 from umx.config import load_config
 from umx.conventions import summarize_conventions
-from umx.memory import load_all_facts, read_fact_file, read_memory_md
+from umx.memory import iter_fact_files, load_all_facts, read_fact_file, read_memory_md
 from umx.models import Fact, Scope, TaskStatus
 from umx.procedures import Procedure, load_all_procedures, match_procedures
 from umx.search_semantic import semantic_similarity_map
@@ -22,14 +23,25 @@ from umx.search import (
     active_working_set,
     attention_refresh_candidates,
     ensure_session_state,
+    inject_candidate_ids,
     latest_referenced_turn,
-    record_injection,
+    record_injections,
 )
 from umx.strength import relevance_score
 from umx.tombstones import is_suppressed, load_tombstones
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+_USER_SCOPES = {Scope.USER, Scope.TOOL, Scope.MACHINE}
+_GATHERED_FACT_CACHE: dict[
+    tuple[Path, Path],
+    tuple[
+        tuple[tuple[str, int, int], ...],
+        tuple[tuple[str, int, int], ...],
+        tuple[Fact, ...],
+        str,
+    ],
+] = {}
 
 
 def _keywords(
@@ -69,6 +81,83 @@ def _fact_repo(fact: Fact, project_repo: Path, user_repo: Path) -> Path:
 
 def _procedure_repo(procedure: Procedure, project_repo: Path, user_repo: Path) -> Path:
     return user_repo if procedure.scope == Scope.USER else project_repo
+
+
+def _inventory_fingerprints(
+    project_repo: Path,
+    user_repo: Path,
+) -> tuple[tuple[tuple[str, int, int], ...], tuple[tuple[str, int, int], ...]]:
+    project_fact_paths = [path.resolve() for path in iter_fact_files(project_repo)]
+    project_fact_set = {path.as_posix() for path in project_fact_paths}
+    paths = [
+        *project_fact_paths,
+        project_repo / "meta" / "tombstones.jsonl",
+        project_repo / "CONVENTIONS.md",
+    ]
+    if user_repo.exists():
+        paths.extend(path.resolve() for path in iter_fact_files(user_repo))
+    inventory_fingerprint: list[tuple[str, int, int]] = []
+    project_fact_fingerprint: list[tuple[str, int, int]] = []
+    for path in sorted({item.resolve() for item in paths}, key=lambda item: item.as_posix()):
+        if path.exists():
+            stat = path.stat()
+            entry = (path.as_posix(), stat.st_mtime_ns, stat.st_size)
+        else:
+            entry = (path.as_posix(), -1, -1)
+        inventory_fingerprint.append(entry)
+        if path.as_posix() in project_fact_set:
+            project_fact_fingerprint.append((str(path.relative_to(project_repo)), entry[1], entry[2]))
+    return tuple(inventory_fingerprint), tuple(project_fact_fingerprint)
+
+
+def _collect_base_facts_cached(
+    project_repo: Path,
+    user_repo: Path,
+) -> tuple[list[Fact], str, tuple[tuple[str, int, int], ...]]:
+    cache_key = (project_repo.resolve(), user_repo.resolve())
+    fingerprint, project_fact_fingerprint = _inventory_fingerprints(project_repo, user_repo)
+    cached = _GATHERED_FACT_CACHE.get(cache_key)
+    if cached is not None and cached[0] == fingerprint:
+        return list(cached[2]), cached[3], cached[1]
+
+    tombstones = load_tombstones(project_repo)
+    facts: list[Fact] = []
+    if user_repo.exists():
+        facts.extend(load_all_facts(user_repo, include_superseded=False))
+    facts.extend(load_all_facts(project_repo, include_superseded=False))
+    deduped = {fact.fact_id: fact for fact in facts}
+    filtered = [
+        fact
+        for fact in deduped.values()
+        if not is_suppressed(fact, tombstones, phase="gather")
+    ]
+    base_facts = tuple(
+        fact
+        for fact in filtered
+        if fact.superseded_by is None and fact.scope != Scope.PROJECT_SECRET
+    )
+    convention_summary = summarize_conventions(project_repo / "CONVENTIONS.md")
+    _GATHERED_FACT_CACHE[cache_key] = (
+        fingerprint,
+        project_fact_fingerprint,
+        base_facts,
+        convention_summary,
+    )
+    return list(base_facts), convention_summary, project_fact_fingerprint
+
+
+def _load_scoped_facts(project_repo: Path, file_paths: list[str] | None = None) -> list[Fact]:
+    tombstones = load_tombstones(project_repo)
+    scoped_facts: list[Fact] = []
+    for scoped_path in _scoped_paths(project_repo, file_paths):
+        scoped_facts.extend(
+            fact
+            for fact in read_fact_file(scoped_path, repo_dir=project_repo)
+            if fact.superseded_by is None
+            and fact.scope != Scope.PROJECT_SECRET
+            and not is_suppressed(fact, tombstones, phase="gather")
+        )
+    return scoped_facts
 
 
 def _render_fact(fact: Fact, disclosure_level: str) -> str:
@@ -264,37 +353,91 @@ def collect_facts_for_injection(
     prompt: str | None = None,
     file_paths: list[str] | None = None,
     command_text: str | None = None,
-) -> tuple[list[Fact], str]:
+) -> tuple[list[Fact], str, set[str], tuple[tuple[str, int, int], ...]]:
     root = find_project_root(cwd)
     project_repo = project_memory_dir(root)
     user_repo = user_memory_dir()
-    cfg = load_config(config_path())
-    keywords = _keywords(prompt, file_paths, extra_parts=[tool or "", command_text or ""])
-    target_scope = Scope.FILE if file_paths else Scope.PROJECT
-    tombstones = load_tombstones(project_repo)
-
-    facts: list[Fact] = []
-    if user_repo.exists():
-        facts.extend(load_all_facts(user_repo, include_superseded=False))
-    facts.extend(load_all_facts(project_repo, include_superseded=False))
-    for scoped_path in _scoped_paths(project_repo, file_paths):
-        facts.extend(read_fact_file(scoped_path, repo_dir=project_repo))
-
-    filtered = [fact for fact in facts if not is_suppressed(fact, tombstones, phase="gather")]
-    non_secret = [fact for fact in filtered if fact.superseded_by is None and fact.scope != Scope.PROJECT_SECRET]
-    scored = {
-        fact.fact_id: relevance_score(fact, target_scope=target_scope, keywords=keywords, config=cfg)
-        for fact in non_secret
-    }
-    convention_summary = summarize_conventions(project_repo / "CONVENTIONS.md")
-    return (
-        sorted(
-            non_secret,
-            key=lambda fact: (scored.get(fact.fact_id, 0.0), fact.encoding_strength),
-            reverse=True,
-        ),
-        convention_summary,
+    facts, convention_summary, project_fact_fingerprint = _collect_base_facts_cached(
+        project_repo,
+        user_repo,
     )
+    scoped_facts = _load_scoped_facts(project_repo, file_paths)
+    facts.extend(scoped_facts)
+
+    deduped = {fact.fact_id: fact for fact in facts}
+    return (
+        list(deduped.values()),
+        convention_summary,
+        {fact.fact_id for fact in scoped_facts},
+        project_fact_fingerprint,
+    )
+
+
+def _inject_candidate_limit(config) -> int:
+    return max(
+        128,
+        config.inject.max_concurrent_facts * 8,
+        int(config.search.embedding.candidate_limit),
+    )
+
+
+def _inject_candidate_query(keywords: set[str]) -> str:
+    tokens = sorted(token for token in keywords if token)
+    if not tokens:
+        return ""
+    return " OR ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
+def _candidate_facts_for_scoring(
+    facts: list[Fact],
+    *,
+    config,
+    keywords: set[str],
+    project_repo: Path,
+    user_repo: Path,
+    scoped_fact_ids: set[str],
+    project_fact_fingerprint: tuple[tuple[str, int, int], ...],
+    refresh_ids: set[str],
+    handoff_fact_ids: set[str] | None,
+    restrict_to_ids: set[str] | None,
+) -> list[Fact]:
+    if restrict_to_ids is not None or config.search.backend != "fts5":
+        return facts
+    project_facts = [fact for fact in facts if fact.scope not in _USER_SCOPES]
+    project_fact_count = len(project_facts)
+    candidate_limit = _inject_candidate_limit(config)
+    if project_fact_count <= candidate_limit:
+        return facts
+    query = _inject_candidate_query(keywords)
+    if not query:
+        return facts
+    shortlisted_ids = set(
+        inject_candidate_ids(
+            project_repo,
+            query,
+            limit=candidate_limit,
+            config=config,
+            stat_fingerprint=project_fact_fingerprint,
+        )
+    )
+    if not shortlisted_ids:
+        return facts
+    mandatory_project_ids = {
+        fact.fact_id
+        for fact in project_facts
+        if (
+            fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}
+            or fact.fact_id in refresh_ids
+            or fact.fact_id in scoped_fact_ids
+            or (handoff_fact_ids and fact.fact_id in handoff_fact_ids)
+        )
+    }
+    allowed_project_ids = shortlisted_ids | mandatory_project_ids
+    return [
+        fact
+        for fact in facts
+        if fact.scope in _USER_SCOPES or fact.fact_id in allowed_project_ids
+    ]
 
 
 def build_injection_block(
@@ -322,7 +465,7 @@ def build_injection_block(
     cfg = load_config(config_path())
     keywords = _keywords(prompt, file_paths, extra_parts=[tool or "", command_text or ""])
     target_scope = Scope.FILE if file_paths else Scope.PROJECT
-    facts, convention_summary = collect_facts_for_injection(
+    facts, convention_summary, scoped_fact_ids, project_fact_fingerprint = collect_facts_for_injection(
         cwd,
         tool=tool,
         prompt=prompt,
@@ -331,25 +474,6 @@ def build_injection_block(
     )
     if restrict_to_ids is not None:
         facts = [fact for fact in facts if fact.fact_id in restrict_to_ids]
-    semantic_scores: dict[str, float] = {}
-    semantic_query = " ".join(
-        part for part in [tool or "", command_text or "", prompt or "", *(file_paths or [])] if part
-    ).strip()
-    if cfg.search.backend == "hybrid" and semantic_query:
-        project_facts = [
-            fact for fact in facts if _fact_repo(fact, project_repo, user_repo) == project_repo
-        ]
-        user_facts = [
-            fact for fact in facts if _fact_repo(fact, project_repo, user_repo) == user_repo
-        ]
-        if project_facts:
-            semantic_scores.update(
-                semantic_similarity_map(project_repo, project_facts, semantic_query, config=cfg)
-            )
-        if user_repo.exists() and user_facts:
-            semantic_scores.update(
-                semantic_similarity_map(user_repo, user_facts, semantic_query, config=cfg)
-            )
     session_state = None
     if session_id:
         session_state = ensure_session_state(
@@ -377,6 +501,37 @@ def build_injection_block(
             refresh_window_pct=cfg.inject.refresh_window_pct,
             max_refreshes_per_fact=cfg.inject.max_refreshes_per_fact,
         )
+    facts = _candidate_facts_for_scoring(
+        facts,
+        config=cfg,
+        keywords=keywords,
+        project_repo=project_repo,
+        user_repo=user_repo,
+        scoped_fact_ids=scoped_fact_ids,
+        project_fact_fingerprint=project_fact_fingerprint,
+        refresh_ids=refresh_ids,
+        handoff_fact_ids=handoff_fact_ids,
+        restrict_to_ids=restrict_to_ids,
+    )
+    semantic_scores: dict[str, float] = {}
+    semantic_query = " ".join(
+        part for part in [tool or "", command_text or "", prompt or "", *(file_paths or [])] if part
+    ).strip()
+    if cfg.search.backend == "hybrid" and semantic_query:
+        project_facts = [
+            fact for fact in facts if _fact_repo(fact, project_repo, user_repo) == project_repo
+        ]
+        user_facts = [
+            fact for fact in facts if _fact_repo(fact, project_repo, user_repo) == user_repo
+        ]
+        if project_facts:
+            semantic_scores.update(
+                semantic_similarity_map(project_repo, project_facts, semantic_query, config=cfg)
+            )
+        if user_repo.exists() and user_facts:
+            semantic_scores.update(
+                semantic_similarity_map(user_repo, user_facts, semantic_query, config=cfg)
+            )
 
     scored = {}
     for fact in facts:
@@ -458,6 +613,7 @@ def build_injection_block(
     )
 
     lines = ["# UMX Memory"]
+    pending_injections: dict[Path, list[dict[str, object]]] = {}
     if convention_summary:
         lines.extend(["", "## Conventions", convention_summary])
     if hot_summary_lines:
@@ -468,18 +624,19 @@ def build_injection_block(
         for procedure in selected_procedures:
             lines.extend(_render_procedure(procedure))
             repo_dir = _procedure_repo(procedure, project_repo, user_repo)
-            record_injection(
-                repo_dir,
-                procedure.procedure_id,
-                session_id=session_id,
-                turn_index=int(session_state["turn_index"]) if session_state else None,
-                session_tokens=int(session_state["estimated_tokens"]) if session_state else None,
-                injection_point=injection_point,
-                disclosure_level="l2",
-                tool=tool,
-                parent_session_id=parent_session_id,
-                token_count=_procedure_token_cost(procedure),
-                item_kind="procedure",
+            pending_injections.setdefault(repo_dir, []).append(
+                {
+                    "fact_id": procedure.procedure_id,
+                    "session_id": session_id,
+                    "turn_index": int(session_state["turn_index"]) if session_state else None,
+                    "session_tokens": int(session_state["estimated_tokens"]) if session_state else None,
+                    "injection_point": injection_point,
+                    "disclosure_level": "l2",
+                    "tool": tool,
+                    "parent_session_id": parent_session_id,
+                    "token_count": _procedure_token_cost(procedure),
+                    "item_kind": "procedure",
+                }
             )
     open_task_lines = []
     for fact in selected:
@@ -493,17 +650,20 @@ def build_injection_block(
     for fact in selected:
         repo_dir = _fact_repo(fact, project_repo, user_repo)
         disclosure_level = disclosure_levels.get(fact.fact_id, "l1")
-        record_injection(
-            repo_dir,
-            fact.fact_id,
-            session_id=session_id,
-            turn_index=int(session_state["turn_index"]) if session_state else None,
-            session_tokens=int(session_state["estimated_tokens"]) if session_state else None,
-            injection_point="attention_refresh" if fact.fact_id in refresh_ids else injection_point,
-            disclosure_level=disclosure_level,
-            tool=tool,
-            parent_session_id=parent_session_id,
-            token_count=_fact_token_cost(fact, disclosure_level),
+        pending_injections.setdefault(repo_dir, []).append(
+            {
+                "fact_id": fact.fact_id,
+                "session_id": session_id,
+                "turn_index": int(session_state["turn_index"]) if session_state else None,
+                "session_tokens": int(session_state["estimated_tokens"]) if session_state else None,
+                "injection_point": (
+                    "attention_refresh" if fact.fact_id in refresh_ids else injection_point
+                ),
+                "disclosure_level": disclosure_level,
+                "tool": tool,
+                "parent_session_id": parent_session_id,
+                "token_count": _fact_token_cost(fact, disclosure_level),
+            }
         )
         if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
             continue
@@ -511,6 +671,8 @@ def build_injection_block(
             current_topic = fact.topic
             lines.append(f"### {current_topic}")
         lines.append(_render_fact(fact, disclosure_level))
+    for repo_dir, events in pending_injections.items():
+        record_injections(repo_dir, events)
     return "\n".join(lines).strip() + "\n"
 
 
