@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from umx.config import default_config, save_config
+from umx.config import default_config, load_config, save_config
 from umx.dream.gates import increment_session_count, read_dream_state
 from umx.git_ops import GitCommitResult, git_add_and_commit, git_init
 from umx.hooks import dispatch_hook
@@ -29,7 +30,14 @@ from umx.models import (
     Verification,
 )
 from umx.search import usage_snapshot
-from umx.sessions import read_session, session_path
+from umx.sessions import (
+    archive_path,
+    archive_state_path,
+    read_session,
+    scheduled_archive_sessions,
+    session_path,
+    write_session,
+)
 from umx.scope import (
     config_path,
     ensure_repo_structure,
@@ -181,6 +189,109 @@ def test_session_end_dream_error_returns_error(
     assert result["dream_triggered"] is True
     assert result["dream_result"]["status"] == "error"
     assert "boom" in result["dream_result"]["error"]
+
+
+@pytest.mark.parametrize(
+    ("cadence", "last_archive_at", "now"),
+    [
+        ("daily", "2026-01-15T08:00:00Z", datetime(2026, 1, 15, 12, tzinfo=UTC)),
+        ("weekly", "2026-01-12T08:00:00Z", datetime(2026, 1, 15, 12, tzinfo=UTC)),
+        ("monthly", "2026-01-02T08:00:00Z", datetime(2026, 1, 31, 12, tzinfo=UTC)),
+    ],
+)
+def test_scheduled_archive_sessions_skips_until_interval_due(
+    project_repo: Path,
+    cadence: str,
+    last_archive_at: str,
+    now: datetime,
+) -> None:
+    write_session(
+        project_repo,
+        {
+            "session_id": "2020-01-15-archivecadence",
+            "started": "2020-01-15T00:00:00Z",
+            "tool": "codex",
+        },
+        [{"ts": "2020-01-15T00:00:01Z", "role": "assistant", "content": "postgres runs on 5433 in dev"}],
+        auto_commit=False,
+    )
+    archive_state_path(project_repo).write_text(
+        json.dumps({"facts": {}, "sessions": {"last_archive_compaction": last_archive_at}}, indent=2, sort_keys=True) + "\n"
+    )
+    cfg = default_config()
+    cfg.sessions.archive_interval = cadence
+
+    result = scheduled_archive_sessions(project_repo, now=now, config=cfg)
+
+    assert result["archived_sessions"] == 0
+    assert result["ran"] is False
+    assert result["reason"] == f"{cadence}-not-due"
+    assert session_path(project_repo, "2020-01-15-archivecadence").exists()
+
+
+@pytest.mark.parametrize(
+    ("cadence", "last_archive_at", "now"),
+    [
+        ("daily", "2026-01-14T08:00:00Z", datetime(2026, 1, 15, 12, tzinfo=UTC)),
+        ("weekly", "2026-01-05T08:00:00Z", datetime(2026, 1, 15, 12, tzinfo=UTC)),
+        ("monthly", "2025-12-31T08:00:00Z", datetime(2026, 1, 15, 12, tzinfo=UTC)),
+    ],
+)
+def test_scheduled_archive_sessions_runs_when_interval_due(
+    project_repo: Path,
+    cadence: str,
+    last_archive_at: str,
+    now: datetime,
+) -> None:
+    write_session(
+        project_repo,
+        {
+            "session_id": "2020-01-15-archivecadence",
+            "started": "2020-01-15T00:00:00Z",
+            "tool": "codex",
+        },
+        [{"ts": "2020-01-15T00:00:01Z", "role": "assistant", "content": "postgres runs on 5433 in dev"}],
+        auto_commit=False,
+    )
+    archive_state_path(project_repo).write_text(
+        json.dumps({"facts": {}, "sessions": {"last_archive_compaction": last_archive_at}}, indent=2, sort_keys=True) + "\n"
+    )
+    cfg = default_config()
+    cfg.sessions.archive_interval = cadence
+
+    result = scheduled_archive_sessions(project_repo, now=now, config=cfg)
+
+    assert result["archived_sessions"] == 1
+    assert result["ran"] is True
+    assert result["reason"] == f"{cadence}-due"
+    assert not session_path(project_repo, "2020-01-15-archivecadence").exists()
+    assert archive_path(project_repo, "2020", "01").exists()
+
+
+def test_session_end_can_archive_without_new_events(project_dir: Path, project_repo: Path) -> None:
+    git_init(project_repo)
+    write_session(
+        project_repo,
+        {
+            "session_id": "2020-01-15-archivehook",
+            "started": "2020-01-15T00:00:00Z",
+            "tool": "codex",
+        },
+        [{"ts": "2020-01-15T00:00:01Z", "role": "assistant", "content": "postgres runs on 5433 in dev"}],
+        auto_commit=False,
+    )
+    cfg = default_config()
+    cfg.sessions.archive_interval = "daily"
+    save_config(config_path(), cfg)
+
+    result = session_end_run(
+        cwd=project_dir,
+        session_id="2026-01-15-archive-check",
+    )
+
+    assert result["session_written"] is False
+    assert result["archived_sessions"] == 1
+    assert archive_path(project_repo, "2020", "01").exists()
 
 
 # --- pre_compact ---
@@ -337,6 +448,25 @@ def test_pre_tool_use_injects_matching_procedure(
     assert "Run `make test`" in result
 
 
+def test_pre_tool_use_uses_configured_default_budget(
+    project_dir: Path, project_repo: Path
+) -> None:
+    cfg = default_config()
+    cfg.inject.pre_tool_max_tokens = 1234
+    save_config(config_path(), cfg)
+
+    with patch("umx.hooks.pre_tool_use.build_injection_block", return_value="# UMX Memory") as mock_build:
+        result = pre_tool_use_run(
+            cwd=project_dir,
+            tool_name="shell",
+            command_text="pytest -q",
+            session_id="pretool-budget",
+        )
+
+    assert result == "# UMX Memory"
+    assert mock_build.call_args.kwargs["max_tokens"] == 1234
+
+
 def test_pre_tool_use_ignores_invalid_procedure_regex(
     project_dir: Path, project_repo: Path
 ) -> None:
@@ -358,6 +488,16 @@ def test_pre_tool_use_ignores_invalid_procedure_regex(
 
     assert result is not None
     assert "Broken procedure" not in result
+
+
+def test_config_roundtrip_preserves_disclosure_slack_pct(umx_home: Path) -> None:
+    cfg = default_config()
+    cfg.inject.disclosure_slack_pct = 0.45
+    save_config(config_path(), cfg)
+
+    loaded = load_config(config_path())
+
+    assert loaded.inject.disclosure_slack_pct == pytest.approx(0.45)
 
 
 def test_subagent_start_relays_active_working_set(

@@ -13,7 +13,8 @@ from umx.dream.processing import read_processing_log, start_processing_run
 from umx.inject import emit_gap_signal
 from umx.memory import add_fact, find_fact_by_id, load_all_facts
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
-from umx.sessions import write_session
+from umx.search import search_sessions
+from umx.sessions import archive_path, archive_state_path, session_path, write_session
 from umx.tombstones import forget_fact
 
 
@@ -114,6 +115,32 @@ def test_dream_run_skips_when_processing_is_active(project_dir: Path, project_re
 
     assert result.status == "skipped"
     assert result.message == "dream processing held"
+
+
+def test_dream_run_archives_due_sessions_and_keeps_them_searchable(
+    project_dir: Path, project_repo: Path
+) -> None:
+    write_session(
+        project_repo,
+        {
+            "session_id": "2020-01-15-dreamarchive",
+            "started": "2020-01-15T00:00:00Z",
+            "tool": "codex",
+        },
+        [{"ts": "2020-01-15T00:00:01Z", "role": "assistant", "content": "postgres runs on port 5433 in dev."}],
+        auto_commit=False,
+    )
+    cfg = default_config()
+    cfg.sessions.archive_interval = "daily"
+
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert "1 archived" in (result.message or "")
+    assert not session_path(project_repo, "2020-01-15-dreamarchive").exists()
+    assert archive_path(project_repo, "2020", "01").exists()
+    assert archive_state_path(project_repo).exists()
+    assert any(row["session_id"] == "2020-01-15-dreamarchive" for row in search_sessions(project_repo, "postgres"))
 
 
 def test_session_gather_ignores_progress_only_codex_commentary(
@@ -329,7 +356,7 @@ def test_dream_hybrid_search_prewarms_embeddings_for_final_fact_ids(
     )
     cfg = default_config()
     cfg.search.backend = "hybrid"
-    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda: True)
+    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda config=None: True)
     monkeypatch.setattr(
         "umx.search_semantic.embed_fact",
         lambda fact, config=None: [1.0, 0.0, 0.0],
@@ -357,7 +384,7 @@ def test_dream_hybrid_search_warns_when_embeddings_unavailable(
     )
     cfg = default_config()
     cfg.search.backend = "hybrid"
-    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda: False)
+    monkeypatch.setattr("umx.dream.pipeline.embeddings_available", lambda config=None: False)
     monkeypatch.setattr("umx.search_semantic.embed_fact", lambda fact, config=None: None)
     caplog.set_level("WARNING", logger="umx.dream.pipeline")
 

@@ -34,7 +34,7 @@ def _hot_tier_tokens(repo_dir: Path) -> int:
     conventions_tokens = estimate_tokens(summarize_conventions(repo_dir / "CONVENTIONS.md"))
     principle_tokens = sum(
         estimate_tokens(fact.text)
-        for fact in load_all_facts(repo_dir, include_superseded=False)
+        for fact in load_all_facts(repo_dir, include_superseded=False, normalize=False)
         if fact.file_path and "principles/topics" in fact.file_path.as_posix()
     )
     return memory_tokens + conventions_tokens + principle_tokens
@@ -73,7 +73,11 @@ def compute_metrics(repo_dir: Path, config: UMXConfig | None = None) -> dict[str
     }
     conn.close()
 
-    all_facts = load_all_facts(repo_dir, include_superseded=True) if repo_dir.exists() else []
+    all_facts = (
+        load_all_facts(repo_dir, include_superseded=True, normalize=False)
+        if repo_dir.exists()
+        else []
+    )
     active_facts = [fact for fact in all_facts if fact.superseded_by is None]
     strong_facts = [fact for fact in active_facts if fact.encoding_strength >= 4]
 

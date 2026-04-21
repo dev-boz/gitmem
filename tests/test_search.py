@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from umx.cli import main
-from umx.memory import add_fact
+from umx.memory import add_fact, iter_fact_files
 from umx.models import (
     ConsolidationStatus,
     Fact,
@@ -17,6 +18,7 @@ from umx.models import (
 )
 from umx.search import (
     incremental_rebuild,
+    index_path,
     inject_candidate_ids,
     query_index,
     rebuild_index,
@@ -81,6 +83,92 @@ def test_incremental_rebuild_first_call_does_full(project_repo: Path) -> None:
     # No prior rebuild, so incremental should fall back to full
     count = incremental_rebuild(project_repo)
     assert count >= 1
+
+
+def test_incremental_rebuild_schema_mismatch_does_full(project_repo: Path) -> None:
+    fact = _make_fact(
+        "node version is 20",
+        topic="toolchain",
+        fact_id="01TESTFACT0000000000000015",
+    )
+    add_fact(project_repo, fact)
+    rebuild_index(project_repo)
+
+    conn = sqlite3.connect(index_path(project_repo))
+    conn.execute("UPDATE _meta SET value = '0' WHERE key = 'schema_version'")
+    conn.commit()
+    conn.close()
+
+    count = incremental_rebuild(project_repo)
+    assert count == len(iter_fact_files(project_repo))
+
+
+def test_incremental_rebuild_legacy_index_without_source_paths_does_full(project_repo: Path) -> None:
+    fact = _make_fact(
+        "python version is 3.12",
+        topic="toolchain",
+        fact_id="01TESTFACT0000000000000016",
+    )
+    add_fact(project_repo, fact)
+    rebuild_index(project_repo)
+
+    conn = sqlite3.connect(index_path(project_repo))
+    conn.execute("UPDATE memories SET source_path = NULL")
+    conn.commit()
+    conn.close()
+
+    count = incremental_rebuild(project_repo)
+    assert count == len(iter_fact_files(project_repo))
+
+
+def test_incremental_rebuild_corrupt_file_hashes_does_full(project_repo: Path) -> None:
+    fact = _make_fact(
+        "python version is 3.12",
+        topic="toolchain",
+        fact_id="01TESTFACT0000000000000019",
+    )
+    add_fact(project_repo, fact)
+    rebuild_index(project_repo)
+
+    conn = sqlite3.connect(index_path(project_repo))
+    conn.execute("UPDATE _meta SET value = 'not-json' WHERE key = 'file_hashes'")
+    conn.commit()
+    conn.close()
+
+    count = incremental_rebuild(project_repo)
+    assert count == len(iter_fact_files(project_repo))
+
+
+def test_incremental_rebuild_preserves_same_topic_in_other_scope(project_repo: Path) -> None:
+    project_fact = _make_fact(
+        "project deployment notes use port 6380",
+        topic="shared-topic",
+        fact_id="01TESTFACT0000000000000017",
+        scope=Scope.PROJECT,
+    )
+    tool_fact = _make_fact(
+        "tool wrapper still uses make ship",
+        topic="shared-topic",
+        fact_id="01TESTFACT0000000000000018",
+        scope=Scope.TOOL,
+    )
+    add_fact(project_repo, project_fact)
+    add_fact(project_repo, tool_fact)
+    rebuild_index(project_repo)
+
+    project_path = project_repo / "facts" / "topics" / "shared-topic.md"
+    content = project_path.read_text()
+    project_path.write_text(content.replace("6380", "6381"))
+
+    count = incremental_rebuild(project_repo)
+
+    assert count == 1
+    project_hits = query_index(project_repo, "6381")
+    tool_hits = query_index(project_repo, "wrapper ship")
+    assert any("6381" in row.text for row in project_hits)
+    assert inject_candidate_ids(project_repo, '"6381"', limit=5)
+    assert incremental_rebuild(project_repo) == 0
+    assert any(row.fact_id == tool_fact.fact_id for row in tool_hits)
 
 
 def test_inject_candidate_ids_require_current_index(project_repo: Path) -> None:

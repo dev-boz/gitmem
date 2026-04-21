@@ -17,7 +17,7 @@ from umx.tombstones import load_tombstones
 def build_status_payload(cwd: Path) -> dict[str, Any]:
     repo = project_memory_dir(cwd)
     state = read_dream_state(repo)
-    facts = load_all_facts(repo, include_superseded=False) if repo.exists() else []
+    facts = load_all_facts(repo, include_superseded=False, normalize=False) if repo.exists() else []
     cfg = load_config(config_path())
     metrics = compute_metrics(repo, cfg)
     flags = health_flags(metrics)

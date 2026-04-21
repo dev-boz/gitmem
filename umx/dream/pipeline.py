@@ -91,6 +91,7 @@ from umx.scope import (
 )
 from umx.search import injected_without_reference_sessions, rebuild_index, usage_snapshot
 from umx.search_semantic import embeddings_available, ensure_embeddings
+from umx.sessions import scheduled_archive_sessions
 from umx.strength import apply_corroboration, independent_corroboration, should_prune
 from umx.tasks import auto_abandon_tasks
 from umx.tombstones import is_suppressed, load_tombstones
@@ -326,12 +327,15 @@ class DreamPipeline:
         save_repository_facts(self.repo_dir, stabilized, auto_commit=False)
         active_facts = [fact for fact in stabilized if fact.superseded_by is None]
         if self.config.search.backend == "hybrid" and active_facts:
-            if not embeddings_available():
+            if not embeddings_available(self.config):
                 logger.warning(
-                    "hybrid search requested but sentence-transformers is unavailable; "
+                    "hybrid search requested but embedding provider is unavailable; "
                     "embedding prewarm skipped"
                 )
-            ensure_embeddings(self.repo_dir, active_facts, config=self.config, force=False)
+            else:
+                result = ensure_embeddings(self.repo_dir, active_facts, config=self.config, force=False)
+                if result.needs_rebuild and result.message:
+                    logger.warning(result.message)
         write_memory_md(
             self.repo_dir,
             active_facts,
@@ -1264,12 +1268,20 @@ class DreamPipeline:
                 if self._gathered_session_ids:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
+                archive_result = scheduled_archive_sessions(
+                    self.repo_dir,
+                    now=now,
+                    config=self.config,
+                )
+                archived_sessions = int(archive_result.get("archived_sessions", 0))
                 demoted = getattr(self, "_demoted_count", 0)
                 msg = f"{len(final_facts)} facts retained"
                 if provider_summary:
                     msg += f", extraction: {provider_summary}"
                 if demoted:
                     msg += f", {demoted} demoted"
+                if archived_sessions:
+                    msg += f", {archived_sessions} archived"
                 if pr_proposal:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
@@ -1393,12 +1405,20 @@ class DreamPipeline:
             if self._gathered_session_ids:
                 mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
             mark_dream_complete(self.repo_dir, now)
+            archive_result = scheduled_archive_sessions(
+                self.repo_dir,
+                now=now,
+                config=self.config,
+            )
+            archived_sessions = int(archive_result.get("archived_sessions", 0))
             demoted = getattr(self, "_demoted_count", 0)
             msg = f"{len(final_facts)} facts retained"
             if provider_summary:
                 msg += f", extraction: {provider_summary}"
             if demoted:
                 msg += f", {demoted} demoted"
+            if archived_sessions:
+                msg += f", {archived_sessions} archived"
             result = DreamResult(
                 status="ok",
                 added=len(self.new_fact_ids),

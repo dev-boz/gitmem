@@ -35,6 +35,9 @@ VERIFICATION_SHORT = {
 }
 VERIFICATION_LONG = {value: key for key, value in VERIFICATION_SHORT.items()}
 FACT_PREFIX_RE = re.compile(r"^\[S:(?P<strength>\d+)\|V:(?P<verification>[a-z-]+)\]\s*")
+FACT_FILE_SCHEMA_VERSION = 1
+FACTS_SECTION_HEADING = "## Facts"
+_FACT_FILE_SCHEMA_RE = re.compile(r"^schema_version:\s*(?P<version>\d+)\s*$")
 _FACT_FILE_CACHE: dict[
     tuple[Path, bool],
     tuple[tuple[int, int, str, int, int, str], tuple[dict[str, Any], ...]],
@@ -200,6 +203,50 @@ def _purge_fact_file_cache(path: Path) -> None:
     _FACT_FILE_CACHE.pop((resolved, False), None)
 
 
+def purge_fact_file_cache(path: Path) -> None:
+    _purge_fact_file_cache(path)
+
+
+def read_fact_file_schema_version(path: Path) -> tuple[int | None, str | None]:
+    if not path.exists():
+        return None, None
+    for line in path.read_text().splitlines()[1:]:
+        stripped = line.strip()
+        if stripped == FACTS_SECTION_HEADING:
+            break
+        if not stripped:
+            continue
+        match = _FACT_FILE_SCHEMA_RE.match(stripped)
+        if match:
+            raw = match.group("version")
+            return int(raw), raw
+        break
+    return None, None
+
+
+def ensure_fact_file_schema_header_text(
+    text: str,
+    *,
+    path: Path,
+    schema_version: int = FACT_FILE_SCHEMA_VERSION,
+) -> str:
+    lines = text.splitlines()
+    title = lines[0] if lines and lines[0].startswith("# ") else f"# {path.stem}"
+    facts_heading_index = next(
+        (index for index, line in enumerate(lines) if line.strip() == FACTS_SECTION_HEADING),
+        None,
+    )
+    body_lines = lines[facts_heading_index + 1 :] if facts_heading_index is not None else lines[1:]
+    header_lines = [title, f"schema_version: {schema_version}", "", FACTS_SECTION_HEADING]
+    if not body_lines:
+        return "\n".join(header_lines) + "\n"
+    return "\n".join([*header_lines, *body_lines]) + "\n"
+
+
+def _fact_file_header(path: Path) -> str:
+    return ensure_fact_file_schema_header_text("", path=path)
+
+
 def _parse_verification(value: str) -> Verification:
     if value in VERIFICATION_LONG:
         return VERIFICATION_LONG[value]
@@ -352,7 +399,7 @@ def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
             fact.fact_id,
         ),
     )
-    header = f"# {path.stem}\n\n## Facts\n"
+    header = _fact_file_header(path)
     body = "\n".join(format_fact_line(fact) for fact in ordered)
     path.write_text(f"{header}{body}\n" if body else header)
     _save_cache(path, ordered)
@@ -399,12 +446,11 @@ def append_fact_preserving_existing(
     current = path.read_text() if path.exists() else ""
     existing_facts = _parse_fact_lines(path, repo_dir) if current else []
     if current:
+        current = ensure_fact_file_schema_header_text(current, path=path)
         separator = "" if current.endswith("\n") else "\n"
         path.write_text(f"{current}{separator}{format_fact_line(materialized)}\n")
     else:
-        path.write_text(
-            f"# {path.stem}\n\n## Facts\n{format_fact_line(materialized)}\n"
-        )
+        path.write_text(f"{_fact_file_header(path)}{format_fact_line(materialized)}\n")
     _save_cache(path, [*existing_facts, materialized])
     _purge_fact_file_cache(path)
     return path

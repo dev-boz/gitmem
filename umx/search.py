@@ -205,6 +205,14 @@ def ensure_index(repo_dir: Path) -> None:
         END;
         """
     )
+    _ensure_columns(
+        conn,
+        "memories",
+        {
+            "source_path": "TEXT",
+        },
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_source_path ON memories(source_path)")
     conn.commit()
     conn.close()
     _ENSURED_INDEX_PATHS.add(path)
@@ -308,13 +316,19 @@ def ensure_usage_db(repo_dir: Path) -> None:
 
 
 def _insert_fact(conn: sqlite3.Connection, fact, repo_dir: Path) -> None:
+    source_path = None
+    if fact.file_path is not None:
+        try:
+            source_path = str(fact.file_path.relative_to(repo_dir))
+        except ValueError:
+            source_path = None
     conn.execute(
         """
         INSERT OR REPLACE INTO memories (
           id, repo, scope, topic, content, tags, encoding_strength, verification,
           source_type, consolidation_status, task_status, token_count, supersedes,
-          superseded_by, created_at, git_sha, pr
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          superseded_by, created_at, git_sha, pr, source_path
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             fact.fact_id,
@@ -334,6 +348,7 @@ def _insert_fact(conn: sqlite3.Connection, fact, repo_dir: Path) -> None:
             fact.created.isoformat().replace("+00:00", "Z"),
             fact.code_anchor.git_sha if fact.code_anchor else None,
             fact.provenance.pr,
+            source_path,
         ),
     )
 
@@ -360,7 +375,40 @@ def _load_file_hashes(conn: sqlite3.Connection) -> dict[str, str] | None:
     ).fetchone()
     if row is None:
         return None
-    return json.loads(row["value"])
+    try:
+        loaded = json.loads(row["value"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    hashes: dict[str, str] = {}
+    for key, value in loaded.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return None
+        hashes[key] = value
+    return hashes
+
+
+def _load_schema_version(conn: sqlite3.Connection) -> str | None:
+    row = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'schema_version'"
+    ).fetchone()
+    if row is None:
+        return None
+    return str(row["value"])
+
+
+def _has_complete_source_paths(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM memories WHERE source_path IS NULL LIMIT 1"
+    ).fetchone()
+    return row is None
+
+
+def _full_rebuild_file_count(repo_dir: Path) -> int:
+    file_count = len(iter_fact_files(repo_dir))
+    rebuild_index(repo_dir)
+    return file_count
 
 
 def rebuild_index(
@@ -391,7 +439,22 @@ def rebuild_index(
             [fact for fact in facts if fact.superseded_by is None],
             config=cfg,
             force=True,
+            allow_config_mismatch=True,
         )
+
+
+def refresh_index(
+    repo_dir: Path,
+    *,
+    with_embeddings: bool = False,
+    config: UMXConfig | None = None,
+) -> int:
+    cfg = config or load_config(config_path())
+    if with_embeddings or cfg.search.rebuild != "incremental":
+        file_count = len(iter_fact_files(repo_dir))
+        rebuild_index(repo_dir, with_embeddings=with_embeddings, config=cfg)
+        return file_count
+    return incremental_rebuild(repo_dir)
 
 
 def query_index(
@@ -1239,10 +1302,14 @@ def incremental_rebuild(repo_dir: Path) -> int:
     conn = _connect(index_path(repo_dir))
 
     stored = _load_file_hashes(conn)
-    if stored is None:
+    schema_version = _load_schema_version(conn)
+    if (
+        stored is None
+        or schema_version != str(CURRENT_SCHEMA_VERSION)
+        or not _has_complete_source_paths(conn)
+    ):
         conn.close()
-        rebuild_index(repo_dir)
-        return len(list(iter_fact_files(repo_dir)))
+        return _full_rebuild_file_count(repo_dir)
 
     current = _compute_file_hashes(repo_dir)
     changed: list[str] = []
@@ -1251,31 +1318,16 @@ def incremental_rebuild(repo_dir: Path) -> int:
             changed.append(rel)
     deleted = [rel for rel in stored if rel not in current]
 
-    # Remove entries for deleted files — load facts from old hashes and remove by id
     for rel in deleted:
-        path = repo_dir / rel
-        # Since the file is deleted, we can't read it. Delete by matching facts
-        # whose id was indexed from this file. Use topic as a best-effort match,
-        # but also re-scan remaining files afterward to re-add any same-topic facts.
-        topic = Path(rel).stem
-        conn.execute("DELETE FROM memories WHERE topic = ?", (topic,))
+        conn.execute("DELETE FROM memories WHERE source_path = ?", (rel,))
 
-    # Re-index changed/new files
     for rel in changed:
         path = repo_dir / rel
-        topic = Path(rel).stem
-        conn.execute("DELETE FROM memories WHERE topic = ?", (topic,))
+        conn.execute("DELETE FROM memories WHERE source_path = ?", (rel,))
         for fact in read_fact_file(path, repo_dir=repo_dir):
             _insert_fact(conn, fact, repo_dir)
 
-    # If we deleted by topic, re-index any surviving files that share the same stem
-    if deleted:
-        deleted_stems = {Path(rel).stem for rel in deleted}
-        for rel, digest in current.items():
-            if Path(rel).stem in deleted_stems and rel not in changed:
-                for fact in read_fact_file(repo_dir / rel, repo_dir=repo_dir):
-                    _insert_fact(conn, fact, repo_dir)
-
+    current = _compute_file_hashes(repo_dir)
     _store_file_hashes(conn, current)
     conn.commit()
     conn.close()

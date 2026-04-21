@@ -730,9 +730,12 @@ Each topic has:
 
 ### Inline metadata in markdown
 
-Facts in markdown carry inline metadata in HTML comments:
+Each topic markdown file starts with a lightweight file header carrying the fact-file schema version. Facts then carry inline metadata in HTML comments:
 
 ```markdown
+# devenv
+schema_version: 1
+
 ## Facts
 - [S:4|V:cor] postgres runs on port 5433 in this dev env <!-- umx:{"id":"01JQXYZ1234567890ABCDEF","conf":0.97,"cort":["aider"],"corf":[],"pr":"#47","src":"claude-code","xby":"gpt-4.1","aby":"claude-sonnet-4","ss":"2026-04-03-01JQXYZ9876543210","st":"tool_output","cr":"2026-04-03T20:11Z","v":"corroborated","cs":"stable","sup":"01JQXABCDEF0000000000"} -->
 - [S:3|V:sr] CORS warnings on /api/auth can be ignored in dev <!-- umx:{"id":"01JQXYZ2345678901BCDEFG","conf":0.88,"cort":[],"corf":[],"src":"aider","xby":"gpt-4.1","aby":"claude-sonnet-4","ss":"2026-04-01-01JQXYZ1111111111","st":"tool_output","cr":"2026-04-01T14:33Z","v":"self-reported","cs":"fragile"} -->
@@ -811,7 +814,16 @@ session_count: 47
 
 ### Schema versioning
 
-`meta/schema_version` contains an integer. Dream agents MUST check this value and run migrations before processing. Increment on any breaking change to fact schema or directory layout.
+`meta/schema_version` contains the repo-level schema integer. Dream agents MUST check this value and run repo migrations or repair before processing. Increment it on breaking changes to repository layout, generated index semantics, or other cross-repo storage expectations.
+
+Fact topic files carry a separate header line immediately below the title:
+
+```markdown
+# devenv
+schema_version: 1
+```
+
+This file-level schema is intentionally separate from `meta/schema_version`. It allows ordered fact-file migrations to run via `umx migrate` without conflating them with repo bootstrap repair. `umx doctor` SHOULD report missing, stale, or future fact-file schema headers, but `umx doctor --fix` MUST remain scoped to repo-level repair; operators run fact-file migrations explicitly.
 
 ### Conflict file
 
@@ -1657,6 +1669,8 @@ sessions/
 
 Archived session bodies are decompressed on demand for raw-track queries and `umx audit --rederive`. The SQLite search index does NOT cover archived session bodies; archived retrieval uses the session index plus direct scan/decompression.
 
+Archive compaction MAY be run explicitly via `umx archive-sessions` or implicitly via a config-driven cadence. The cadence is controlled by `sessions.archive_interval` (`daily` / `weekly` / `monthly` / `never`), with the last compaction timestamp stored in local-only `.umx.json` under `sessions.last_archive_compaction`. Scheduled compaction MUST NOT make archived sessions unsearchable.
+
 ### Session log uses
 
 1. **Audit baseline** — SotA model traces facts back to source sessions during PR review
@@ -1758,9 +1772,9 @@ Default ranking function: `bm25()`.
 
 ### Incremental rebuild
 
-On `git pull`, umx checks `git diff --name-only <last_indexed_sha> HEAD -- '*.md'` to identify changed files. Only those are re-indexed. Full rebuild occurs on: first clone, `schema_version` change, or `umx rebuild-index --force`.
+umx stores per-file content hashes in the SQLite `_meta.file_hashes` record and refreshes only the markdown files whose content changed since the last indexed state.
 
-The `last_indexed_sha` is stored in the SQLite `_meta` table.
+By default, plain `umx rebuild-index` performs this incremental refresh when the existing index matches the current schema, already has per-row source-file bookkeeping, and the stored file-hash metadata is readable; otherwise it falls back to a full rebuild. If `search.rebuild` is set to `full`, plain `umx rebuild-index` uses a full rebuild even when incremental metadata is healthy. `umx rebuild-index --embeddings` always performs a full rebuild before refreshing the embedding cache.
 
 ---
 
@@ -1815,9 +1829,15 @@ Embeddings are stored in the per-project `.umx.json` local cache alongside exist
 
 ```json
 {
+  "embedding_config": {
+    "provider": "sentence-transformers",
+    "model": "all-MiniLM-L6-v2",
+    "model_version": "v1.0"
+  },
   "facts": {
     "01JQXYZ1234567890ABCDEF": {
       "embedding": [0.123, -0.456, ...],
+      "embedding_provider": "sentence-transformers",
       "embedding_model": "all-MiniLM-L6-v2",
       "embedding_model_version": "v1.0",
       "embedded_at": "2026-04-09T10:00Z"
@@ -1829,8 +1849,9 @@ Embeddings are stored in the per-project `.umx.json` local cache alongside exist
 Rules:
 - `.umx.json` is gitignored. Embeddings are NEVER committed to memory repos.
 - Embeddings are fully rebuildable from committed markdown at any time via `umx rebuild-index --embeddings`.
-- On model version mismatch (stored `embedding_model_version` ≠ configured version), cached embeddings for that fact MUST be treated as absent. Stale embeddings from a different vector space MUST NOT be used — their cosine distances are meaningless relative to embeddings from a different model. Rebuild is triggered automatically or on next Dream cycle.
-- The embedding model string and version are stored per-fact so that a model upgrade invalidates only the affected entries, not the entire cache.
+- The repo-local `embedding_config` signature MUST match the configured provider/model/version before hybrid semantic reranking uses cached vectors. On mismatch, semantic reranking MUST fall back to lexical-only results and surface a clear `umx rebuild-index --embeddings` message instead of silently mixing vector spaces.
+- On provider or model version mismatch (stored `embedding_provider` / `embedding_model_version` ≠ configured values), cached embeddings for that fact MUST be treated as absent. Stale embeddings from a different vector space MUST NOT be used — their cosine distances are meaningless relative to embeddings from a different provider or model family. Rebuild is triggered explicitly via `umx rebuild-index --embeddings`.
+- The embedding provider, model string, and version are stored per-fact so that future provider/model upgrades remain lossless and inspectable.
 
 ### Graceful degradation
 
@@ -1949,7 +1970,7 @@ Earlier spec drafts used a `[DEPRECATED]` marker inline. This is superseded by t
 | **Hallucinated principles** | Cheap model promotes aggressively | ≥3 sessions + S:≥4 for 14 days + L3 gate |
 | **Merge conflict on push** | Concurrent agents | Arbitrator agent; append-only sessions minimise this |
 | **Repo bloat** | Session accumulation | Monthly gzip + index for archived sessions |
-| **Schema migration** | Format change | `meta/schema_version`; dream agents check before processing |
+| **Schema migration** | Format change | Repo-level `meta/schema_version` plus per-file `schema_version` headers; dream agents check before processing and operators can run `umx migrate` for fact files |
 | **Orphaned scoped memory** | Project file/folder renamed | Orient phase detects; proposes rename/migration PR. Manual: `umx migrate-scope` |
 | **Slug collision** | Two repos with same name | Collision detection in `umx init-project`; override via `.umx-project` |
 | **`last_referenced` inflation** | Every injection counts as retrieval | Only explicit use updates `last_referenced` in `meta/usage.sqlite`; silent injection does not |
@@ -2038,8 +2059,10 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 umx/
 ├── __init__.py
 ├── cli.py                  # `umx` / `gitmem` subcommands
+├── backup.py               # self-contained raw-copy export/import bundles
 ├── scope.py                # scope hierarchy + project discovery + slug collision
 ├── memory.py               # read/write MEMORY.md + topic files
+├── migrations/             # ordered fact-file schema migrations
 ├── strength.py             # encoding strength + composite scoring + verification
 ├── identity.py             # ULID generation + semantic dedup key
 ├── inject.py               # injection + relevance scoring + gap signal emission
@@ -2047,7 +2070,8 @@ umx/
 ├── sessions.py             # session log write + JSONL + _meta schema
 ├── redaction.py            # pre-commit secret scanning + pattern matching
 ├── search.py               # SQLite FTS: build, incremental rebuild, query
-├── search_semantic.py      # optional: embedding generation, cosine re-rank, cache r/w, model version validation
+├── search_semantic.py      # optional: embedding generation, provider-aware cache validation, cosine re-rank
+├── providers/embeddings.py # embedding provider registry + local/fixture implementations
 ├── manifest.py             # meta/manifest.json maintenance (topics, uncertainty_hotspots, knowledge_gaps)
 ├── tombstones.py           # tombstone CRUD + suppression checks
 ├── supersession.py         # supersedes/superseded_by chain walking (umx history)
@@ -2120,11 +2144,15 @@ umx rebuild-index    --cwd . [--embeddings]
 umx archive-sessions --cwd .
 umx init-actions     [--dir <path>]
 umx migrate-scope    --cwd . --from <old-path> --to <new-path>
+umx migrate          --cwd .
 umx doctor           [--cwd .] [--fix]
+umx export           --cwd . --out <dir>
 umx secret           get <key> | set <key> <value>
-umx import           --cwd . --adapter claude-code|copilot|aider|generic [--dry-run]
+umx import           --cwd . [--adapter claude-code|copilot|aider|generic | --full <dir> [--force]] [--dry-run]
 umx mcp
 ```
+
+`umx export --out <dir>` writes a self-contained backup directory containing a root `backup-manifest.json` plus a `snapshot/` subtree with the raw repo contents. `umx import --full <dir>` validates the manifest and snapshot before any forced clear, then restores bytes without reserializing fact files or sessions.
 
 Additional integration surfaces are part of the shipped CLI and versioned with the Python package:
 
@@ -2253,7 +2281,8 @@ inject:
   refresh_window_pct: 0.25            # attention refresh after ~25% of the active window has elapsed
   max_refreshes_per_fact: 3           # cap refresh churn per fact per session
   max_concurrent_facts: 12            # post-pack attention saturation cap
-  pre_tool_max_tokens: 1000           # small pre-tool guidance budget
+  pre_tool_max_tokens: 1400           # small pre-tool guidance budget
+  disclosure_slack_pct: 0.20          # reserve this fraction of the fact budget before downgrading L1 facts to L0
   subagent_max_tokens: 2000           # relay budget for child agents
   subagent_hot_tokens: 1500           # max MEMORY.md excerpt inside subagent relay
   turn_token_estimate: 250            # heuristic token estimate when tool-native telemetry is absent
@@ -2272,6 +2301,7 @@ search:
   rebuild: incremental               # incremental | full
   backend: fts5                      # fts5 (default) | hybrid (fts5 + local embeddings — see §20a)
   embedding:                         # only used when backend: hybrid
+    provider: sentence-transformers  # current production backend; switching requires `umx rebuild-index --embeddings`
     model: all-MiniLM-L6-v2         # pip-installable sentence-transformers model
     model_version: v1.0              # version string — cache invalidated on mismatch
     input_fields: [text, topic, scope]  # fields concatenated before embedding

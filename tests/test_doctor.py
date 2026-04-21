@@ -84,8 +84,11 @@ def test_doctor_surfaces_processing_quarantine_health_and_embeddings(
         "files": ["local/quarantine/sess-1.jsonl"],
     }
     assert payload["embeddings"]["backend"] == "fts5"
+    assert payload["embeddings"]["provider"] == "sentence-transformers"
     assert payload["embeddings"]["enabled"] is False
     assert isinstance(payload["embeddings"]["available"], bool)
+    assert payload["embeddings"]["state"] == "empty"
+    assert payload["embeddings"]["message"] is None
     assert "health" in payload
     assert "hot_tier_pct" in payload["health"]
     assert any(item["metric"] == "hot_tier_utilisation" for item in payload["health"]["guidance"])

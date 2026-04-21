@@ -250,10 +250,23 @@ def capture_amp_thread(
     config: UMXConfig | None = None,
 ) -> dict[str, Any]:
     cfg = config or default_config()
-    transcript = parse_amp_thread(thread_path)
     project_root = find_project_root(cwd)
     repo_dir = project_memory_dir(project_root)
+    prepared = prepare_amp_capture(thread_path)
+    session_file = write_session(
+        repo_dir,
+        meta=dict(prepared["meta"]),
+        events=prepared["events"],
+        config=cfg,
+        auto_commit=False,
+    )
+    result = dict(prepared["result"])
+    result["session_file"] = str(session_file)
+    return result
 
+
+def prepare_amp_capture(thread_path: Path) -> dict[str, Any]:
+    transcript = parse_amp_thread(thread_path)
     meta: dict[str, Any] = {
         "session_id": transcript.umx_session_id,
         "tool": "amp",
@@ -271,18 +284,13 @@ def capture_amp_thread(
         meta["amp_client_version"] = transcript.client_version
     if transcript.project_roots:
         meta["amp_project_roots"] = transcript.project_roots
-
-    session_file = write_session(
-        repo_dir,
-        meta=meta,
-        events=transcript.events,
-        config=cfg,
-        auto_commit=False,
-    )
     return {
-        "source_file": str(transcript.source_path),
-        "umx_session_id": transcript.umx_session_id,
-        "events_imported": len(transcript.events),
-        "session_file": str(session_file),
-        "tool": "amp",
+        "meta": meta,
+        "events": transcript.events,
+        "result": {
+            "source_file": str(transcript.source_path),
+            "umx_session_id": transcript.umx_session_id,
+            "events_imported": len(transcript.events),
+            "tool": "amp",
+        },
     }

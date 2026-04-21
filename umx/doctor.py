@@ -10,9 +10,11 @@ from umx.conventions import validate_conventions_file
 from umx.dream.gates import DreamLock
 from umx.dream.processing import summarize_processing_log
 from umx.git_ops import git_signing_payload, git_signing_readiness
+from umx.memory import FACT_FILE_SCHEMA_VERSION
+from umx.migrations import inspect_fact_file_schema
 from umx.metrics import compute_metrics, health_flags
 from umx.schema import detect_schema_state, repair_schema
-from umx.search_semantic import embeddings_available
+from umx.search_semantic import embeddings_available, inspect_embedding_cache_state
 from umx.scope import find_orphaned_scoped_memory, find_project_root, get_umx_home, project_memory_dir
 
 
@@ -105,6 +107,7 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         }
         schema_state = detect_schema_state(repo_dir)
         result["schema"] = schema_state.to_dict()
+        result["fact_file_schema"] = inspect_fact_file_schema(repo_dir).to_dict()
         if fix and schema_state.fixable:
             repair = repair_schema(repo_dir, config=cfg)
             result["fixes_applied"].extend(repair.applied)
@@ -118,6 +121,7 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         metrics = compute_metrics(repo_dir, cfg)
         flags = health_flags(metrics)
         advice = build_calibration_advice(metrics, flags)
+        embedding_state = inspect_embedding_cache_state(repo_dir, config=cfg)
         result["conventions_valid"] = len(conv_issues) == 0
         result["conventions_issues"] = conv_issues
         result["orphaned_scoped_memory_count"] = len(orphaned_scopes)
@@ -134,8 +138,11 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["quarantine"] = _quarantine_summary(repo_dir)
         result["embeddings"] = {
             "backend": cfg.search.backend,
-            "available": embeddings_available(),
+            "provider": cfg.search.embedding.provider,
+            "available": embeddings_available(cfg),
             "enabled": cfg.search.backend == "hybrid",
+            "state": embedding_state.state,
+            "message": embedding_state.message if cfg.search.backend == "hybrid" else None,
         }
         result["health"] = {
             "ok": len(flags) == 0,
@@ -148,6 +155,16 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["conventions_valid"] = False
         result["conventions_issues"] = ["could not locate project memory"]
         result["schema"] = detect_schema_state(project_memory_dir(cwd)).to_dict()
+        result["fact_file_schema"] = {
+            "expected": FACT_FILE_SCHEMA_VERSION,
+            "current_files": 0,
+            "missing": [],
+            "stale": [],
+            "future": [],
+            "status": "warn",
+            "state": "needs-migration",
+            "from_version": 0,
+        }
         result["orphaned_scoped_memory_count"] = 0
         result["orphaned_scoped_memory"] = []
         result["dream_lock"] = {
@@ -169,8 +186,11 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["quarantine"] = {"count": 0, "files": []}
         result["embeddings"] = {
             "backend": cfg.search.backend,
-            "available": embeddings_available(),
+            "provider": cfg.search.embedding.provider,
+            "available": embeddings_available(cfg),
             "enabled": cfg.search.backend == "hybrid",
+            "state": "empty",
+            "message": None,
         }
         result["health"] = {
             "ok": True,

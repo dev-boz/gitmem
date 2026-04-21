@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -15,6 +17,7 @@ from umx.amp_capture import (
     parse_amp_thread,
 )
 from umx.cli import main
+from umx.git_ops import GitCommitResult
 
 
 def _write_amp_thread(path: Path, data: dict) -> Path:
@@ -194,3 +197,68 @@ class TestCaptureAmpThread:
         payload = json.loads(result.output)
         assert payload["tool"] == "amp"
         assert payload["events_imported"] == 2
+
+    def test_cli_capture_amp_all_preserves_order_and_commits_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from umx.config import default_config, save_config
+        from umx.scope import config_path, init_local_umx, init_project_memory, project_memory_dir
+        from umx.sessions import session_path
+
+        home = tmp_path / "umxhome"
+        monkeypatch.setenv("UMX_HOME", str(home))
+        init_local_umx()
+        save_config(config_path(), default_config())
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        init_project_memory(project)
+
+        source_root = tmp_path / "amp"
+        first = _write_amp_thread(
+            source_root / "threads" / "T-001.json",
+            _minimal_amp_thread(project_uri=project.resolve().as_uri(), thread_id="T-001"),
+        )
+        second = _write_amp_thread(
+            source_root / "threads" / "T-002.json",
+            _minimal_amp_thread(project_uri=project.resolve().as_uri(), thread_id="T-002"),
+        )
+
+        barrier = threading.Barrier(2, timeout=2)
+        original = parse_amp_thread
+
+        def parse_with_barrier(path: Path):
+            transcript = original(path)
+            barrier.wait()
+            return transcript
+
+        runner = CliRunner()
+        with (
+            patch("umx.amp_capture.parse_amp_thread", side_effect=parse_with_barrier),
+            patch(
+                "umx.git_ops.git_add_and_commit",
+                return_value=GitCommitResult.committed_result(),
+            ) as mock_commit,
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "capture",
+                    "amp",
+                    "--cwd",
+                    str(project),
+                    "--source-root",
+                    str(source_root),
+                    "--all",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert [item["source_file"] for item in payload] == [str(first), str(second)]
+        repo = project_memory_dir(project)
+        assert all(session_path(repo, item["umx_session_id"]).exists() for item in payload)
+        mock_commit.assert_called_once()

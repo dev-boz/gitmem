@@ -91,8 +91,35 @@ def test_cli_rebuild_index_with_embeddings_writes_cache(
 
     cache_path = project_repo / ".umx.json"
     payload = json.loads(cache_path.read_text())
+    assert payload["embedding_config"] == {
+        "model": "all-MiniLM-L6-v2",
+        "model_version": "v1.0",
+        "provider": "sentence-transformers",
+    }
     assert fact.fact_id in payload["facts"]
     assert payload["facts"][fact.fact_id]["embedding"] == [1.0, 0.0, 0.0]
+    assert payload["facts"][fact.fact_id]["embedding_provider"] == "sentence-transformers"
+
+
+def test_cli_rebuild_index_uses_refresh_path(
+    monkeypatch, project_dir: Path, project_repo: Path
+) -> None:
+    called: dict[str, object] = {}
+
+    def _fake_refresh(repo: Path, *, with_embeddings: bool = False, config=None) -> int:
+        called["repo"] = repo
+        called["with_embeddings"] = with_embeddings
+        called["config"] = config
+        return 0
+
+    monkeypatch.setattr("umx.cli.refresh_index", _fake_refresh)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["rebuild-index", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert called["repo"] == project_repo
+    assert called["with_embeddings"] is False
 
 
 def test_cli_dream_force_lint_overrides_never_interval(

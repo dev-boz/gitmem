@@ -2,15 +2,49 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from umx.config import UMXConfig, default_config
+from umx.config import DEFAULT_EMBEDDING_PROVIDER, UMXConfig, default_config
+from umx.providers.embeddings import resolve_embedding_provider
 
 
 CACHE_NAME = ".umx.json"
-_MODEL_CACHE: dict[str, Any] = {}
+EMBEDDING_CONFIG_KEY = "embedding_config"
+
+
+@dataclass(slots=True, frozen=True)
+class EmbeddingSignature:
+    provider: str
+    model: str
+    model_version: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "model_version": self.model_version,
+        }
+
+    def label(self) -> str:
+        return f"{self.provider}:{self.model}@{self.model_version}"
+
+
+@dataclass(slots=True, frozen=True)
+class EmbeddingCacheState:
+    signature: EmbeddingSignature
+    state: str
+    needs_rebuild: bool = False
+    message: str | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class EnsureEmbeddingsResult:
+    updated: int
+    needs_rebuild: bool = False
+    message: str | None = None
 
 
 def semantic_cache_path(repo_dir: Path) -> Path:
@@ -38,12 +72,112 @@ def save_semantic_cache(repo_dir: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def embeddings_available() -> bool:
+def _normalize_provider_name(value: Any) -> str | None:
+    if value is None:
+        return DEFAULT_EMBEDDING_PROVIDER
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or DEFAULT_EMBEDDING_PROVIDER
+
+
+def current_embedding_signature(config: UMXConfig | None = None) -> EmbeddingSignature:
+    cfg = config or default_config()
+    return EmbeddingSignature(
+        provider=_normalize_provider_name(cfg.search.embedding.provider) or DEFAULT_EMBEDDING_PROVIDER,
+        model=cfg.search.embedding.model,
+        model_version=cfg.search.embedding.model_version,
+    )
+
+
+def _signature_from_mapping(payload: Any) -> EmbeddingSignature | None:
+    if not isinstance(payload, dict):
+        return None
+    provider = _normalize_provider_name(payload.get("provider"))
+    model = payload.get("model")
+    model_version = payload.get("model_version")
+    if provider is None or not isinstance(model, str) or not model or not isinstance(model_version, str) or not model_version:
+        return None
+    return EmbeddingSignature(provider=provider, model=model, model_version=model_version)
+
+
+def _entry_signature(entry: dict[str, Any] | None) -> EmbeddingSignature | None:
+    if not isinstance(entry, dict):
+        return None
+    embedding = entry.get("embedding")
+    if not isinstance(embedding, list) or not embedding:
+        return None
+    return _signature_from_mapping(
+        {
+            "provider": entry.get("embedding_provider"),
+            "model": entry.get("embedding_model"),
+            "model_version": entry.get("embedding_model_version"),
+        }
+    )
+
+
+def _rebuild_required_message(stored: str, current: str) -> str:
+    return (
+        f"embedding config changed from {stored} to {current}; "
+        "run `umx rebuild-index --embeddings`"
+    )
+
+
+def inspect_embedding_cache_state(
+    repo_dir: Path,
+    *,
+    config: UMXConfig | None = None,
+    cache: dict[str, Any] | None = None,
+) -> EmbeddingCacheState:
+    cfg = config or default_config()
+    current = current_embedding_signature(cfg)
+    payload = cache or load_semantic_cache(repo_dir)
+    stored = _signature_from_mapping(payload.get(EMBEDDING_CONFIG_KEY))
+    if stored is not None:
+        if stored == current:
+            return EmbeddingCacheState(signature=current, state="ready")
+        return EmbeddingCacheState(
+            signature=current,
+            state="needs-rebuild",
+            needs_rebuild=True,
+            message=_rebuild_required_message(stored.label(), current.label()),
+        )
+    facts = payload.get("facts", {})
+    if not isinstance(facts, dict):
+        return EmbeddingCacheState(signature=current, state="empty")
+    signatures = {
+        signature
+        for signature in (_entry_signature(entry) for entry in facts.values())
+        if signature is not None
+    }
+    if not signatures:
+        return EmbeddingCacheState(signature=current, state="empty")
+    if signatures == {current}:
+        return EmbeddingCacheState(signature=current, state="legacy-compatible")
+    if len(signatures) == 1:
+        stored_label = next(iter(signatures)).label()
+    else:
+        stored_label = "mixed cache (" + ", ".join(sorted(signature.label() for signature in signatures)) + ")"
+    return EmbeddingCacheState(
+        signature=current,
+        state="needs-rebuild",
+        needs_rebuild=True,
+        message=_rebuild_required_message(stored_label, current.label()),
+    )
+
+
+def embedding_rebuild_message(repo_dir: Path, *, config: UMXConfig | None = None) -> str | None:
+    state = inspect_embedding_cache_state(repo_dir, config=config)
+    return state.message if state.needs_rebuild else None
+
+
+def embeddings_available(config: UMXConfig | None = None) -> bool:
+    cfg = config or default_config()
     try:
-        import sentence_transformers  # noqa: F401
-    except Exception:
+        provider = resolve_embedding_provider(cfg)
+    except RuntimeError:
         return False
-    return True
+    return provider.is_available(cfg)
 
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
@@ -59,37 +193,18 @@ def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
     return dot / (left_norm * right_norm)
 
 
-def _model_key(config: UMXConfig) -> str:
-    return config.search.embedding.model
-
-
-def _get_model(config: UMXConfig | None = None):
-    cfg = config or default_config()
-    key = _model_key(cfg)
-    if key in _MODEL_CACHE:
-        return _MODEL_CACHE[key]
-    if not embeddings_available():
-        return None
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(key)
-    except Exception:
-        return None
-    _MODEL_CACHE[key] = model
-    return model
-
-
 def embed_text(text: str, *, config: UMXConfig | None = None) -> list[float] | None:
     if not text.strip():
         return None
     cfg = config or default_config()
-    model = _get_model(cfg)
-    if model is None:
+    try:
+        provider = resolve_embedding_provider(cfg)
+    except RuntimeError:
+        return None
+    if not provider.is_available(cfg):
         return None
     try:
-        embedding = model.encode(text, convert_to_numpy=True)
-        return embedding.tolist()
+        return provider.embed_text(text, cfg)
     except Exception:
         return None
 
@@ -115,15 +230,7 @@ def embed_fact(fact: Any, *, config: UMXConfig | None = None) -> list[float] | N
 
 
 def _cache_entry_valid(entry: dict[str, Any] | None, config: UMXConfig) -> bool:
-    if not isinstance(entry, dict):
-        return False
-    embedding = entry.get("embedding")
-    return (
-        isinstance(embedding, list)
-        and bool(embedding)
-        and entry.get("embedding_model") == config.search.embedding.model
-        and entry.get("embedding_model_version") == config.search.embedding.model_version
-    )
+    return _entry_signature(entry) == current_embedding_signature(config)
 
 
 def cached_embedding(
@@ -151,15 +258,23 @@ def ensure_embeddings(
     *,
     config: UMXConfig | None = None,
     force: bool = False,
-) -> int:
+    allow_config_mismatch: bool = False,
+) -> EnsureEmbeddingsResult:
     cfg = config or default_config()
     payload = load_semantic_cache(repo_dir)
-    fact_cache = payload.setdefault("facts", {})
-    if not isinstance(fact_cache, dict):
-        fact_cache = {}
-        payload["facts"] = fact_cache
+    state = inspect_embedding_cache_state(repo_dir, config=cfg, cache=payload)
+    if state.needs_rebuild and not allow_config_mismatch:
+        return EnsureEmbeddingsResult(updated=0, needs_rebuild=True, message=state.message)
+    if state.needs_rebuild and not force:
+        return EnsureEmbeddingsResult(updated=0, needs_rebuild=True, message=state.message)
+    fact_list = list(facts)
+    existing_cache = payload.get("facts", {})
+    if not isinstance(existing_cache, dict):
+        existing_cache = {}
+    fact_cache = {} if force else dict(existing_cache)
+    current = current_embedding_signature(cfg)
     updated = 0
-    for fact in facts:
+    for fact in fact_list:
         fact_id = getattr(fact, "fact_id", None)
         if not fact_id:
             continue
@@ -170,14 +285,17 @@ def ensure_embeddings(
             continue
         fact_cache[fact_id] = {
             "embedding": embedding,
+            "embedding_provider": current.provider,
             "embedding_model": cfg.search.embedding.model,
             "embedding_model_version": cfg.search.embedding.model_version,
             "embedded_at": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
         }
         updated += 1
-    if updated:
+    if updated or (force and not fact_list) or state.state == "legacy-compatible":
+        payload["facts"] = fact_cache
+        payload[EMBEDDING_CONFIG_KEY] = current.to_dict()
         save_semantic_cache(repo_dir, payload)
-    return updated
+    return EnsureEmbeddingsResult(updated=updated)
 
 
 def semantic_similarity_map(
@@ -194,6 +312,8 @@ def semantic_similarity_map(
     if query_embedding is None:
         return {}
     cache = load_semantic_cache(repo_dir)
+    if inspect_embedding_cache_state(repo_dir, config=cfg, cache=cache).needs_rebuild:
+        return {}
     similarities: dict[str, float] = {}
     for fact in facts:
         fact_id = getattr(fact, "fact_id", None)
@@ -224,6 +344,9 @@ def rerank_candidates(
 
     facts_by_id = facts_by_id or {}
     cache = load_semantic_cache(repo_dir) if repo_dir is not None else None
+    if repo_dir is not None and cache is not None:
+        if inspect_embedding_cache_state(repo_dir, config=cfg, cache=cache).needs_rebuild:
+            return candidates
     semantic_weight = cfg.weights.relevance.semantic_similarity
 
     rescored: list[tuple[str, float]] = []

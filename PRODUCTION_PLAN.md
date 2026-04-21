@@ -2,7 +2,7 @@
 
 **Target release:** v1.0.0 — GitHub-synced memory as the marquee feature.
 **Baseline:** 0.9.1-alpha, 477 tests, local mode production-quality.
-**Last updated:** 2026-04-17
+**Last updated:** 2026-04-20
 **Plan owner:** `copilot-cli`
 
 ## North star
@@ -43,12 +43,12 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 | M1 Spec parity & correctness | 0/8 | 2026-05-08 | copilot-cli |
 | M2 Security baseline for sync | 0/7 | 2026-05-22 | copilot-cli |
 | M3 GitHub governance GA ★ | 0/11 | 2026-07-03 | — |
-| M4 Scale & performance | 0/6 | 2026-07-17 | — |
-| M5 Ops & docs | 0/7 | 2026-07-31 | — |
+| M4 Scale & performance | 1/6 | 2026-07-17 | copilot-cli |
+| M5 Ops & docs | 0/7 | 2026-07-31 | copilot-cli |
 | M6 Private beta | 0/5 | 2026-08-28 | — |
 | M7 GA 1.0.0 | 0/5 | 2026-09-04 | — |
 
-**Overall: 0/49 tasks · 0% · ~20 weeks.**
+**Overall: 1/49 tasks · 2% · ~20 weeks.**
 
 ---
 
@@ -495,11 +495,11 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T4.2 — FTS5 tuning
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: T4.1
-- Files: `umx/search.py`, `umx/inject.py`, `umx/memory.py`
-- Outcome: Trigger-based incremental index; scheduled VACUUM; tokenizer tuned for identifier-heavy content.
+- Files: `umx/search.py`, `umx/cli.py`, `benchmarks/test_index.py`
+- Outcome: Safe source-file keyed incremental index refresh with benchmarked rebuild speedups and measured sublinear index growth at benchmark scale.
 - Acceptance:
   - Inject p95 at 10k facts <200ms
   - Index file size grows sublinearly with fact count
@@ -507,14 +507,15 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Landed the first safe local tuning slices without changing retrieval semantics: batched injection usage writes into a single transaction, memoized SQLite schema/bootstrap setup, added process-local parsed-fact caches, removed duplicate gather-time lexical scoring, deduped targeted scoped facts, and cached the gathered base inventory used by inject.
   - Follow-up tuning landed the deeper structural and persistence cuts: index-backed project candidate preselection with mandatory scoped/task/refresh/handoff unions, config parsing cache reuse, project-fingerprint reuse between gather and FTS readiness checks, anonymous injection telemetry collapsing to usage counters, and hot SQLite connection reuse for the inject path.
-  - Revalidated correctness after each slice, including scoped suppression/supersession regressions found in ad hoc review; the current local green baseline is `python3 -m pytest -q` → 661 passed and `python3 -m pytest benchmarks -q` → 3 passed.
-  - Current benchmark state at default scale: inject p50/p95 improved from 6315.741 / 6578.679 ms to 105.286 / 142.366 ms on 10k facts, while ingest throughput and dream wall clock measured 23.694 / 24.42 sessions/s and 75458.657 ms respectively.
-  - The inject-latency acceptance target is now met locally. T4.2 remains open only for the remaining acceptance items: proving index file growth stays sublinear and demonstrating the rebuild-index speedup target.
+  - Closed the remaining CLI-safe refresh gap by storing indexed source paths, falling back to a full rebuild when schema/index metadata is stale or unreadable, and making plain `rebuild-index` default to the incremental refresh path while `--embeddings` still forces a full rebuild.
+  - Revalidated correctness after each slice, including same-topic cross-scope refresh safety and legacy-index fallback coverage found during ad hoc review; the current local green baseline is `python3 -m pytest -q` → 667 passed and `python3 -m pytest benchmarks -q` → 5 passed.
+  - Current benchmark state at default scale: ingest throughput measured 22.263 / 23.17 sessions/s, inject measured 114.019 / 122.264 ms, full rebuild measured 5698.476 / 5809.321 ms, incremental refresh measured 508.483 / 517.024 ms (11.207x faster), and dream wall clock measured 81302.942 ms.
+  - Index growth is now proven sublinear at benchmark scale: `meta/index.sqlite` grew 9.181x across 1k→10k facts with a log-log slope of 0.963 and bytes/fact dropping from 655.36 to 601.702.
 
 ### T4.3 — Embedding backend abstraction
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: —
 - Files: `umx/search_semantic.py`, `umx/providers/embeddings.py` (new)
 - Outcome: Pluggable embedding backends — local `sentence-transformers`, OpenAI, Anthropic (if available), Voyage — selectable via config.
@@ -523,44 +524,60 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Switching backend triggers embedding rebuild with clear message
   - Model version recorded per fact so a future rebuild is lossless
 - Notes:
+  - Landed the thin first slice instead of the whole provider matrix at once: `search.embedding.provider` now resolves through a new `umx/providers/embeddings.py` seam, with the current production path preserved as `sentence-transformers` plus a deterministic `fixture` backend for regression coverage.
+  - `.umx.json` now records both a repo-level `embedding_config` signature and per-fact `embedding_provider` / `embedding_model` / `embedding_model_version` metadata so provider/model/version drift is explicit and lossless.
+  - Hybrid search and Dream prewarm no longer silently create mixed caches after a provider/model switch: when the stored signature differs from config, semantic reranking falls back to lexical-only behavior and `doctor` / `search` surface a clear `umx rebuild-index --embeddings` message.
+  - The local slice is covered by new backend/switch tests, updated CLI/doctor expectations, the legacy-cache upgrade regression noted during ad hoc review, and a fresh full-suite pass at `python3 -m pytest -q` → 705 passed. Keep `[~]` until merge/CI per plan rules.
 
 ### T4.4 — Budget-aware inject retuned
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T4.1, T4.2
-- Files: `umx/inject.py`, `umx/config.py`
+- Files: `umx/inject.py`, `umx/config.py`, `docs/config.md`, `tests/test_inject_golden.py`, `tests/eval/inject/cases.json`
 - Outcome: Inject defaults retuned against benchmark data; progressive disclosure thresholds backed by measurements.
 - Acceptance:
   - New defaults documented in `docs/config.md`
   - Injection produces the same top-N under the new thresholds on the golden corpus
 - Notes:
+  - Landed the narrow retune slice instead of broad default unification: `inject.pre_tool_max_tokens` now defaults to `1400`, `inject.disclosure_slack_pct` now defaults to `0.20`, and `_disclosure_levels()` clamps and uses the configurable slack instead of a hardcoded reserve.
+  - Added `docs/config.md` as the first focused config reference and documented the new inject/session cadence defaults there without changing manual `--max-tokens` override surfaces.
+  - Added an injection golden corpus under `tests/eval/inject/cases.json` plus `tests/test_inject_golden.py`; the corpus now proves the new disclosure threshold preserves the same top-N fact ordering as the previous `0.30` slack on representative project and file-scoped cases, while `tests/test_inject_search.py` covers the intended near-threshold L1-vs-L0 disclosure change directly.
+  - Local validation is complete at `python3 -m pytest -q` → 681 passed, and a final standalone `python3 -m pytest benchmarks/test_inject.py -q` sanity rerun measured `111.201 / 127.133 ms` p50/p95 at 10k facts; keep `[~]` until merge/CI per plan rules.
 
 ### T4.5 — Parallel capture ingestion
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T4.1
-- Files: `umx/capture/` modules, `umx/sessions.py`
+- Files: `umx/cli.py`, `umx/claude_code_capture.py`, `umx/gemini_capture.py`, `umx/amp_capture.py`
 - Outcome: Importing a batch of transcripts parallelizes redaction and write.
 - Acceptance:
   - 10x transcript batch imports in <3x the time of one
   - No data races; redaction order-independent
   - Test with deliberately interleaved writes
 - Notes:
+  - Landed the first safe slice instead of naive concurrent writes: `capture claude-code --all`, `capture gemini --all`, and `capture amp --all` now parallelize preparation only via a bounded thread pool, while persistence stays serial and still ends with one final batch commit.
+  - Each included backend now exposes a `prepare_*` helper so parse/metadata assembly can run concurrently without duplicating logic; `_persist_prepared_capture_batch()` keeps `write_session(..., auto_commit=False)` on the main thread, so this slice does not widen the current write-session race surface.
+  - `capture opencode --all` is intentionally deferred in this first landing because its list path already materializes DB-backed session payloads up front, so the same prep-only pattern would add complexity for less benefit.
+  - Added new CLI `--all` tests for Claude Code, Gemini, and Amp that use a barrier to prove prep actually runs concurrently, preserve output order, and assert only one final commit for the batch; local validation is complete at `python3 -m pytest -q` → 701 passed. Keep `[~]` until merge/CI per plan rules.
 
 ### T4.6 — Archive compaction schedule
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: —
-- Files: `umx/sessions.py` (`archive_sessions`), `umx/cli.py` (`archive-sessions`)
-- Outcome: `archive-sessions` runs on a schedule (config-driven), consolidating monthly gzip archives and vacuuming the live sessions dir.
+- Files: `umx/config.py`, `umx/sessions.py`, `umx/hooks/session_end.py`, `umx/dream/pipeline.py`
+- Outcome: Session archive compaction runs on a config-driven cadence, persists its last-run timestamp in `.umx.json`, and keeps archived sessions searchable through the existing archive index/decompression path.
 - Acceptance:
-  - Configurable cadence (`daily`/`weekly`/`monthly`)
-  - Hook into dream pipeline end or separate cron
+  - Configurable cadence (`daily`/`weekly`/`monthly`/`never`)
+  - Hook into session-end and Dream completion paths without breaking manual `umx archive-sessions`
   - Test verifies archived sessions still searchable
 - Notes:
+  - Added `sessions.archive_interval` with cadence state stored in local-only `.umx.json` under `sessions.last_archive_compaction`, so scheduled compaction stays repo-local and survives process restarts.
+  - `scheduled_archive_sessions()` now drives the schedule, `session_end` runs it even when no new events were written, and Dream local/hybrid completions call the same helper after marking the cycle complete.
+  - Archived sessions remain searchable because session search still reads archived payloads via the monthly index plus on-demand decompression; the explicit `umx archive-sessions` CLI remains the manual override.
+  - Local implementation and validation are complete at `python3 -m pytest -q` → 675 passed; keep `[~]` until merge/CI per plan rules.
 
 ---
 
@@ -570,21 +587,25 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.1 — Migration framework
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: —
-- Files: `umx/migrations/` (new), `umx/cli.py` (`migrate`), `umx/models.py` (`schema_version`)
-- Outcome: Every fact file has a `schema_version`. `umx migrate` applies ordered migrations; `umx doctor` warns on stale versions.
+- Files: `umx/migrations/` (new), `umx/memory.py`, `umx/cli.py` (`migrate`), `umx/doctor.py`, `umx/status.py`, `umx/metrics.py`
+- Outcome: Every fact file carries a file-header `schema_version`. `umx migrate` applies ordered migrations; `umx doctor` warns on stale versions.
 - Acceptance:
   - Seed migration `0001_initial.py` bumps all existing facts to current version
   - Test: migrate from synthetic v0 store to current
   - Idempotent rerun is a no-op
 - Notes:
+  - Fact topic files now use an explicit header shape (`# <topic>`, `schema_version: 1`, blank line, `## Facts`), and append/write paths upgrade missing headers in place so new writes converge on the current file schema.
+  - Added a dedicated fact-file migration runner under `umx/migrations/` with seed migration `0001_initial`, rollback on partial failure, idempotent reruns, and clear refusal when a repo contains future file-schema versions.
+  - `umx migrate` is governed by the same direct-write guard as other mutating local commands, while `umx doctor` now reports `fact_file_schema` issues but keeps `doctor --fix` scoped to the existing repo-level schema repair path.
+  - `umx status` and metrics now load facts with `normalize=False` so read-only surfaces expose migration debt instead of silently rewriting legacy files; local validation is complete at `python3 -m pytest -q` → 688 passed, and ad hoc review found no significant issues. Keep `[~]` until merge/CI per plan rules.
 
 ### T5.2 — Export / import full
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.1
 - Files: `umx/cli.py` (`export`, `import --full`), `umx/backup.py` (new)
 - Outcome: `umx export --out <dir>` produces a portable backup (facts + sessions + index). `umx import --full <dir>` restores.
@@ -593,6 +614,10 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Test verifies bit-equivalence of round-tripped fact files
   - Safe refusal if target already has data (requires `--force`)
 - Notes:
+  - Added `umx/backup.py` with a self-contained backup bundle format: `umx export --out <dir>` now writes a root `backup-manifest.json` plus a `snapshot/` subtree containing the raw memory-repo bytes, so restore never has to parse/reserialize fact files or sessions.
+  - The bundle is intentionally full-repo scope except `.git`: it preserves fact/topic files, sessions and session archives, `meta/` state (including SQLite index/usage DBs and WAL sidecars), `.umx.json`, local/private/secret/quarantine content, and awkward edge cases like a real repo file named `backup-manifest.json`.
+  - `umx import --full <dir>` keeps the legacy adapter import path intact, adds `--dry-run`/`--force` handling for full restores, and now rejects invalid manifest paths, truncated bundles, symlinked snapshot roots or ancestors, and source/target overlap before any forced clear can touch the target repo.
+  - Added `tests/test_backup.py` covering raw byte round-trips, CLI export/import JSON, refusal without `--force`, truncated-bundle preflight, manifest path escape, symlinked snapshot parent/root rejection, and overlap-source protection; local validation is complete at `python3 -m pytest -q` → 698 passed. Keep `[~]` until merge/CI per plan rules.
 
 ### T5.3 — Multi-machine sync test matrix
 
@@ -647,8 +672,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.7 — 0.9 → 1.0 upgrade guide
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.1, T5.2
 - Files: `docs/upgrade-0.9-to-1.0.md`
 - Outcome: Step-by-step upgrade covering config format changes, schema bumps, breaking CLI flag changes (if any).
@@ -656,6 +681,10 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Dogfood: upgrade plan owner's personal gitmem and document friction
   - Rollback path included
 - Notes:
+  - Added `docs/upgrade-0.9-to-1.0.md` as a branch-head upgrade runbook covering pre-upgrade backups, installation, repo-level `doctor --fix` versus fact-file `umx migrate`, optional config additions, post-upgrade validation, and rollback.
+  - The guide is explicit about the current surfaces rather than hand-wavy future intent: `umx export` / `umx import --full` are project-scoped today, user-scope backup still needs a manual copy of `~/.umx/user`, and `umx migrate` remains a local direct-write command that refuses governed `remote` / `hybrid` modes.
+  - Current branch-head guidance says there is no mandatory config key rename in the `0.9.x -> 1.0` path and no breaking replacement for `umx import --adapter ...`; the new backup/restore flags are additive.
+  - The guide was validated against the shipped CLI/config surfaces after the T4.5 branch-head revalidation at `python3 -m pytest -q` → 701 passed. Keep `[~]` until merge/CI per plan rules.
 
 ---
 
@@ -818,6 +847,14 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-20 [T4.3] copilot-cli: added a thin embedding-provider seam with provider-aware cache metadata, blocked mixed-cache lazy refresh on provider/model/version drift, surfaced `umx rebuild-index --embeddings` guidance through search/doctor, and revalidated the branch at 705 passing tests
+- 2026-04-20 [T5.7] copilot-cli: added a concrete `docs/upgrade-0.9-to-1.0.md` runbook covering backup, doctor/migrate sequencing, optional config additions, validation, and rollback, aligned to the current branch-head CLI/config surfaces after the 701-test baseline
+- 2026-04-20 [T4.5] copilot-cli: added bounded parallel prep for `capture --all` on Claude Code, Gemini, and Amp while keeping `write_session` serial and the final batch commit singular, then revalidated the branch at 701 passing tests
+- 2026-04-20 [T5.2] copilot-cli: added a self-contained raw-copy backup bundle (`backup-manifest.json` + `snapshot/`) plus `umx export` / `umx import --full`, preserved the legacy adapter import path, hardened restore preflight against truncation/symlink/overlap hazards, and revalidated the branch at 698 passing tests
+- 2026-04-20 [T5.1] copilot-cli: added fact-file schema headers plus governed `umx migrate` and doctor reporting, kept repo-level schema repair separate, stopped read-only status/metrics paths from silently normalizing legacy files, and revalidated the branch at 688 passing tests
+- 2026-04-20 [T4.4] copilot-cli: retuned inject with a 1400-token pre-tool default and configurable disclosure slack, added `docs/config.md` plus an injection golden corpus, and revalidated the branch at 681 passing tests with a standalone inject benchmark sanity rerun at 111.201 / 127.133 ms
+- 2026-04-20 [T4.6] copilot-cli: added config-driven archive cadence state in `.umx.json`, ran scheduled compaction from session-end and local/hybrid Dream completion, kept archived sessions searchable, and revalidated the branch at 675 passing tests
+- 2026-04-20 [T4.2] copilot-cli: hardened incremental rebuild with source-path tracking and stale-index fallbacks, made plain `rebuild-index` use the safe refresh path, added benchmark coverage for rebuild speedup and index-size growth, and closed the remaining local T4.2 acceptance items at 667 passing tests / 5 benchmark tests
 - 2026-04-18 [T4.2] copilot-cli: cleared the inject-latency target at default benchmark scale by driving `build_injection_block` down to 105.286 / 142.366 ms p50/p95 through bounded project candidate selection and hot-path SQLite telemetry reductions, while leaving the rebuild-speed and index-growth acceptance work explicitly open
 - 2026-04-18 [T4.2] copilot-cli: reduced default-scale inject latency from 6315.741 / 6578.679 ms to 251.498 / 328.48 ms via batched injection telemetry and hot-path fact caching, revalidated the full suite at 655 passing tests, and kept the benchmark suite green while leaving the final `<200 ms` candidate-selection redesign for follow-up
 - 2026-04-18 [T4.1] copilot-cli: added a reproducible pytest benchmark suite with deterministic seed expansion, recorded first local ingest/inject/dream baselines in `benchmarks/RESULTS.md`, and validated the benchmark command at default scale

@@ -6,7 +6,7 @@ import umx.search as search
 
 from umx.budget import estimate_tokens
 from umx.conventions import summarize_conventions
-from umx.inject import _fact_token_cost, build_injection_block
+from umx.inject import _disclosure_levels, _enforce_rendered_budget, _fact_token_cost, build_injection_block
 from umx.memory import add_fact
 from umx.models import (
     ConsolidationStatus,
@@ -593,3 +593,51 @@ def test_expanded_fact_downgrades_when_rendered_cost_exceeds_budget(project_repo
 
     assert "src:ground_truth_code" in block
     assert "status:" not in block
+
+
+def test_disclosure_slack_keeps_l1_when_headroom_exceeds_configured_threshold() -> None:
+    fact = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000010",
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    l1_cost = _fact_token_cost(fact, "l1")
+    extra = next(
+        slack
+        for slack in range(1, l1_cost + 10)
+        if 0.20 < (slack / (l1_cost + slack)) < 0.30
+    )
+    budget = l1_cost + extra
+    packing_scores = {fact.fact_id: 1.0}
+
+    relaxed_levels = _disclosure_levels(
+        [fact],
+        packing_scores,
+        always_ids=set(),
+        token_budget=budget,
+        disclosure_slack_pct=0.20,
+    )
+    tight_levels = _disclosure_levels(
+        [fact],
+        packing_scores,
+        always_ids=set(),
+        token_budget=budget,
+        disclosure_slack_pct=0.30,
+    )
+
+    assert relaxed_levels[fact.fact_id] == "l1"
+    assert tight_levels[fact.fact_id] == "l0"
+
+    selected, relaxed_levels = _enforce_rendered_budget(
+        [fact],
+        relaxed_levels,
+        packing_scores,
+        fact_budget=budget,
+        always_ids=set(),
+    )
+
+    assert selected == [fact]
+    assert sum(_fact_token_cost(item, relaxed_levels.get(item.fact_id, "l1")) for item in selected) <= budget

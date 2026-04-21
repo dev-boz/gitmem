@@ -1,0 +1,79 @@
+[
+  {
+    "id": "postgres-ranking",
+    "prompt": "postgres dev",
+    "max_tokens": 1400,
+    "expected_top_ids": [
+      "01TESTINJECTGOLDEN0000001",
+      "01TESTINJECTGOLDEN0000002"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000001",
+        "text": "postgres runs on 5433 in dev",
+        "topic": "devenv",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000002",
+        "text": "redis queue workers batch notifications",
+        "topic": "queues",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "id": "postgres-maintenance",
+    "prompt": "shadow writes postgres rollback",
+    "max_tokens": 1400,
+    "expected_top_ids": [
+      "01TESTINJECTGOLDEN0000003",
+      "01TESTINJECTGOLDEN0000005",
+      "01TESTINJECTGOLDEN0000004"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000003",
+        "text": "postgres migration uses shadow writes during rollout",
+        "topic": "migrations",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000004",
+        "text": "postgres rollback checklist lives in docs/runbooks",
+        "topic": "release",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000005",
+        "text": "redis queue workers batch notifications",
+        "topic": "queues",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "id": "file-scoped-postgres",
+    "prompt": "postgres pooling",
+    "file_paths": ["src/app.py"],
+    "max_tokens": 1400,
+    "expected_top_ids": [
+      "01TESTINJECTGOLDEN0000006",
+      "01TESTINJECTGOLDEN0000007"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000006",
+        "text": "src/app.py handles postgres connection pooling",
+        "topic": "src/app.py",
+        "scope": "file"
+      },
+      {
+        "fact_id": "01TESTINJECTGOLDEN0000007",
+        "text": "redis queue workers batch notifications",
+        "topic": "queues",
+        "scope": "project"
+      }
+    ]
+  }
+]

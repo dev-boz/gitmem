@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
+from umx.cli import main
+from umx.git_ops import GitCommitResult
 from umx.gemini_capture import (
     GeminiTranscript,
     _project_slug_for_cwd,
@@ -274,3 +279,70 @@ class TestCapture:
         assert meta["tool"] == "gemini"
         assert meta["gemini_session_id"] == session_id
         assert meta["gemini_project_slug"] == "slug"
+
+    def test_cli_capture_all_preserves_order_and_commits_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from umx.config import default_config, save_config
+        from umx.scope import config_path, init_local_umx, init_project_memory, project_memory_dir
+        from umx.sessions import session_path
+
+        home = tmp_path / "umxhome"
+        monkeypatch.setenv("UMX_HOME", str(home))
+        init_local_umx()
+        save_config(config_path(), default_config())
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        init_project_memory(project)
+
+        source_root = tmp_path / "gemini"
+        source_root.mkdir(parents=True, exist_ok=True)
+        (source_root / "projects.json").write_text(
+            json.dumps({"projects": {str(project.resolve()): "slug"}}, sort_keys=True) + "\n"
+        )
+        chats_dir = source_root / "tmp" / "slug" / "chats"
+        first = chats_dir / "session-aaa11111-0000-0000-0000-000000000000.json"
+        second = chats_dir / "session-bbb22222-0000-0000-0000-000000000000.json"
+        _write_gemini_session(first, _minimal_gemini_session("aaa11111-0000-0000-0000-000000000000"))
+        _write_gemini_session(second, _minimal_gemini_session("bbb22222-0000-0000-0000-000000000000"))
+
+        barrier = threading.Barrier(2, timeout=2)
+        original = parse_gemini_session
+
+        def parse_with_barrier(path: Path):
+            transcript = original(path)
+            barrier.wait()
+            return transcript
+
+        runner = CliRunner()
+        with (
+            patch(
+                "umx.gemini_capture.parse_gemini_session",
+                side_effect=parse_with_barrier,
+            ),
+            patch(
+                "umx.git_ops.git_add_and_commit",
+                return_value=GitCommitResult.committed_result(),
+            ) as mock_commit,
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "capture",
+                    "gemini",
+                    "--cwd",
+                    str(project),
+                    "--source-root",
+                    str(source_root),
+                    "--all",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert [item["source_file"] for item in payload] == [str(first), str(second)]
+        repo = project_memory_dir(project)
+        assert all(session_path(repo, item["umx_session_id"]).exists() for item in payload)
+        mock_commit.assert_called_once()

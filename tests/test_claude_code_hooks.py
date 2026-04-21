@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from umx.cli import main
+from umx.config import default_config, save_config
 from umx.memory import add_fact
 from umx.models import (
     ConsolidationStatus,
@@ -15,7 +17,8 @@ from umx.models import (
     SourceType,
     Verification,
 )
-from umx.sessions import read_session
+from umx.scope import config_path
+from umx.sessions import read_session, write_session
 
 
 def _write_claude_session(path: Path, records: list[dict]) -> Path:
@@ -24,7 +27,12 @@ def _write_claude_session(path: Path, records: list[dict]) -> Path:
     return path
 
 
-def _minimal_claude_records(session_id: str) -> list[dict]:
+def _minimal_claude_records(session_id: str, *, base_time: datetime | None = None) -> list[dict]:
+    started = base_time or datetime(2026, 1, 15, 10, 0, 0, tzinfo=UTC)
+    stamps = [
+        (started + timedelta(seconds=offset)).isoformat().replace("+00:00", "Z")
+        for offset in (0, 1, 5)
+    ]
     return [
         {
             "type": "system",
@@ -33,7 +41,7 @@ def _minimal_claude_records(session_id: str) -> list[dict]:
             "cwd": "/tmp/project",
             "version": "2.1.0",
             "slug": "test-session",
-            "timestamp": "2026-01-15T10:00:00.000Z",
+            "timestamp": stamps[0],
         },
         {
             "type": "user",
@@ -41,7 +49,7 @@ def _minimal_claude_records(session_id: str) -> list[dict]:
             "uuid": "u1",
             "parentUuid": None,
             "message": {"role": "user", "content": "How do deploys work?"},
-            "timestamp": "2026-01-15T10:00:01.000Z",
+            "timestamp": stamps[1],
         },
         {
             "type": "assistant",
@@ -52,7 +60,7 @@ def _minimal_claude_records(session_id: str) -> list[dict]:
                 "role": "assistant",
                 "content": [{"type": "text", "text": "Deploys require a smoke check."}],
             },
-            "timestamp": "2026-01-15T10:00:05.000Z",
+            "timestamp": stamps[2],
         },
     ]
 
@@ -172,10 +180,25 @@ def test_claude_code_session_end_hook_imports_transcript(
     project_dir: Path,
     project_repo: Path,
 ) -> None:
+    cfg = default_config()
+    cfg.sessions.archive_interval = "daily"
+    save_config(config_path(), cfg)
+    write_session(
+        project_repo,
+        {
+            "session_id": "2020-01-15-claude-archive",
+            "started": "2020-01-15T00:00:00Z",
+            "tool": "claude-code",
+        },
+        [{"ts": "2020-01-15T00:00:01Z", "role": "assistant", "content": "Legacy transcript content"}],
+        auto_commit=False,
+    )
+
     runner = CliRunner()
+    now = datetime.now(tz=UTC)
     transcript = _write_claude_session(
         project_dir / ".claude" / "projects" / "def67890-0000-0000-0000-000000000000.jsonl",
-        _minimal_claude_records("def67890-0000-0000-0000-000000000000"),
+        _minimal_claude_records("def67890-0000-0000-0000-000000000000", base_time=now),
     )
     payload_path = project_dir / "session-end.json"
     payload_path.write_text(
@@ -196,8 +219,11 @@ def test_claude_code_session_end_hook_imports_transcript(
     )
 
     assert result.exit_code == 0, result.output
-    session_path = project_repo / "sessions" / "2026" / "01" / "2026-01-15-claude-code-def67890.jsonl"
+    today = now.date().isoformat()
+    year, month = today.split("-", 2)[:2]
+    session_path = project_repo / "sessions" / year / month / f"{today}-claude-code-def67890.jsonl"
     assert session_path.exists()
     payload = read_session(session_path)
     assert payload[0]["_meta"]["tool"] == "claude-code"
     assert payload[1]["content"] == "How do deploys work?"
+    assert (project_repo / "sessions" / "2020" / "01" / "2020-01-archive.jsonl.gz").exists()

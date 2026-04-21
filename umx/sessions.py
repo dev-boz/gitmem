@@ -12,6 +12,7 @@ from umx.config import UMXConfig, default_config, load_config
 from umx.git_ops import git_add_and_commit, git_commit_failure_message
 from umx.identity import generate_fact_id
 from umx.redaction import RedactionError, redact_jsonl_lines, redact_jsonl_lines_with_issues
+from umx.search_semantic import load_semantic_cache, save_semantic_cache
 from umx.scope import config_path, ensure_repo_structure
 
 
@@ -62,6 +63,10 @@ def archive_path(repo_dir: Path, year: str, month: str) -> Path:
 
 def session_index_path(repo_dir: Path, year: str, month: str) -> Path:
     return repo_dir / "sessions" / year / month / f"{year}-{month}-index.json"
+
+
+def archive_state_path(repo_dir: Path) -> Path:
+    return repo_dir / ".umx.json"
 
 
 def quarantine_path(repo_dir: Path, session_id: str) -> Path:
@@ -471,6 +476,37 @@ def _write_archive_records(path: Path, records: list[dict[str, Any]]) -> None:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def _read_archive_state(repo_dir: Path) -> dict[str, Any]:
+    payload = load_semantic_cache(repo_dir)
+    sessions = payload.get("sessions")
+    return sessions if isinstance(sessions, dict) else {}
+
+
+def _write_archive_state(repo_dir: Path, archived_at: datetime) -> None:
+    payload = load_semantic_cache(repo_dir)
+    sessions = payload.setdefault("sessions", {})
+    if not isinstance(sessions, dict):
+        sessions = {}
+        payload["sessions"] = sessions
+    sessions["last_archive_compaction"] = archived_at.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    save_semantic_cache(repo_dir, payload)
+
+
+def _archive_cadence_due(cadence: str, *, now: datetime, last_archive_at: datetime | None) -> bool:
+    normalized = cadence.strip().lower() if cadence else "daily"
+    if normalized == "never":
+        return False
+    if last_archive_at is None:
+        return True
+    if normalized == "weekly":
+        now_year, now_week, _ = now.isocalendar()
+        last_year, last_week, _ = last_archive_at.isocalendar()
+        return (now_year, now_week) != (last_year, last_week)
+    if normalized == "monthly":
+        return (now.year, now.month) != (last_archive_at.year, last_archive_at.month)
+    return now.date() != last_archive_at.date()
+
+
 def iter_session_payloads(
     repo_dir: Path,
     *,
@@ -564,6 +600,38 @@ def archive_sessions(
     return {
         "archived_sessions": archived_sessions,
         "archived_months": len(monthly),
+    }
+
+
+def scheduled_archive_sessions(
+    repo_dir: Path,
+    *,
+    now: datetime | None = None,
+    config: UMXConfig | None = None,
+) -> dict[str, Any]:
+    cfg = config or default_config()
+    current = now or datetime.now(tz=UTC)
+    cadence = cfg.sessions.archive_interval
+    normalized = cadence.strip().lower() if cadence else "daily"
+    state = _read_archive_state(repo_dir)
+    last_archive_at = _parse_iso(
+        state.get("last_archive_compaction") if isinstance(state.get("last_archive_compaction"), str) else None
+    )
+    if normalized == "never":
+        return {"archived_sessions": 0, "archived_months": 0, "ran": False, "reason": "disabled"}
+    if not _archive_cadence_due(cadence, now=current, last_archive_at=last_archive_at):
+        return {
+            "archived_sessions": 0,
+            "archived_months": 0,
+            "ran": False,
+            "reason": f"{normalized}-not-due",
+        }
+    result = archive_sessions(repo_dir, now=current, config=cfg)
+    _write_archive_state(repo_dir, current)
+    return {
+        **result,
+        "ran": True,
+        "reason": "first-run" if last_archive_at is None else f"{normalized}-due",
     }
 
 

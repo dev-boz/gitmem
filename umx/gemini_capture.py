@@ -181,10 +181,23 @@ def capture_gemini_session(
 ) -> dict[str, Any]:
     """Parse one Gemini session file and write it into the UMX repo."""
     cfg = config or default_config()
-    transcript = parse_gemini_session(session_path)
     project_root = find_project_root(cwd)
     repo_dir = project_memory_dir(project_root)
+    prepared = prepare_gemini_capture(session_path)
+    session_file = write_session(
+        repo_dir,
+        meta=dict(prepared["meta"]),
+        events=prepared["events"],
+        config=cfg,
+        auto_commit=False,
+    )
+    result = dict(prepared["result"])
+    result["session_file"] = str(session_file)
+    return result
 
+
+def prepare_gemini_capture(session_path: Path) -> dict[str, Any]:
+    transcript = parse_gemini_session(session_path)
     meta: dict[str, Any] = {
         "session_id": transcript.umx_session_id,
         "tool": "gemini",
@@ -197,18 +210,13 @@ def capture_gemini_session(
         meta["started"] = transcript.start_time
     if transcript.last_updated:
         meta["last_updated"] = transcript.last_updated
-
-    session_file = write_session(
-        repo_dir,
-        meta=meta,
-        events=transcript.events,
-        config=cfg,
-        auto_commit=False,
-    )
     return {
-        "source_file": str(transcript.source_path),
-        "umx_session_id": transcript.umx_session_id,
-        "events_imported": len(transcript.events),
-        "session_file": str(session_file),
-        "tool": "gemini",
+        "meta": meta,
+        "events": transcript.events,
+        "result": {
+            "source_file": str(transcript.source_path),
+            "umx_session_id": transcript.umx_session_id,
+            "events_imported": len(transcript.events),
+            "tool": "gemini",
+        },
     }

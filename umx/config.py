@@ -9,6 +9,7 @@ import yaml
 
 
 _CONFIG_CACHE: dict[Path, tuple[str, "UMXConfig"]] = {}
+DEFAULT_EMBEDDING_PROVIDER = "sentence-transformers"
 
 
 @dataclass(slots=True)
@@ -62,6 +63,7 @@ class SessionsConfig:
     entropy_min_length: int = 16
     entropy_assignment_patterns: list[str] = field(default_factory=list)
     retention: RetentionConfig = field(default_factory=RetentionConfig)
+    archive_interval: str = "daily"
 
 
 @dataclass(slots=True)
@@ -70,7 +72,8 @@ class InjectConfig:
     refresh_window_pct: float = 0.25
     max_refreshes_per_fact: int = 3
     max_concurrent_facts: int = 12
-    pre_tool_max_tokens: int = 1000
+    pre_tool_max_tokens: int = 1400
+    disclosure_slack_pct: float = 0.20
     subagent_max_tokens: int = 2000
     subagent_hot_tokens: int = 1500
     turn_token_estimate: int = 250
@@ -78,6 +81,7 @@ class InjectConfig:
 
 @dataclass(slots=True)
 class SearchEmbeddingConfig:
+    provider: str = DEFAULT_EMBEDDING_PROVIDER
     model: str = "all-MiniLM-L6-v2"
     model_version: str = "v1.0"
     input_fields: list[str] = field(default_factory=lambda: ["text", "topic", "scope"])

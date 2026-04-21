@@ -298,7 +298,7 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - Web viewer with strength/scope/conflict filters, supersession timelines, and edit/confirm/promote actions
 - Cross-project dream and principle promotion
 - Semantic re-ranking (optional embeddings, hybrid search)
-- Schema migration tooling, signed commits, hypothesis branches
+- Signed commits, hypothesis branches
 - deeper `aip mem` runtime integration and published spec for third-party adoption
 
 ## Spec

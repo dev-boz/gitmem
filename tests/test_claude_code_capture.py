@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+from click.testing import CliRunner
 
+from umx.cli import main
+from umx.git_ops import GitCommitResult
 from umx.claude_code_capture import (
     ClaudeCodeTranscript,
     _extract_text,
@@ -355,3 +360,66 @@ class TestCapture:
         meta = session_data[0]["_meta"]
         assert meta["tool"] == "claude-code"
         assert meta["claude_code_session_id"] == session_id
+
+    def test_cli_capture_all_preserves_order_and_commits_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from umx.config import default_config, save_config
+        from umx.scope import config_path, init_local_umx, init_project_memory, project_memory_dir
+        from umx.sessions import session_path
+
+        home = tmp_path / "umxhome"
+        monkeypatch.setenv("UMX_HOME", str(home))
+        init_local_umx()
+        save_config(config_path(), default_config())
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        init_project_memory(project)
+
+        source_root = tmp_path / "claude-projects"
+        sessions_dir = source_root / _project_hash(project)
+        first = sessions_dir / "aaa11111-0000-0000-0000-000000000000.jsonl"
+        second = sessions_dir / "bbb22222-0000-0000-0000-000000000000.jsonl"
+        _write_session(first, _minimal_session("aaa11111-0000-0000-0000-000000000000"))
+        _write_session(second, _minimal_session("bbb22222-0000-0000-0000-000000000000"))
+
+        barrier = threading.Barrier(2, timeout=2)
+        original = parse_claude_code_session
+
+        def parse_with_barrier(path: Path):
+            transcript = original(path)
+            barrier.wait()
+            return transcript
+
+        runner = CliRunner()
+        with (
+            patch(
+                "umx.claude_code_capture.parse_claude_code_session",
+                side_effect=parse_with_barrier,
+            ),
+            patch(
+                "umx.git_ops.git_add_and_commit",
+                return_value=GitCommitResult.committed_result(),
+            ) as mock_commit,
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "capture",
+                    "claude-code",
+                    "--cwd",
+                    str(project),
+                    "--source-root",
+                    str(source_root),
+                    "--all",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert [item["source_file"] for item in payload] == [str(first), str(second)]
+        repo = project_memory_dir(project)
+        assert all(session_path(repo, item["umx_session_id"]).exists() for item in payload)
+        mock_commit.assert_called_once()

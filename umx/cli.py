@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from typing import Any, Callable
 
 import click
 
@@ -32,6 +34,7 @@ from umx.governance_health import (
 )
 from umx.search import advance_session_state
 from umx.redaction import RedactionError, validate_redaction_patterns
+from umx.search_semantic import embedding_rebuild_message, embeddings_available
 from umx.scope import (
     config_path,
     discover_project_slug,
@@ -46,7 +49,7 @@ from umx.scope import (
     validate_project_slug,
 )
 from umx.viewer.server import start as start_viewer
-from umx.search import query_index, rebuild_index, search_sessions
+from umx.search import query_index, refresh_index, search_sessions
 from umx.sessions import generate_session_id
 from umx.supersession import walk_history
 from umx.tasks import open_tasks
@@ -142,6 +145,43 @@ def _bootstrap_remote_repo(
         raise click.ClickException(str(exc)) from exc
     if not git_push(repo, branch="main", set_upstream=True):
         raise click.ClickException("push failed")
+
+
+def _capture_batch_workers(target_count: int) -> int:
+    return max(1, min(target_count, 4))
+
+
+def _prepare_capture_batch(
+    targets: list[Any],
+    prepare_one: Callable[[Any], dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if len(targets) < 2:
+        return [prepare_one(target) for target in targets]
+    with ThreadPoolExecutor(max_workers=_capture_batch_workers(len(targets))) as executor:
+        return list(executor.map(prepare_one, targets))
+
+
+def _persist_prepared_capture_batch(
+    repo: Path,
+    prepared: list[dict[str, Any]],
+    *,
+    config,
+) -> list[dict[str, Any]]:
+    from umx.sessions import write_session
+
+    results: list[dict[str, Any]] = []
+    for item in prepared:
+        session_file = write_session(
+            repo,
+            meta=dict(item["meta"]),
+            events=item["events"],
+            config=config,
+            auto_commit=False,
+        )
+        result = dict(item["result"])
+        result["session_file"] = str(session_file)
+        results.append(result)
+    return results
 
 
 def _emit_governance_protection_status(mode: str) -> None:
@@ -1008,7 +1048,17 @@ def purge_cmd(cwd: Path, session_id: str, dry_run: bool) -> None:
 @click.option("--embeddings", is_flag=True, default=False)
 def rebuild_index_cmd(cwd: Path, embeddings: bool) -> None:
     repo = project_memory_dir(cwd)
-    rebuild_index(repo, with_embeddings=embeddings, config=_cfg())
+    cfg = _cfg()
+    if embeddings and not embeddings_available(cfg):
+        click.echo(
+            f"embedding provider '{cfg.search.embedding.provider}' is unavailable; rebuilding lexical index only",
+            err=True,
+        )
+    refresh_index(repo, with_embeddings=embeddings, config=cfg)
+    if cfg.search.backend == "hybrid" and not embeddings:
+        message = embedding_rebuild_message(repo, config=cfg)
+        if message:
+            click.echo(message, err=True)
     click.echo(str(repo / "meta" / "index.sqlite"))
 
 
@@ -1053,6 +1103,20 @@ def migrate_scope_cmd(cwd: Path, old_path: str, new_path: str) -> None:
 @click.option("--fix", is_flag=True, default=False)
 def doctor_cmd(cwd: Path, fix: bool) -> None:
     click.echo(json.dumps(run_doctor(cwd, fix=fix), sort_keys=True))
+
+
+@main.command("migrate")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+def migrate_cmd(cwd: Path) -> None:
+    from umx.migrations import run_migrations
+
+    _require_direct_fact_write_allowed("umx migrate")
+    try:
+        repo = project_memory_dir(cwd)
+        payload = run_migrations(repo, config=_cfg()).to_dict()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload, sort_keys=True))
 
 
 @main.group("eval")
@@ -1350,20 +1414,75 @@ def secret_set(key: str, value: str) -> None:
     click.echo(key)
 
 
+@main.command("export")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--out", type=click.Path(path_type=Path), required=True)
+def export_cmd(cwd: Path, out: Path) -> None:
+    from umx.backup import export_full
+
+    repo = project_memory_dir(cwd)
+    try:
+        payload = export_full(repo, out).to_dict()
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload, sort_keys=True))
+
+
 @main.command("import")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option(
     "--adapter",
     type=click.Choice(["claude-code", "copilot", "aider", "generic"]),
-    required=True,
+    required=False,
 )
+@click.option("--full", "full_backup", type=click.Path(path_type=Path), default=None)
+@click.option("--force", is_flag=True, default=False)
 @click.option("--dry-run", is_flag=True, default=False)
-def import_cmd(cwd: Path, adapter: str, dry_run: bool) -> None:
+def import_cmd(
+    cwd: Path,
+    adapter: str | None,
+    full_backup: Path | None,
+    force: bool,
+    dry_run: bool,
+) -> None:
     from umx.adapters import get_adapter_by_name
+    from umx.backup import import_full, inspect_backup_dir, target_contains_backup_data
     from umx.memory import add_fact
 
-    root = find_project_root(cwd)
+    if (adapter is None) == (full_backup is None):
+        raise click.ClickException("Provide exactly one of --adapter or --full.")
+    if force and full_backup is None:
+        raise click.ClickException("--force is only supported with --full.")
+
     repo = project_memory_dir(cwd)
+    if full_backup is not None:
+        try:
+            manifest = inspect_backup_dir(full_backup)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if dry_run:
+            click.echo(
+                json.dumps(
+                    {
+                        "dry_run": True,
+                        "files_found": len(manifest.files),
+                        "force_required": target_contains_backup_data(repo),
+                        "source_dir": str(full_backup.resolve()),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+        _require_direct_fact_write_allowed("umx import")
+        try:
+            payload = import_full(full_backup, repo, force=force).to_dict()
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        _commit_repo(repo, "umx: import full backup")
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+
+    root = find_project_root(cwd)
     if not dry_run:
         _require_direct_fact_write_allowed("umx import")
     adapter_inst = get_adapter_by_name(adapter)
@@ -1539,6 +1658,7 @@ def capture_claude_code_cmd(
         latest_claude_code_session_path,
         list_claude_code_sessions,
         parse_claude_code_session,
+        prepare_claude_code_capture,
     )
 
     root = find_project_root(cwd)
@@ -1562,19 +1682,23 @@ def capture_claude_code_cmd(
 
     if dry_run:
         results = []
-        for path in targets:
-            if not path.exists():
-                raise click.ClickException(f"Session file not found: {path}")
-            transcript = parse_claude_code_session(path)
-            results.append(
-                {
-                    "dry_run": True,
-                    "source_file": str(path),
-                    "tool": "claude-code",
-                    "umx_session_id": transcript.umx_session_id,
-                    "events_imported": len(transcript.events),
-                }
-            )
+        if capture_all and len(targets) > 1:
+            prepared = _prepare_capture_batch(targets, prepare_claude_code_capture)
+            results = [{**item["result"], "dry_run": True} for item in prepared]
+        else:
+            for path in targets:
+                if not path.exists():
+                    raise click.ClickException(f"Session file not found: {path}")
+                transcript = parse_claude_code_session(path)
+                results.append(
+                    {
+                        "dry_run": True,
+                        "source_file": str(path),
+                        "tool": "claude-code",
+                        "umx_session_id": transcript.umx_session_id,
+                        "events_imported": len(transcript.events),
+                    }
+                )
         click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
         return
 
@@ -1583,11 +1707,16 @@ def capture_claude_code_cmd(
     for path in targets:
         if not path.exists():
             raise click.ClickException(f"Session file not found: {path}")
-        results.append(capture_claude_code_session(cwd, path, config=cfg))
+    repo = project_memory_dir(root)
+    if capture_all and len(targets) > 1:
+        prepared = _prepare_capture_batch(targets, prepare_claude_code_capture)
+        results = _persist_prepared_capture_batch(repo, prepared, config=cfg)
+    else:
+        for path in targets:
+            results.append(capture_claude_code_session(cwd, path, config=cfg))
     if results:
         from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
-        repo = project_memory_dir(root)
         commit_result = git_add_and_commit(
             repo,
             message="umx: capture claude-code sessions",
@@ -1635,6 +1764,7 @@ def capture_gemini_cmd(
         latest_gemini_session_path,
         list_gemini_sessions,
         parse_gemini_session,
+        prepare_gemini_capture,
     )
 
     root = find_project_root(cwd)
@@ -1652,30 +1782,38 @@ def capture_gemini_cmd(
 
     if dry_run:
         results = []
-        for path in targets:
-            if not path.exists():
-                raise click.ClickException(f"Session file not found: {path}")
-            transcript = parse_gemini_session(path)
-            results.append(
-                {
-                    "dry_run": True,
-                    "source_file": str(path),
-                    "tool": "gemini",
-                    "umx_session_id": transcript.umx_session_id,
-                    "events_imported": len(transcript.events),
-                }
-            )
+        if capture_all and len(targets) > 1:
+            prepared = _prepare_capture_batch(targets, prepare_gemini_capture)
+            results = [{**item["result"], "dry_run": True} for item in prepared]
+        else:
+            for path in targets:
+                if not path.exists():
+                    raise click.ClickException(f"Session file not found: {path}")
+                transcript = parse_gemini_session(path)
+                results.append(
+                    {
+                        "dry_run": True,
+                        "source_file": str(path),
+                        "tool": "gemini",
+                        "umx_session_id": transcript.umx_session_id,
+                        "events_imported": len(transcript.events),
+                    }
+                )
         click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
         return
 
     results = []
     cfg = _cfg()
-    for path in targets:
-        results.append(capture_gemini_session(cwd, path, config=cfg))
+    repo = project_memory_dir(root)
+    if capture_all and len(targets) > 1:
+        prepared = _prepare_capture_batch(targets, prepare_gemini_capture)
+        results = _persist_prepared_capture_batch(repo, prepared, config=cfg)
+    else:
+        for path in targets:
+            results.append(capture_gemini_session(cwd, path, config=cfg))
     if results:
         from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
-        repo = project_memory_dir(root)
         commit_result = git_add_and_commit(
             repo,
             message="umx: capture gemini sessions",
@@ -1820,6 +1958,7 @@ def capture_amp_cmd(
         latest_amp_thread_path,
         list_amp_threads,
         parse_amp_thread,
+        prepare_amp_capture,
     )
 
     root = find_project_root(cwd)
@@ -1842,19 +1981,23 @@ def capture_amp_cmd(
 
     if dry_run:
         results = []
-        for path in targets:
-            if not path.exists():
-                raise click.ClickException(f"Thread file not found: {path}")
-            transcript = parse_amp_thread(path)
-            results.append(
-                {
-                    "dry_run": True,
-                    "source_file": str(path),
-                    "tool": "amp",
-                    "umx_session_id": transcript.umx_session_id,
-                    "events_imported": len(transcript.events),
-                }
-            )
+        if capture_all and len(targets) > 1:
+            prepared = _prepare_capture_batch(targets, prepare_amp_capture)
+            results = [{**item["result"], "dry_run": True} for item in prepared]
+        else:
+            for path in targets:
+                if not path.exists():
+                    raise click.ClickException(f"Thread file not found: {path}")
+                transcript = parse_amp_thread(path)
+                results.append(
+                    {
+                        "dry_run": True,
+                        "source_file": str(path),
+                        "tool": "amp",
+                        "umx_session_id": transcript.umx_session_id,
+                        "events_imported": len(transcript.events),
+                    }
+                )
         click.echo(json.dumps(results if capture_all else results[0], sort_keys=True))
         return
 
@@ -1863,11 +2006,16 @@ def capture_amp_cmd(
     for path in targets:
         if not path.exists():
             raise click.ClickException(f"Thread file not found: {path}")
-        results.append(capture_amp_thread(cwd, path, config=cfg))
+    repo = project_memory_dir(root)
+    if capture_all and len(targets) > 1:
+        prepared = _prepare_capture_batch(targets, prepare_amp_capture)
+        results = _persist_prepared_capture_batch(repo, prepared, config=cfg)
+    else:
+        for path in targets:
+            results.append(capture_amp_thread(cwd, path, config=cfg))
     if results:
         from umx.git_ops import git_add_and_commit, git_commit_failure_message
 
-        repo = project_memory_dir(root)
         commit_result = git_add_and_commit(
             repo,
             message="umx: capture amp sessions",
@@ -1898,7 +2046,11 @@ def search_cmd(cwd: Path, raw: bool, query: str) -> None:
                 f"(score={result['score']:.2f}) {result['content_snippet']}"
             )
     else:
-        for fact in query_index(repo, query):
+        cfg = _cfg()
+        message = embedding_rebuild_message(repo, config=cfg)
+        if cfg.search.backend == "hybrid" and message:
+            click.echo(message, err=True)
+        for fact in query_index(repo, query, config=cfg):
             click.echo(f"{fact.fact_id} [{fact.topic}] {fact.text}")
 
 

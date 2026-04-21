@@ -224,6 +224,7 @@ def _disclosure_levels(
     *,
     always_ids: set[str],
     token_budget: int,
+    disclosure_slack_pct: float,
     expanded_ids: set[str] | None = None,
 ) -> dict[str, str]:
     expanded = expanded_ids or set()
@@ -242,7 +243,8 @@ def _disclosure_levels(
         if fact.fact_id not in always_ids and levels.get(fact.fact_id) == "l1"
     ]
     downgrade_candidates.sort(key=lambda fact: packing_scores.get(fact.fact_id, 0.0))
-    target_slack = int(round(token_budget * 0.30)) if token_budget > 0 else 0
+    slack_pct = max(0.0, min(1.0, float(disclosure_slack_pct)))
+    target_slack = int(round(token_budget * slack_pct)) if token_budget > 0 else 0
     while downgrade_candidates and (
         total_tokens > token_budget or token_budget - total_tokens < target_slack
     ):
@@ -602,6 +604,7 @@ def build_injection_block(
         budget_decision.packing_scores,
         always_ids=always,
         token_budget=remaining_budget,
+        disclosure_slack_pct=cfg.inject.disclosure_slack_pct,
         expanded_ids=expanded_ids,
     )
     selected, disclosure_levels = _enforce_rendered_budget(
