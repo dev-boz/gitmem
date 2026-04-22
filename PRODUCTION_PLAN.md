@@ -704,9 +704,73 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ---
 
+## M5.5 — Dogfood & evaluation hardening
+
+**Exit criteria:** Repeated internal dogfood runs stay green; eval harnesses exist for the major memory/retrieval/review surfaces; at least one external long-memory benchmark and one multi-hop retrieval benchmark are runnable enough to inform release confidence.
+
+### T5.8 — Native eval harness expansion
+
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T3.2, T4.4
+- Files: `umx/cli.py`, `tests/eval/`, `tests/test_*_eval.py`
+- Outcome: Native `gitmem eval ...` commands cover the major regression-prone surfaces beyond L2 review, starting with inject/retrieval ranking and later memory search.
+- Acceptance:
+  - `gitmem eval inject` runs the golden inject corpus and returns a pass/fail payload with a pass-rate gate
+  - Eval commands are on-demand, deterministic, and safe for local/CI use without live provider calls
+  - Prompt/ranking changes that affect inject or review quality require eval re-runs before release
+- Notes:
+  - Added `umx/inject_eval.py` plus `gitmem eval inject`, following the existing `gitmem eval l2-review` contract: checked-in JSON cases, stable JSON output, hermetic temp-repo execution, and a nonzero exit on gate failure.
+  - Promoted the existing inject golden corpus from a plain pytest into a first-class operator-facing eval surface while keeping the corpus local/offline and deterministic.
+  - Added dedicated inject-eval harness tests and CLI wiring coverage, then revalidated the full branch at `pytest -q` → 753 passed plus `mkdocs build --strict`. Keep `[~]` until merge/CI per plan rules.
+
+### T5.9 — LongMemEval pilot
+
+- Status: `[ ]`
+- Owner: —
+- Depends on: T5.8
+- Files: `tests/eval/long_memory/` (new), `docs/ops-runbook.md`, optional `scripts/`
+- Outcome: A pilot runner maps gitmem’s memory stack onto LongMemEval-style long-memory questions so releases can be judged against real memory tasks instead of only unit tests.
+- Acceptance:
+  - Pilot covers LongMemEval’s core memory buckets: information extraction, multi-session reasoning, knowledge updates, temporal reasoning, abstention
+  - Can run against at least an oracle/subset dataset locally and emit answer-accuracy plus retrieval-support signals
+  - Notes document what is native gitmem evaluation versus what is benchmark-adapter glue
+- Notes:
+  - Reference benchmark: LongMemEval (ICLR 2025, arXiv:2410.10813, https://github.com/xiaowu0162/LongMemEval)
+
+### T5.10 — Multi-hop retrieval benchmark pilot
+
+- Status: `[ ]`
+- Owner: —
+- Depends on: T5.8
+- Files: `tests/eval/retrieval/` (new), `docs/cli.md`
+- Outcome: gitmem has a benchmark slice for multi-hop retrieval / supporting-fact recall so retrieval quality is tested on harder questions than single-hop goldens.
+- Acceptance:
+  - Pilot task maps gitmem search/inject behavior onto HotpotQA-style multi-hop questions
+  - Reports top-k retrieval and supporting-fact coverage in addition to final answer correctness
+  - Results are reproducible enough to compare ranking/config changes over time
+- Notes:
+  - Initial target benchmark: HotpotQA (https://hotpotqa.github.io/)
+
+### T5.11 — Eval reporting and framework integration
+
+- Status: `[ ]`
+- Owner: —
+- Depends on: T5.8, T5.9, T5.10
+- Files: `docs/cli.md`, `docs/ops-runbook.md`, optional `tests/eval/README.md`
+- Outcome: Eval runs have a stable operator workflow and can feed release decisions, whether through native JSON payloads, pytest, or an external framework such as DeepEval.
+- Acceptance:
+  - Eval commands emit stable machine-readable JSON suitable for CI/history tracking
+  - Docs explain which evals are native goldens versus external benchmark adapters
+  - At least one path is documented for integrating eval runs into pytest/CI or an external framework like DeepEval
+- Notes:
+  - External framework reference: DeepEval (https://github.com/confident-ai/deepeval)
+
+---
+
 ## M6 — Private beta
 
-**Exit criteria:** 5–10 real teams running gitmem for ≥2 weeks each. All P0/P1 bugs closed. Launch checklist signed off.
+**Exit criteria:** 5–10 real teams running gitmem for ≥2 weeks each. All P0/P1 bugs closed. Launch checklist signed off. Start only after the dogfood/eval gates in M5.5 are green enough to justify external beta risk.
 
 ### T6.1 — Recruit beta cohort
 
@@ -845,6 +909,13 @@ Format:
 - Rationale: this is the lowest-risk M1 path and documents the interface users can rely on today without inventing untested flag stubs.
 - Reversibility: easy
 
+### D3 — Gate beta on dogfood and eval confidence (2026-04-22, copilot-cli)
+- Context: Real cross-org dogfooding surfaced product issues that ordinary unit tests did not, and release confidence is more likely to come from repeated dogfood plus benchmarked evals than from starting an external beta early.
+- Options considered: keep private beta as the next milestone; treat eval work as ad hoc follow-up inside existing tasks; add an explicit pre-beta dogfood/eval milestone.
+- Choice: add an explicit pre-beta dogfood/eval hardening lane and treat beta/GA work as downstream of that confidence gate.
+- Rationale: this keeps the roadmap honest about current maturity and prioritizes measurable memory/retrieval/review quality before external rollout pressure.
+- Reversibility: easy
+
 ---
 
 ## Risks & open questions
@@ -863,6 +934,7 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-22 [T5.8] copilot-cli: added `gitmem eval inject` with a hermetic offline harness around the checked-in golden inject corpus, introduced an explicit pre-beta eval-and-dogfood roadmap lane referencing LongMemEval/HotpotQA/DeepEval, and revalidated the branch at 753 passing tests plus a strict docs build
 - 2026-04-21 [T5.4] copilot-cli: added opt-in anonymous CLI telemetry with fail-open local queue/upload handling, privacy docs, kill-switch support, and revalidated the branch at 714 passing tests plus a strict docs build
 - 2026-04-21 [T5.6] copilot-cli: added a curated mkdocstrings API reference plus a public-docstring test gate so the docs build covers supported config/model/MCP surfaces without publishing internal APIs
 - 2026-04-21 [T5.5] copilot-cli: added the mkdocs-material docs site, CI/pages workflows, and a fresh-environment quickstart regression test for init/collect/dream/search/inject/status

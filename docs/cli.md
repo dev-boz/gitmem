@@ -64,6 +64,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem propose` | Materialize, push, or open cross-project promotion PRs | `--cwd`, `--cross-project`, `--proposal-key`, `--push`, `--open-pr` |
 | `gitmem init-actions` | Write workflow templates into a target directory | `--dir` |
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate` |
+| `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 
 ## Maintenance and recovery
 

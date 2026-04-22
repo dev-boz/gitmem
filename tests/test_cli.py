@@ -595,6 +595,74 @@ def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx
     assert remote_url.stdout.strip() == str(remote)
 
 
+def test_cli_eval_inject_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.inject_eval.run_inject_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 3,
+            "passed": 2,
+            "pass_rate": 2 / 3,
+            "min_pass_rate": 1.0,
+            "disclosure_slack_pct": 0.2,
+            "failures": [{"case": "broken-case"}],
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(main, ["eval", "inject", "--cases", str(tmp_path)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_inject_forwards_slack_override(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(cases_path, config, *, case_id=None, min_pass_rate=1.0, disclosure_slack_pct=None):
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_pass_rate"] = min_pass_rate
+        captured["disclosure_slack_pct"] = disclosure_slack_pct
+        return {
+            "status": "ok",
+            "total": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "disclosure_slack_pct": disclosure_slack_pct,
+            "failures": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.inject_eval.run_inject_eval", _run)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "inject",
+            "--cases",
+            str(tmp_path),
+            "--case",
+            "postgres-ranking",
+            "--min-pass-rate",
+            "0.9",
+            "--disclosure-slack-pct",
+            "0.15",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "cases_path": tmp_path,
+        "case_id": "postgres-ranking",
+        "min_pass_rate": 0.9,
+        "disclosure_slack_pct": 0.15,
+    }
+
+
 def test_cli_dream_rejects_blank_force_reason(umx_home) -> None:
     runner = CliRunner()
     result = runner.invoke(

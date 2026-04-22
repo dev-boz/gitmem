@@ -1301,6 +1301,39 @@ def eval_l2_review_cmd(cases_path: Path, case_id: str | None, min_pass_rate: flo
         raise click.exceptions.Exit(1)
 
 
+@eval_group.command("inject")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "inject",
+)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=1.0)
+@click.option("--disclosure-slack-pct", type=float, default=None)
+def eval_inject_cmd(
+    cases_path: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    disclosure_slack_pct: float | None,
+) -> None:
+    from umx.inject_eval import run_inject_eval
+
+    try:
+        payload = run_inject_eval(
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+            disclosure_slack_pct=disclosure_slack_pct,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
 @main.group("config")
 def config_group() -> None:
     """Config operations."""
