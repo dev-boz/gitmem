@@ -462,6 +462,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#if-you-need-to-rotate-github-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If you need to rotate GitHub credentials
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#backups-and-recovery" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1012,6 +1023,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#if-you-need-to-rotate-github-credentials" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If you need to rotate GitHub credentials
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#backups-and-recovery" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1119,6 +1141,27 @@ gitmem<span class="w"> </span>init-project<span class="w"> </span>--cwd<span cla
 <li>Keep the alternate <code>UMX_HOME</code> isolated when dogfooding a different org or credential set.</li>
 <li>Use <code>gitmem sync --cwd /path/to/project</code> after attachment to confirm the remote is reachable from the new machine.</li>
 </ul>
+<h2 id="if-you-need-to-rotate-github-credentials">If you need to rotate GitHub credentials<a class="headerlink" href="#if-you-need-to-rotate-github-credentials" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Confirm the current account still sees the expected org:</li>
+</ol>
+<div class="highlight"><pre><span></span><code>gh<span class="w"> </span>auth<span class="w"> </span>status
+gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--governance<span class="w"> </span>--format<span class="w"> </span>human
+</code></pre></div>
+<ol>
+<li>
+<p>Re-authenticate <code>gh</code> with the replacement credential that still has access to the same memory-repo org.</p>
+</li>
+<li>
+<p>Re-run a managed sync:</p>
+</li>
+</ol>
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>sync<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
+</code></pre></div>
+<ol>
+<li>If you need to test or stage the rotation first, use an isolated <code>UMX_HOME</code> and reattach with <code>gitmem init --org ... --mode hybrid</code> plus <code>gitmem init-project --cwd ... --yes</code>.</li>
+</ol>
+<p>The memory state stays in the remote <code>umx-user</code> and project repos, so a fresh <code>UMX_HOME</code> can reattach after the credential swap as long as the new credential still has access to the target org.</p>
 <h2 id="backups-and-recovery">Backups and recovery<a class="headerlink" href="#backups-and-recovery" title="Permanent link">&para;</a></h2>
 <p>Before migrations or risky repairs:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">export</span><span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--out<span class="w"> </span>/path/to/backup-dir
