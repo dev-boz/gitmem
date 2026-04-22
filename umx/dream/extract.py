@@ -7,6 +7,7 @@ from pathlib import Path
 from umx.config import UMXConfig
 from umx.dream.gates import read_dream_state
 from umx.dream.providers import ProviderExtractionResult, run_session_provider_extraction
+from umx.git_ops import git_blob_sha
 from umx.identity import generate_fact_id
 from umx.models import (
     CodeAnchor,
@@ -669,6 +670,7 @@ def source_files_to_facts(
                     code_anchor=CodeAnchor(
                         repo=repo_dir.name,
                         path=ref,
+                        git_sha=git_blob_sha(full_path),
                     ),
                     repo=repo_dir.name,
                 )

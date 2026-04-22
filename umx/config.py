@@ -1,3 +1,5 @@
+"""Typed config models and YAML load/save helpers for gitmem."""
+
 from __future__ import annotations
 
 import copy
@@ -14,11 +16,15 @@ DEFAULT_EMBEDDING_PROVIDER = "sentence-transformers"
 
 @dataclass(slots=True)
 class ProjectConfig:
+    """Project initialization settings."""
+
     slug_format: str = "name"
 
 
 @dataclass(slots=True)
 class DreamConfig:
+    """Settings for Dream pipeline mode and review provider selection."""
+
     mode: str = "local"
     provider_rotation: list[str] = field(
         default_factory=lambda: ["cerebras", "groq", "glm", "minimax", "openrouter"]
@@ -32,12 +38,16 @@ class DreamConfig:
 
 @dataclass(slots=True)
 class DecayConfig:
+    """Fact decay defaults and per-project overrides."""
+
     decay_lambda: float = 0.023
     per_project: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class PruneConfig:
+    """Thresholds for pruning stale or abandoned facts."""
+
     threshold: int = 2
     min_age_days: int = 7
     abandon_days: int = 30
@@ -45,18 +55,24 @@ class PruneConfig:
 
 @dataclass(slots=True)
 class MemoryConfig:
+    """Limits for generated memory summaries and hot-tier content."""
+
     index_max_lines: int = 200
     hot_tier_max_tokens: int = 3000
 
 
 @dataclass(slots=True)
 class RetentionConfig:
+    """Retention settings for persisted session history."""
+
     active_days: int = 90
     compression: str = "gzip"
 
 
 @dataclass(slots=True)
 class SessionsConfig:
+    """Session ingest, redaction, and archive settings."""
+
     redaction: str = "default"
     redaction_patterns: list[str] = field(default_factory=list)
     entropy_threshold: float = 4.5
@@ -68,6 +84,8 @@ class SessionsConfig:
 
 @dataclass(slots=True)
 class InjectConfig:
+    """Prompt injection budgets and refresh behavior."""
+
     min_facts: int = 3
     refresh_window_pct: float = 0.25
     max_refreshes_per_fact: int = 3
@@ -81,6 +99,8 @@ class InjectConfig:
 
 @dataclass(slots=True)
 class SearchEmbeddingConfig:
+    """Embedding model settings for hybrid search."""
+
     provider: str = DEFAULT_EMBEDDING_PROVIDER
     model: str = "all-MiniLM-L6-v2"
     model_version: str = "v1.0"
@@ -90,6 +110,8 @@ class SearchEmbeddingConfig:
 
 @dataclass(slots=True)
 class SearchConfig:
+    """Search backend and index rebuild settings."""
+
     rebuild: str = "incremental"
     backend: str = "fts5"
     embedding: SearchEmbeddingConfig = field(default_factory=SearchEmbeddingConfig)
@@ -97,6 +119,8 @@ class SearchConfig:
 
 @dataclass(slots=True)
 class BridgeConfig:
+    """Legacy bridge-file sync settings."""
+
     enabled: bool = False
     targets: list[str] = field(default_factory=lambda: ["CLAUDE.md", "AGENTS.md", ".cursorrules"])
     max_facts: int = 20
@@ -104,12 +128,26 @@ class BridgeConfig:
 
 @dataclass(slots=True)
 class GitConfig:
+    """Git commit signing settings."""
+
     sign_commits: bool = False
     require_signed_commits: bool = False
 
 
 @dataclass(slots=True)
+class TelemetryConfig:
+    """Opt-in anonymous telemetry settings."""
+
+    enabled: bool = False
+    endpoint: str = "https://telemetry.gitmem.dev/v1/events"
+    timeout_seconds: int = 2
+    batch_size: int = 20
+
+
+@dataclass(slots=True)
 class TrustWeights:
+    """Weight multipliers for trust scoring."""
+
     strength: float = 1.0
     corroboration: float = 0.4
     verification: float = 0.3
@@ -118,6 +156,8 @@ class TrustWeights:
 
 @dataclass(slots=True)
 class RelevanceWeights:
+    """Weight multipliers for retrieval relevance scoring."""
+
     scope_proximity: float = 1.0
     keyword_overlap: float = 0.8
     recent_retrieval: float = 0.3
@@ -129,6 +169,8 @@ class RelevanceWeights:
 
 @dataclass(slots=True)
 class RetentionWeights:
+    """Weight multipliers for retention scoring."""
+
     strength: float = 1.0
     recency: float = 0.3
     usage_frequency: float = 0.4
@@ -137,6 +179,8 @@ class RetentionWeights:
 
 @dataclass(slots=True)
 class WeightConfig:
+    """Top-level scoring weight groups."""
+
     trust: TrustWeights = field(default_factory=TrustWeights)
     relevance: RelevanceWeights = field(default_factory=RelevanceWeights)
     retention: RetentionWeights = field(default_factory=RetentionWeights)
@@ -144,6 +188,8 @@ class WeightConfig:
 
 @dataclass(slots=True)
 class UMXConfig:
+    """Full gitmem user configuration loaded from ``~/.umx/config.yaml``."""
+
     org: str | None = None
     github_token: str | None = None
     project: ProjectConfig = field(default_factory=ProjectConfig)
@@ -156,9 +202,12 @@ class UMXConfig:
     search: SearchConfig = field(default_factory=SearchConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
     git: GitConfig = field(default_factory=GitConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     weights: WeightConfig = field(default_factory=WeightConfig)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the config to the persisted YAML shape."""
+
         data = asdict(self)
         data["decay"]["lambda"] = data["decay"].pop("decay_lambda")
         return data
@@ -186,6 +235,7 @@ NESTED_TYPES: dict[type[Any], dict[str, type[Any]]] = {
         "search": SearchConfig,
         "bridge": BridgeConfig,
         "git": GitConfig,
+        "telemetry": TelemetryConfig,
         "weights": WeightConfig,
     },
     SessionsConfig: {"retention": RetentionConfig},
@@ -213,10 +263,14 @@ def _from_dict(cls: type[Any], data: dict[str, Any]) -> Any:
 
 
 def default_config() -> UMXConfig:
+    """Return a fresh config object with branch-head defaults."""
+
     return UMXConfig()
 
 
 def load_config(path: Path | None) -> UMXConfig:
+    """Load config from disk, merging persisted overrides onto current defaults."""
+
     if path is None or not path.exists():
         return default_config()
     resolved = path.resolve()
@@ -242,7 +296,34 @@ def load_config(path: Path | None) -> UMXConfig:
 
 
 def save_config(path: Path, config: UMXConfig) -> None:
+    """Write config to disk and refresh the in-process config cache."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
     text = yaml.safe_dump(config.to_dict(), sort_keys=False)
     path.write_text(text)
     _CONFIG_CACHE[path.resolve()] = (text, copy.deepcopy(config))
+
+
+__all__ = [
+    "ProjectConfig",
+    "DreamConfig",
+    "DecayConfig",
+    "PruneConfig",
+    "MemoryConfig",
+    "RetentionConfig",
+    "SessionsConfig",
+    "InjectConfig",
+    "SearchEmbeddingConfig",
+    "SearchConfig",
+    "BridgeConfig",
+    "GitConfig",
+    "TelemetryConfig",
+    "TrustWeights",
+    "RelevanceWeights",
+    "RetentionWeights",
+    "WeightConfig",
+    "UMXConfig",
+    "default_config",
+    "load_config",
+    "save_config",
+]

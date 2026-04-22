@@ -167,6 +167,36 @@ def test_cli_collect_stdin_writes_session(project_dir: Path, project_repo: Path)
     assert read_dream_state(project_repo)["session_count"] == 1
 
 
+def test_cli_collect_prefers_stdin_over_workspace_events(project_dir: Path, project_repo: Path) -> None:
+    workspace = project_dir / "workspace"
+    workspace.mkdir()
+    (workspace / "events.jsonl").write_text(
+        '\n'.join(
+            [
+                '{"_meta":{"session_id":"2026-04-22-workspacecollect"}}',
+                '{"role":"assistant","content":"workspace transcript should not win"}',
+            ]
+        )
+        + '\n'
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["collect", "--cwd", str(project_dir), "--tool", "cursor"],
+        input="stdin transcript wins\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["input_format"] == "text"
+    assert "source_file" not in payload
+
+    records = read_session(session_path(project_repo, payload["umx_session_id"]))
+    assert records[1]["content"] == "stdin transcript wins"
+    assert records[1]["content"] != "workspace transcript should not win"
+
+
 def test_cli_collect_jsonl_preserves_meta_and_events(
     tmp_path: Path,
     project_dir: Path,

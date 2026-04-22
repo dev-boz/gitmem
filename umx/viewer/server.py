@@ -6,7 +6,9 @@ import socket
 import threading
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse
+
+from umx.models import SourceType, Verification
 
 
 def _find_free_port() -> int:
@@ -76,6 +78,32 @@ def _display_path(path: Path | None, *roots: Path) -> str:
     return str(path)
 
 
+def _coverage_signal_text(item: object) -> str:
+    if isinstance(item, dict):
+        topic = item.get("topic")
+        reason = item.get("reason")
+        if topic and reason:
+            return f"{topic}: {reason}"
+        if topic:
+            return str(topic)
+        return json.dumps(item, sort_keys=True)
+    return str(item)
+
+
+def _session_sort_key(entry: tuple[str, list[dict]] | tuple[str, list[dict], str]) -> tuple[str, str]:
+    session_id = entry[0]
+    payload = entry[1]
+    meta = dict(payload[0].get("_meta", {})) if payload and "_meta" in payload[0] else {}
+    return str(meta.get("started", "")), session_id
+
+
+def _session_source_label(meta: dict[str, object], store_source: str) -> str:
+    capture_source = str(meta.get("source", "")).strip()
+    if not capture_source:
+        return store_source
+    return f"{store_source} · {capture_source}"
+
+
 def _viewer_template(name: str) -> str:
     return (Path(__file__).with_name("templates") / name).read_text(encoding="utf-8")
 
@@ -84,7 +112,59 @@ def _render_quarantine_section(body: str) -> str:
     return _viewer_template("quarantine.html").format(quarantine_body=body)
 
 
-def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "info") -> str:
+def _normalize_min_strength(value: str | int | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if 1 <= parsed <= 5 else None
+
+
+def _normalize_choice(value: str | None, allowed: set[str]) -> str | None:
+    if value is None:
+        return None
+    candidate = value.strip()
+    return candidate if candidate in allowed else None
+
+
+def _apply_fact_filters(
+    facts: list,
+    *,
+    min_strength: int | None,
+    verification: str | None,
+    source_type: str | None,
+) -> list:
+    filtered = list(facts)
+    if min_strength is not None:
+        filtered = [fact for fact in filtered if fact.encoding_strength >= min_strength]
+    if verification is not None:
+        filtered = [fact for fact in filtered if fact.verification.value == verification]
+    if source_type is not None:
+        filtered = [fact for fact in filtered if fact.source_type.value == source_type]
+    return filtered
+
+
+def _selected_attr(current: str | None, option: str) -> str:
+    return " selected" if current == option else ""
+
+
+def _filter_value(value: int | str | None) -> str:
+    return "any" if value is None else str(value)
+
+
+def _build_html(
+    cwd: Path,
+    *,
+    notice: str | None = None,
+    notice_kind: str = "info",
+    min_strength: str | int | None = None,
+    verification: str | None = None,
+    source_type: str | None = None,
+    history_fact: str | None = None,
+    edit_fact: str | None = None,
+) -> str:
     from umx.audit import audit_report
     from umx.calibration import build_calibration_advice
     from umx.config import load_config
@@ -93,7 +173,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
     from umx.fact_actions import merge_conflicts_action
     from umx.governance_health import build_governance_health_payload
     from umx.metrics import compute_metrics, health_flags
-    from umx.memory import load_all_facts
+    from umx.memory import find_fact_by_id, load_all_facts
     from umx.scope import config_path, project_memory_dir, user_memory_dir
     from umx.search import session_replay
     from umx.sessions import iter_session_payloads, list_quarantined_sessions
@@ -118,7 +198,36 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
             fact.fact_id,
         ),
     )
-    sessions = list(iter_session_payloads(repo, include_archived=True)) if repo.exists() else []
+    selected_min_strength = _normalize_min_strength(min_strength)
+    selected_verification = _normalize_choice(
+        verification,
+        {item.value for item in Verification},
+    )
+    selected_source_type = _normalize_choice(
+        source_type,
+        {item.value for item in SourceType},
+    )
+    filtered_facts = _apply_fact_filters(
+        facts,
+        min_strength=selected_min_strength,
+        verification=selected_verification,
+        source_type=selected_source_type,
+    )
+    active_query_params: dict[str, str] = {}
+    if selected_min_strength is not None:
+        active_query_params["min_strength"] = str(selected_min_strength)
+    if selected_verification is not None:
+        active_query_params["verification"] = selected_verification
+    if selected_source_type is not None:
+        active_query_params["source_type"] = selected_source_type
+    project_sessions = list(iter_session_payloads(repo, include_archived=True)) if repo.exists() else []
+    user_sessions = list(iter_session_payloads(user_repo, include_archived=True)) if user_repo.exists() else []
+    sessions = sorted(
+        [(session_id, payload, "project") for session_id, payload in project_sessions]
+        + [(session_id, payload, "user") for session_id, payload in user_sessions],
+        key=_session_sort_key,
+        reverse=True,
+    )
     quarantined = list_quarantined_sessions(repo, config=cfg) if repo.exists() else []
     manifest = _load_json(repo / "meta" / "manifest.json", {"topics": {}, "uncertainty_hotspots": [], "knowledge_gaps": []})
     gaps = _gap_rows(repo)
@@ -128,9 +237,21 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
     tombstones = [item for item in load_tombstones(repo) if not item.expired()] if repo.exists() else []
     audit = audit_report(repo, cfg) if repo.exists() else {"total_facts": 0, "total_sessions": 0, "sessions_with_derived_facts": 0, "source_types": {}}
     merge_preview = merge_conflicts_action(cwd, dry_run=True).results
+    history_chain = []
+    if history_fact:
+        from umx.supersession import walk_history
+
+        history_chain = walk_history(repo, history_fact) if repo.exists() else []
+        if not history_chain and user_repo.exists():
+            history_chain = walk_history(user_repo, history_fact)
+    editable_fact = None
+    if edit_fact:
+        editable_fact = find_fact_by_id(repo, edit_fact) if repo.exists() else None
+        if editable_fact is None and user_repo.exists():
+            editable_fact = find_fact_by_id(user_repo, edit_fact)
 
     topics: dict[str, list] = {}
-    for fact in facts:
+    for fact in filtered_facts:
         topics.setdefault(fact.topic, []).append(fact)
 
     topic_html = ""
@@ -146,9 +267,26 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         topic_html += f"<h3>{html.escape(topic)}</h3><ol>{items}</ol>"
 
     def _fact_actions(fact) -> str:
+        is_principle = (
+            fact.file_path is not None
+            and repo in fact.file_path.parents
+            and fact.file_path.relative_to(repo).as_posix().startswith("principles/")
+        )
         if fact.scope.value == "user":
-            return "<span class='meta'>project-only</span>"
+            history_params = {**active_query_params, "history_fact": fact.fact_id}
+            edit_params = {**active_query_params, "edit_fact": fact.fact_id}
+            return (
+                "<div class='action-stack'>"
+                f"<form method='post'><input type='hidden' name='action' value='demote' />"
+                f"<input type='hidden' name='fact_id' value='{html.escape(fact.fact_id)}' />"
+                "<button type='submit'>Demote</button></form>"
+                f"<a href='/?{html.escape(urlencode(history_params))}'>History</a>"
+                f"<a href='/?{html.escape(urlencode(edit_params))}'>Edit</a>"
+                "</div>"
+            )
         fact_id = html.escape(fact.fact_id)
+        history_href = f"/?{html.escape(urlencode({**active_query_params, 'history_fact': fact.fact_id}))}"
+        edit_href = f"/?{html.escape(urlencode({**active_query_params, 'edit_fact': fact.fact_id}))}"
         return (
             "<div class='action-stack'>"
             f"<form method='post'><input type='hidden' name='action' value='confirm' />"
@@ -165,7 +303,16 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
             "<option value='principle'>principle</option>"
             "</select>"
             "<button type='submit'>Promote</button></form>"
-            "</div>"
+            + (
+                f"<form method='post'><input type='hidden' name='action' value='demote' />"
+                f"<input type='hidden' name='fact_id' value='{fact_id}' />"
+                "<button type='submit'>Demote</button></form>"
+                if is_principle
+                else ""
+            )
+            + f"<a href='{history_href}'>History</a>"
+            + f"<a href='{edit_href}'>Edit</a>"
+            + "</div>"
         )
 
     fact_rows = "".join(
@@ -183,10 +330,10 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         f"<td>{html.escape(fact.text)}</td>"
         f"<td>{_fact_actions(fact)}</td>"
         "</tr>"
-        for fact in facts
+        for fact in filtered_facts
     )
 
-    conflicts = [fact for fact in facts if fact.conflicts_with]
+    conflicts = [fact for fact in filtered_facts if fact.conflicts_with]
     conflict_rows = "".join(
         "<tr>"
         f"<td>{html.escape(fact.fact_id)}</td>"
@@ -204,7 +351,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         f"<td>{html.escape(fact.text)}</td>"
         "</tr>"
         for fact in sorted(
-            [fact for fact in facts if fact.task_status is not None],
+            [fact for fact in filtered_facts if fact.task_status is not None],
             key=lambda fact: fact.created,
         )
     )
@@ -230,7 +377,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
             (
                 status,
                 sorted(
-                    [fact for fact in facts if fact.task_status and fact.task_status.value == status],
+                    [fact for fact in filtered_facts if fact.task_status and fact.task_status.value == status],
                     key=lambda fact: fact.created,
                     reverse=True,
                 ),
@@ -238,6 +385,72 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
             for status in ("open", "blocked", "resolved", "abandoned")
         )
     ) + "</div>"
+
+    filter_form_html = (
+        "<form method='get' class='filter-form'>"
+        "<label>Min strength "
+        "<select name='min_strength'>"
+        f"<option value='any'{_selected_attr(_filter_value(selected_min_strength), 'any')}>any</option>"
+        + "".join(
+            f"<option value='{value}'{_selected_attr(_filter_value(selected_min_strength), str(value))}>{value}</option>"
+            for value in range(1, 6)
+        )
+        + "</select></label>"
+        "<label>Verification "
+        "<select name='verification'>"
+        f"<option value='any'{_selected_attr(_filter_value(selected_verification), 'any')}>any</option>"
+        + "".join(
+            f"<option value='{html.escape(item.value)}'{_selected_attr(_filter_value(selected_verification), item.value)}>{html.escape(item.value)}</option>"
+            for item in Verification
+        )
+        + "</select></label>"
+        "<label>Source "
+        "<select name='source_type'>"
+        f"<option value='any'{_selected_attr(_filter_value(selected_source_type), 'any')}>any</option>"
+        + "".join(
+            f"<option value='{html.escape(item.value)}'{_selected_attr(_filter_value(selected_source_type), item.value)}>{html.escape(item.value)}</option>"
+            for item in SourceType
+        )
+        + "</select></label>"
+        "<button type='submit'>Filter</button> "
+        "<a href='/'>Reset</a>"
+        "</form>"
+        f"<p class='meta'>Showing {len(filtered_facts)} of {len(facts)} facts.</p>"
+    )
+
+    history_html = "<p>Select a fact from the inventory to inspect its supersession chain.</p>"
+    if history_fact:
+        if history_chain:
+            history_html = (
+                "<ol>"
+                + "".join(
+                    "<li>"
+                    f"<code>{html.escape(fact.fact_id)}</code> "
+                    f"[{html.escape(fact.consolidation_status.value)}] "
+                    f"{html.escape(fact.text)}"
+                    "</li>"
+                    for fact in history_chain
+                )
+                + "</ol>"
+            )
+        else:
+            history_html = "<p>No fact history found for that selection.</p>"
+
+    edit_html = "<p>Select a fact from the inventory to edit it and create an S:5 superseding version.</p>"
+    if edit_fact:
+        if editable_fact is None:
+            edit_html = "<p>No fact found for that selection.</p>"
+        else:
+            edit_html = (
+                "<form method='post' class='edit-form'>"
+                "<input type='hidden' name='action' value='edit' />"
+                f"<input type='hidden' name='fact_id' value='{html.escape(editable_fact.fact_id)}' />"
+                f"<p><code>{html.escape(editable_fact.fact_id)}</code> "
+                f"[{html.escape(editable_fact.scope.value)} · {html.escape(editable_fact.topic)}]</p>"
+                f"<textarea name='updated_text'>{html.escape(editable_fact.text)}</textarea>"
+                "<button type='submit'>Save as S:5 edit</button>"
+                "</form>"
+            )
 
     manifest_html = (
         "<div class='split'>"
@@ -254,7 +467,7 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         + (
             "<ul>"
             + "".join(
-                f"<li>{html.escape(str(item))}</li>"
+                f"<li>{html.escape(_coverage_signal_text(item))}</li>"
                 for item in [*manifest.get("uncertainty_hotspots", []), *manifest.get("knowledge_gaps", [])]
             )
             + "</ul>"
@@ -529,22 +742,17 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
         for fact in sorted(facts, key=lambda fact: (fact.created, fact.fact_id), reverse=True)
     )
 
-    def _session_sort_key(entry: tuple[str, list[dict]]) -> tuple[str, str]:
-        session_id, payload = entry
-        meta = dict(payload[0].get("_meta", {})) if payload and "_meta" in payload[0] else {}
-        return str(meta.get("started", "")), session_id
-
     session_browser_rows = "".join(
         "<tr>"
         f"<td><code>{html.escape(session_id)}</code></td>"
         f"<td>{html.escape(str(meta.get('tool', '')))}</td>"
         f"<td>{html.escape(str(meta.get('machine', '')))}</td>"
-        f"<td>{html.escape(str(meta.get('source', '')))}</td>"
+        f"<td>{html.escape(_session_source_label(meta, _source))}</td>"
         f"<td>{html.escape(str(meta.get('started', '')))}</td>"
         f"<td>{len(events)}</td>"
         f"<td>{html.escape(snippet)}</td>"
         "</tr>"
-        for session_id, payload in sorted(sessions, key=_session_sort_key, reverse=True)
+        for session_id, payload, _source in sessions
         for meta, events, snippet in [(
             dict(payload[0].get("_meta", {})) if payload and "_meta" in payload[0] else {},
             [event for event in payload if "_meta" not in event],
@@ -597,10 +805,9 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
     )
 
     replay_html = ""
-    for session_id, session_payload in sessions[-3:]:
-        usage_rows = session_replay(repo, session_id, limit=200)
-        if user_repo.exists():
-            usage_rows.extend(session_replay(user_repo, session_id, limit=200))
+    for session_id, session_payload, session_source in sessions[:3]:
+        replay_repo = repo if session_source == "project" else user_repo
+        usage_rows = session_replay(replay_repo, session_id, limit=200) if replay_repo.exists() else []
         usage_rows.sort(key=lambda row: (str(row.get("created_at", "")), str(row.get("event_id", ""))))
         session_rows = [
             event
@@ -674,6 +881,10 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
   button, select {{ font: inherit; }}
   button {{ border: 1px solid var(--line); border-radius: 8px; background: white; padding: 0.25rem 0.55rem; cursor: pointer; }}
   select {{ border: 1px solid var(--line); border-radius: 8px; padding: 0.2rem 0.35rem; background: white; }}
+  .filter-form {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin-bottom: 10px; }}
+  .filter-form label {{ display: flex; flex-direction: column; gap: 4px; }}
+  .edit-form {{ display: flex; flex-direction: column; gap: 10px; }}
+  .edit-form textarea {{ width: 100%; min-height: 7rem; font: inherit; border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem; background: white; }}
   .notice {{ margin-top: 16px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); }}
   .notice-success {{ background: var(--accent-soft); }}
   .notice-error {{ background: #fde8e8; }}
@@ -703,8 +914,11 @@ def _build_html(cwd: Path, *, notice: str | None = None, notice_kind: str = "inf
 </div>
 </div>
 <div class="section"><h2>Fact Inventory</h2>
+{filter_form_html}
 {('<table><tr><th>Scope</th><th>Topic</th><th>S</th><th>Verification</th><th>State</th><th>Task</th><th>Source</th><th>Session</th><th>File</th><th>ID</th><th>Text</th><th>Actions</th></tr>' + fact_rows + '</table>') if fact_rows else '<p>No facts found.</p>'}
 </div>
+<div class="section"><h2>Fact History</h2>{history_html}</div>
+<div class="section"><h2>Inline Edit</h2>{edit_html}</div>
 <div class="section"><h2>Manifest Coverage</h2>{manifest_html}</div>
 <div class="section"><h2>Topic Narratives</h2>{topic_html if topic_html else '<p>No facts found.</p>'}</div>
 <div class="section"><h2>Conflict Matrix</h2>{('<table><tr><th>ID</th><th>Topic</th><th>Conflicts With</th></tr>' + conflict_rows + '</table>') if conflict_rows else '<p>No active conflicts.</p>'}</div>
@@ -737,8 +951,27 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
     chosen_port = port or _find_free_port()
 
     class Handler(SimpleHTTPRequestHandler):
-        def _render(self, *, notice: str | None = None, notice_kind: str = "info") -> None:
-            html_content = _build_html(cwd, notice=notice, notice_kind=notice_kind)
+        def _render(
+            self,
+            *,
+            notice: str | None = None,
+            notice_kind: str = "info",
+            min_strength: str | None = None,
+            verification: str | None = None,
+            source_type: str | None = None,
+            history_fact: str | None = None,
+            edit_fact: str | None = None,
+        ) -> None:
+            html_content = _build_html(
+                cwd,
+                notice=notice,
+                notice_kind=notice_kind,
+                min_strength=min_strength,
+                verification=verification,
+                source_type=source_type,
+                history_fact=history_fact,
+                edit_fact=edit_fact,
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
@@ -750,11 +983,18 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
             self._render(
                 notice=params.get("notice", [None])[0],
                 notice_kind=params.get("kind", ["info"])[0],
+                min_strength=params.get("min_strength", [None])[0],
+                verification=params.get("verification", [None])[0],
+                source_type=params.get("source_type", [None])[0],
+                history_fact=params.get("history_fact", [None])[0],
+                edit_fact=params.get("edit_fact", [None])[0],
             )
 
         def do_POST(self) -> None:
             from umx.fact_actions import (
                 confirm_fact_action,
+                demote_fact_action,
+                edit_fact_action,
                 forget_fact_action,
                 merge_conflicts_action,
                 promote_fact_action,
@@ -764,6 +1004,7 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
 
             length = int(self.headers.get("Content-Length", "0"))
             payload = parse_qs(self.rfile.read(length).decode())
+            current_params = parse_qs(urlparse(self.path).query)
             action = payload.get("action", [""])[0]
             notice = "Unknown action"
             kind = "error"
@@ -788,6 +1029,18 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
                 result = merge_conflicts_action(cwd, dry_run=False)
                 notice = result.message
                 kind = "success" if result.ok else "error"
+            elif action == "edit":
+                result = edit_fact_action(
+                    cwd,
+                    payload.get("fact_id", [""])[0],
+                    payload.get("updated_text", [""])[0],
+                )
+                notice = result.message
+                kind = "success" if result.ok else "error"
+            elif action == "demote":
+                result = demote_fact_action(cwd, payload.get("fact_id", [""])[0])
+                notice = result.message
+                kind = "success" if result.ok else "error"
             elif action == "release-quarantine":
                 result = release_quarantined_session(
                     project_memory_dir(cwd),
@@ -804,8 +1057,18 @@ def start(cwd: Path, port: int | None = None) -> tuple[str, HTTPServer]:
                 notice = result.message
                 kind = "success" if result.ok else "error"
 
+            redirect_params = {
+                key: current_params[key][0]
+                for key in ("min_strength", "verification", "source_type", "history_fact", "edit_fact")
+                if current_params.get(key)
+            }
+            if action == "edit" and result.ok and result.fact_id:
+                redirect_params["history_fact"] = result.fact_id
+                redirect_params["edit_fact"] = result.fact_id
+            redirect_params["notice"] = notice
+            redirect_params["kind"] = kind
             self.send_response(303)
-            self.send_header("Location", f"/?notice={quote(notice)}&kind={quote(kind)}")
+            self.send_header("Location", f"/?{urlencode(redirect_params)}")
             self.end_headers()
 
         def log_message(self, format: str, *args: object) -> None:

@@ -331,6 +331,25 @@ def _parse_fact_lines(path: Path, repo_dir: Path) -> list[Fact]:
     ]
 
 
+def manual_edit_successor(fact: Fact, new_text: str) -> tuple[Fact, Fact]:
+    new_id = generate_fact_id()
+    previous = fact.clone(superseded_by=new_id)
+    updated = fact.clone(
+        fact_id=new_id,
+        text=new_text,
+        encoding_strength=5,
+        verification=Verification.HUMAN_CONFIRMED,
+        source_type=SourceType.USER_PROMPT,
+        source_tool="human",
+        source_session="manual-edit",
+        consolidation_status=ConsolidationStatus.STABLE,
+        supersedes=fact.fact_id,
+        superseded_by=None,
+        provenance=Provenance(extracted_by="manual", sessions=["manual-edit"]),
+    )
+    return previous, updated
+
+
 def read_fact_file(
     path: Path,
     repo_dir: Path,
@@ -357,24 +376,12 @@ def read_fact_file(
         cached = cached_facts.get(fact.fact_id)
         if cached and cached.get("text") != fact.text:
             changed = True
-            previous = fact.clone(text=cached["text"], superseded_by=None)
-            new_id = generate_fact_id()
-            previous.superseded_by = new_id
-            rewritten.append(previous)
-            rewritten.append(
-                fact.clone(
-                    fact_id=new_id,
-                    encoding_strength=5,
-                    verification=Verification.HUMAN_CONFIRMED,
-                    source_type=SourceType.USER_PROMPT,
-                    source_tool="human",
-                    source_session="manual-edit",
-                    consolidation_status=ConsolidationStatus.STABLE,
-                    supersedes=fact.fact_id,
-                    superseded_by=None,
-                    provenance=Provenance(extracted_by="manual", sessions=["manual-edit"]),
-                )
+            previous, updated = manual_edit_successor(
+                fact.clone(text=cached["text"], superseded_by=None),
+                fact.text,
             )
+            rewritten.append(previous)
+            rewritten.append(updated)
         else:
             rewritten.append(fact)
             if fact.source_session == "manual-edit":

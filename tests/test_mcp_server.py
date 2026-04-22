@@ -53,12 +53,12 @@ def _add_fact(project_cwd: Path, topic: str = "general", text: str = "test fact"
 
 
 class TestToolsListing:
-    def test_returns_all_five_tools(self, server: UMXMCPServer):
+    def test_returns_all_tools(self, server: UMXMCPServer):
         result = server.handle_tools_list({})
         tools = result["tools"]
-        assert len(tools) == 5
+        assert len(tools) == 6
         names = {t["name"] for t in tools}
-        assert names == {"read_memory", "write_memory", "search_memory", "dream", "status"}
+        assert names == {"read_memory", "write_memory", "search_memory", "dream", "status", "emit_gap_signal"}
 
     def test_each_tool_has_schema(self, server: UMXMCPServer):
         result = server.handle_tools_list({})
@@ -185,6 +185,32 @@ class TestStatus:
         assert "flags" in data
         assert "metrics" in data
         assert data["fact_count"] >= 1
+
+
+class TestEmitGapSignal:
+    def test_records_gap_signal(self, server: UMXMCPServer, project_cwd: Path):
+        from umx.scope import project_memory_dir
+        import json
+
+        result = server.handle_tools_call({
+            "name": "emit_gap_signal",
+            "arguments": {
+                "cwd": str(project_cwd),
+                "query": "fastboot timeout config",
+                "resolution_context": "agent read scripts/deploy.sh and found timeout=30 hardcoded",
+                "proposed_fact": "fastboot timeout is 30s by default on veyron",
+                "session": "mcp-gap-001",
+            },
+        })
+
+        assert result["isError"] is False
+        payload = json.loads(result["content"][0]["text"])
+        assert payload["status"] == "ok"
+        assert payload["record"]["type"] == "gap"
+        assert payload["record"]["session"] == "mcp-gap-001"
+        stored = (project_memory_dir(project_cwd) / "meta" / "gaps.jsonl").read_text().strip().splitlines()
+        assert len(stored) == 1
+        assert json.loads(stored[0]) == payload["record"]
 
 
 class TestDream:
@@ -315,7 +341,7 @@ class TestJSONRPCErrorHandling:
             "params": {},
         })
         assert "result" in response
-        assert len(response["result"]["tools"]) == 5
+        assert len(response["result"]["tools"]) == 6
 
     def test_ping_returns_empty_result(self, server: UMXMCPServer):
         response = server.dispatch({

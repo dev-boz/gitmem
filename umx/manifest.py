@@ -3,12 +3,39 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from umx.models import ConsolidationStatus, Fact
 
 
 def manifest_path(repo_dir: Path) -> Path:
     return repo_dir / "meta" / "manifest.json"
+
+
+def topic_status(manifest: dict[str, Any], topic: str) -> dict[str, Any]:
+    topics = manifest.get("topics") if isinstance(manifest, dict) else None
+    payload = dict(topics.get(topic, {})) if isinstance(topics, dict) and isinstance(topics.get(topic), dict) else {}
+    uncertainty = _topic_entry(manifest.get("uncertainty_hotspots"), topic) if isinstance(manifest, dict) else None
+    gap = _topic_entry(manifest.get("knowledge_gaps"), topic) if isinstance(manifest, dict) else None
+    payload["topic"] = topic
+    payload["uncertainty_hotspot"] = uncertainty is not None
+    payload["knowledge_gap"] = gap is not None
+    if uncertainty is not None:
+        payload["uncertainty"] = uncertainty
+    if gap is not None:
+        payload["gap"] = gap
+    return payload
+
+
+def _topic_entry(items: Any, topic: str) -> dict[str, Any] | None:
+    if not isinstance(items, list):
+        return None
+    for item in items:
+        if isinstance(item, str) and item == topic:
+            return {"topic": topic}
+        if isinstance(item, dict) and item.get("topic") == topic:
+            return item
+    return None
 
 
 def rebuild_manifest(repo_dir: Path, facts: list[Fact], now: datetime) -> dict:

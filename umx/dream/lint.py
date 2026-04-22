@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from umx.conventions import ConventionSet, validate_fact
+from umx.dream.anchors import code_anchor_status
 from umx.dream.conflict import facts_conflict
 from umx.models import Fact, SourceType, parse_datetime
 from umx.scope import find_orphaned_scoped_memory
@@ -104,8 +105,11 @@ def generate_lint_findings(
         ]:
             if ref not in by_id:
                 findings.append({"kind": "orphan-id", "message": f"{fact.fact_id} references missing id {ref}"})
-        if fact.code_anchor and not (project_root / fact.code_anchor.path).exists():
+        anchor_status = code_anchor_status(project_root, fact)
+        if fact.code_anchor and anchor_status == "missing":
             findings.append({"kind": "stale-reference", "message": f"{fact.fact_id} points to missing path {fact.code_anchor.path}"})
+        elif fact.code_anchor and anchor_status == "drifted":
+            findings.append({"kind": "stale-reference", "message": f"{fact.fact_id} points to stale path {fact.code_anchor.path}"})
         if (
             fact.encoding_strength >= 4
             and fact.source_type != SourceType.GROUND_TRUTH_CODE

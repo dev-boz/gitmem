@@ -8,6 +8,8 @@ from umx.cli import main
 from umx.conventions import ConventionSet
 from umx.doctor import run_doctor
 from umx.dream.lint import generate_lint_findings
+from umx.git_ops import git_blob_sha
+from umx.models import CodeAnchor, ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.scope import find_orphaned_scoped_memory
 
 
@@ -55,6 +57,92 @@ def test_generate_lint_findings_reports_orphaned_scopes(project_dir, project_rep
             "message": "folders/legacy.md targets missing folder path legacy",
         },
     ]
+
+
+def test_generate_lint_findings_reports_drifted_code_anchor(project_dir, project_repo) -> None:
+    src_dir = project_dir / "src"
+    src_dir.mkdir()
+    source_path = src_dir / "app.py"
+    source_path.write_text("DATABASE_PORT = 5432\n")
+
+    fact = Fact(
+        fact_id="01TESTSCOPELINT000000001",
+        text="database port is 5432",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="manual",
+        source_session="2026-04-22-scope-lint",
+        consolidation_status=ConsolidationStatus.STABLE,
+        code_anchor=CodeAnchor(repo=project_repo.name, path="src/app.py", git_sha=git_blob_sha(source_path)),
+    )
+    source_path.write_text("DATABASE_PORT = 5433\n")
+
+    findings = generate_lint_findings(
+        [fact],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {"kind": "stale-reference", "message": f"{fact.fact_id} points to stale path src/app.py"} in findings
+
+
+def test_generate_lint_findings_reports_missing_anchor_for_non_ground_truth_fact(project_dir, project_repo) -> None:
+    fact = Fact(
+        fact_id="01TESTSCOPELINT000000002",
+        text="release notes are tracked in docs/releases.md",
+        scope=Scope.PROJECT,
+        topic="docs",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="2026-04-22-scope-lint",
+        consolidation_status=ConsolidationStatus.FRAGILE,
+        code_anchor=CodeAnchor(repo=project_repo.name, path="docs/releases.md"),
+    )
+
+    findings = generate_lint_findings(
+        [fact],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {"kind": "stale-reference", "message": f"{fact.fact_id} points to missing path docs/releases.md"} in findings
+
+
+def test_generate_lint_findings_reports_directory_anchor_as_missing(project_dir, project_repo) -> None:
+    (project_dir / "docs").mkdir()
+
+    fact = Fact(
+        fact_id="01TESTSCOPELINT000000003",
+        text="deployment docs live under docs/",
+        scope=Scope.PROJECT,
+        topic="docs",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="manual",
+        source_session="2026-04-22-scope-lint",
+        consolidation_status=ConsolidationStatus.STABLE,
+        code_anchor=CodeAnchor(repo=project_repo.name, path="docs", git_sha="deadbeef"),
+    )
+
+    findings = generate_lint_findings(
+        [fact],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {"kind": "stale-reference", "message": f"{fact.fact_id} points to missing path docs"} in findings
 
 
 def test_run_doctor_surfaces_orphaned_scopes(project_dir, project_repo) -> None:

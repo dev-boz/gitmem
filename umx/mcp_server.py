@@ -1,3 +1,5 @@
+"""Stdio MCP server entrypoint for gitmem memory tools."""
+
 from __future__ import annotations
 
 import json
@@ -94,6 +96,24 @@ TOOL_DEFINITIONS = [
             "required": ["cwd"],
         },
     },
+    {
+        "name": "emit_gap_signal",
+        "description": "Record a worked-around retrieval gap for later Dream consolidation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "cwd": {"type": "string", "description": "Working directory path"},
+                "query": {"type": "string", "description": "The incomplete memory query"},
+                "resolution_context": {
+                    "type": "string",
+                    "description": "How the gap was resolved (file read, command output, user answer, etc.)",
+                },
+                "proposed_fact": {"type": "string", "description": "Candidate fact derived from the workaround"},
+                "session": {"type": "string", "description": "Session identifier tied to the gap"},
+            },
+            "required": ["cwd", "query", "resolution_context", "proposed_fact", "session"],
+        },
+    },
 ]
 
 
@@ -154,6 +174,7 @@ class UMXMCPServer:
             "search_memory": self._tool_search_memory,
             "dream": self._tool_dream,
             "status": self._tool_status,
+            "emit_gap_signal": self._tool_emit_gap_signal,
         }.get(name)
         if handler is None:
             return {
@@ -289,6 +310,20 @@ class UMXMCPServer:
         cwd = Path(args["cwd"])
         return build_status_payload(cwd)
 
+    def _tool_emit_gap_signal(self, args: dict) -> dict:
+        from umx.inject import emit_gap_signal
+        from umx.scope import project_memory_dir
+
+        cwd = Path(args["cwd"])
+        record = emit_gap_signal(
+            project_memory_dir(cwd),
+            query=str(args["query"]),
+            resolution_context=str(args["resolution_context"]),
+            proposed_fact=str(args["proposed_fact"]),
+            session=str(args["session"]),
+        )
+        return {"status": "ok", "record": record}
+
     def handle_ping(self, params: dict) -> dict:
         return {}
 
@@ -343,4 +378,9 @@ class UMXMCPServer:
 
 
 def run() -> None:
+    """Run the stdio MCP server until the input stream closes."""
+
     UMXMCPServer().run()
+
+
+__all__ = ["run"]

@@ -29,11 +29,17 @@ dependencies = [
 Homepage = "https://github.com/dev-boz/gitmem"
 Repository = "https://github.com/dev-boz/gitmem"
 Changelog = "https://github.com/dev-boz/gitmem/blob/main/CHANGELOG.md"
+Documentation = "https://dev-boz.github.io/gitmem/"
 
 [project.optional-dependencies]
 dev = [
     "hypothesis>=6.0",
     "pytest>=8.0",
+]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.28",
 ]
 embeddings = [
     "sentence-transformers>=3.0",

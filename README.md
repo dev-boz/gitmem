@@ -205,6 +205,7 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 - In `local` mode, sessions, facts, and SQLite indexes stay on your filesystem.
 - Session records are redacted before persistence, project-secret facts are excluded from injection, and facts tied to gitignored paths are routed to private scope.
 - `remote` / `hybrid` mode syncs the memory repo to GitHub; your project code stays in its own repo.
+- Anonymous telemetry is available as an **opt-in** config path. It is off by default and does not send prompts, facts, transcripts, repo paths, or raw remote URLs.
 - The local alpha does not require model API keys. The repo includes draft GitHub Actions templates that reference `GROQ_API_KEY` and `ANTHROPIC_API_KEY` for future provider-backed review; that path is still experimental.
 
 ## Remote mode (experimental)

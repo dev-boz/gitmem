@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -738,18 +739,32 @@ def emit_gap_signal(
     resolution_context: str,
     proposed_fact: str,
     session: str,
-) -> None:
+) -> dict[str, str]:
+    query_text = query.strip()
+    resolution_text = resolution_context.strip()
+    proposed_text = proposed_fact.strip()
+    session_text = session.strip()
+    if not query_text:
+        raise ValueError("gap query must not be empty")
+    if not resolution_text:
+        raise ValueError("gap resolution_context must not be empty")
+    if not proposed_text:
+        raise ValueError("gap proposed_fact must not be empty")
+    if not session_text:
+        raise ValueError("gap session must not be empty")
     path = repo_dir / "meta" / "gaps.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "type": "gap",
-        "query": query,
-        "resolution_context": resolution_context,
-        "proposed_fact": proposed_fact,
-        "session": session,
+        "query": query_text,
+        "resolution_context": resolution_text,
+        "proposed_fact": proposed_text,
+        "session": session_text,
+        "ts": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record, sort_keys=True) + "\n")
+    return record
 
 
 def inject_for_tool(

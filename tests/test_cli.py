@@ -12,6 +12,7 @@ from umx.cli import main
 from umx.github_ops import GitHubError
 from umx.scope import config_path, project_memory_dir
 from umx.sessions import write_session
+from umx.telemetry import telemetry_queue_path
 
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
@@ -32,6 +33,83 @@ def test_cli_init_and_status(project_dir, umx_home) -> None:
     assert "ok" in payload
     assert "flags" in payload
     assert "guidance" in payload
+
+
+def test_cli_status_suggests_creating_conventions_when_missing(project_dir, project_repo, umx_home) -> None:
+    (project_repo / "CONVENTIONS.md").unlink()
+
+    runner = CliRunner()
+    status = runner.invoke(main, ["status", "--cwd", str(project_dir)])
+
+    assert status.exit_code == 0, status.output
+    payload = json.loads(status.output)
+    assert payload["conventions_present"] is False
+    assert any("CONVENTIONS.md missing" in flag for flag in payload["flags"])
+    conventions_guidance = next(item for item in payload["guidance"] if item["metric"] == "conventions")
+    assert "Dream review" in conventions_guidance["why_it_matters"]
+    assert any("Create CONVENTIONS.md" in action for action in conventions_guidance["recommended_actions"])
+
+
+def test_cli_meta_topic_includes_uncertainty_and_gap_status(project_dir, project_repo, umx_home) -> None:
+    (project_repo / "meta" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "topics": {"devenv": {"fact_count": 2, "avg_strength": 4.0}},
+                "uncertainty_hotspots": [{"topic": "devenv", "fragile_ratio": 1.0, "reason": "all facts fragile"}],
+                "knowledge_gaps": [{"topic": "backups", "gap_signals": 2, "reason": "no facts extracted yet"}],
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    runner = CliRunner()
+    topic_result = runner.invoke(main, ["meta", "--cwd", str(project_dir), "--topic", "devenv"])
+    gap_result = runner.invoke(main, ["meta", "--cwd", str(project_dir), "--topic", "backups"])
+
+    assert topic_result.exit_code == 0, topic_result.output
+    assert gap_result.exit_code == 0, gap_result.output
+    topic_payload = json.loads(topic_result.output)
+    gap_payload = json.loads(gap_result.output)
+    assert topic_payload["topic"] == "devenv"
+    assert topic_payload["fact_count"] == 2
+    assert topic_payload["uncertainty_hotspot"] is True
+    assert topic_payload["uncertainty"]["fragile_ratio"] == 1.0
+    assert topic_payload["knowledge_gap"] is False
+    assert gap_payload["topic"] == "backups"
+    assert gap_payload["knowledge_gap"] is True
+    assert gap_payload["gap"]["gap_signals"] == 2
+    assert gap_payload["uncertainty_hotspot"] is False
+
+
+def test_cli_gaps_can_emit_gap_signal(project_dir, project_repo, umx_home) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "gaps",
+            "--cwd",
+            str(project_dir),
+            "--query",
+            "fastboot timeout config",
+            "--resolution-context",
+            "agent read scripts/deploy.sh and found timeout=30 hardcoded",
+            "--proposed-fact",
+            "fastboot timeout is 30s by default on veyron",
+            "--session",
+            "session-gap-001",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["type"] == "gap"
+    assert payload["query"] == "fastboot timeout config"
+    assert payload["session"] == "session-gap-001"
+    assert payload["ts"].endswith("Z")
+    stored = (project_repo / "meta" / "gaps.jsonl").read_text().strip().splitlines()
+    assert len(stored) == 1
+    assert json.loads(stored[0]) == payload
 
 
 def test_cli_inject_outputs_memory_block(project_dir, project_repo, user_repo) -> None:
@@ -293,6 +371,39 @@ def test_cli_config_set_redaction_patterns_rejects_invalid_regex(umx_home) -> No
     assert "unsafe regex constructs" in result.output
 
 
+def test_cli_config_set_telemetry_enabled_roundtrips_to_config(umx_home, monkeypatch) -> None:
+    runner = CliRunner()
+    called = {"count": 0}
+
+    def _unexpected(*args, **kwargs):
+        called["count"] += 1
+        raise AssertionError("opt-in command should not upload telemetry")
+
+    monkeypatch.setattr("umx.telemetry.urlopen", _unexpected)
+
+    result = runner.invoke(main, ["config", "set", "telemetry.enabled", "true"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "telemetry.enabled"
+    cfg = load_config(config_path())
+    assert cfg.telemetry.enabled is True
+    assert called["count"] == 0
+    assert not telemetry_queue_path().exists()
+
+
+def test_cli_init_preserves_existing_telemetry_config(umx_home) -> None:
+    cfg = default_config()
+    cfg.telemetry.enabled = True
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["init"])
+
+    assert result.exit_code == 0, result.output
+    reloaded = load_config(config_path())
+    assert reloaded.telemetry.enabled is True
+
+
 def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path) -> None:
     cfg = default_config()
     cfg.org = "memory-org"
@@ -398,7 +509,7 @@ def test_cli_doctor_surfaces_git_signing_config(umx_home) -> None:
     assert "guidance" in payload["health"]
 
 
-def test_cli_init_project_surfaces_git_init_commit_failure(project_dir) -> None:
+def test_cli_init_project_surfaces_git_init_commit_failure(project_dir, umx_home) -> None:
     from umx.git_ops import GitCommitError, GitCommitResult
 
     runner = CliRunner()

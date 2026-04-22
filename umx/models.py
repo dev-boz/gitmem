@@ -1,3 +1,5 @@
+"""Core enums and dataclasses for persisted gitmem facts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -27,6 +29,8 @@ def parse_datetime(value: str | None) -> datetime | None:
 
 
 class Scope(str, Enum):
+    """Scope hierarchy for stored facts."""
+
     USER = "user"
     TOOL = "tool"
     MACHINE = "machine"
@@ -38,12 +42,16 @@ class Scope(str, Enum):
 
 
 class MemoryType(str, Enum):
+    """High-level memory taxonomy."""
+
     EXPLICIT_SEMANTIC = "explicit_semantic"
     EXPLICIT_EPISODIC = "explicit_episodic"
     IMPLICIT = "implicit"
 
 
 class Verification(str, Enum):
+    """Verification state for a fact."""
+
     SELF_REPORTED = "self-reported"
     CORROBORATED = "corroborated"
     SOTA_REVIEWED = "sota-reviewed"
@@ -51,6 +59,8 @@ class Verification(str, Enum):
 
 
 class SourceType(str, Enum):
+    """Source category from which a fact was derived."""
+
     GROUND_TRUTH_CODE = "ground_truth_code"
     USER_PROMPT = "user_prompt"
     TOOL_OUTPUT = "tool_output"
@@ -60,11 +70,15 @@ class SourceType(str, Enum):
 
 
 class ConsolidationStatus(str, Enum):
+    """Dream consolidation stability for a fact."""
+
     FRAGILE = "fragile"
     STABLE = "stable"
 
 
 class TaskStatus(str, Enum):
+    """Task lifecycle state stored on a fact."""
+
     OPEN = "open"
     BLOCKED = "blocked"
     RESOLVED = "resolved"
@@ -73,12 +87,16 @@ class TaskStatus(str, Enum):
 
 @dataclass(slots=True)
 class AppliesTo:
+    """Context selector describing where a fact applies."""
+
     env: str = "*"
     os: str = "*"
     machine: str = "*"
     branch: str = "*"
 
     def normalized(self) -> "AppliesTo":
+        """Return a copy with empty selectors normalized to wildcards."""
+
         return AppliesTo(
             env=self.env or "*",
             os=self.os or "*",
@@ -87,6 +105,8 @@ class AppliesTo:
         )
 
     def overlaps(self, other: "AppliesTo | None") -> bool:
+        """Return whether two applicability selectors could match the same context."""
+
         left = self.normalized()
         right = (other or AppliesTo()).normalized()
         return all(
@@ -97,6 +117,8 @@ class AppliesTo:
         )
 
     def to_dict(self) -> dict[str, str]:
+        """Serialize the selector to a JSON-friendly dictionary."""
+
         return {
             "env": self.env,
             "os": self.os,
@@ -106,6 +128,8 @@ class AppliesTo:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "AppliesTo | None":
+        """Build a selector from persisted JSON data."""
+
         if not data:
             return None
         if isinstance(data, cls):
@@ -120,12 +144,16 @@ class AppliesTo:
 
 @dataclass(slots=True)
 class CodeAnchor:
+    """Source-code location associated with a fact."""
+
     repo: str
     path: str
     git_sha: str | None = None
     line_range: list[int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the anchor to a JSON-friendly dictionary."""
+
         data: dict[str, Any] = {"repo": self.repo, "path": self.path}
         if self.git_sha:
             data["git_sha"] = self.git_sha
@@ -135,6 +163,8 @@ class CodeAnchor:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "CodeAnchor | None":
+        """Build a code anchor from persisted JSON data."""
+
         if not data:
             return None
         if isinstance(data, cls):
@@ -149,6 +179,8 @@ class CodeAnchor:
 
 @dataclass(slots=True)
 class Provenance:
+    """Provenance metadata for extracted or reviewed facts."""
+
     extracted_by: str = "manual"
     approved_by: str | None = None
     approval_tier: str | None = None
@@ -156,6 +188,8 @@ class Provenance:
     sessions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize provenance metadata to a JSON-friendly dictionary."""
+
         data: dict[str, Any] = {"extracted_by": self.extracted_by, "sessions": list(self.sessions)}
         if self.approved_by:
             data["approved_by"] = self.approved_by
@@ -167,6 +201,8 @@ class Provenance:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "Provenance":
+        """Build provenance metadata from persisted JSON data."""
+
         if not data:
             return cls()
         if isinstance(data, cls):
@@ -182,6 +218,8 @@ class Provenance:
 
 @dataclass(slots=True)
 class Fact:
+    """Persisted memory fact used across search, injection, and governance."""
+
     fact_id: str
     text: str
     scope: Scope
@@ -214,18 +252,26 @@ class Fact:
 
     @property
     def is_active(self) -> bool:
+        """Return whether the fact has not been superseded."""
+
         return self.superseded_by is None
 
     @property
     def is_fragile(self) -> bool:
+        """Return whether Dream still considers the fact fragile."""
+
         return self.consolidation_status == ConsolidationStatus.FRAGILE
 
     def clone(self, **updates: Any) -> "Fact":
+        """Return a copy of the fact with selected fields replaced."""
+
         values = self.to_dict()
         values.update(updates)
         return fact_from_dict(values)
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the fact to the persisted JSON-compatible representation."""
+
         return {
             "fact_id": self.fact_id,
             "text": self.text,
@@ -260,6 +306,8 @@ class Fact:
 
 
 def fact_from_dict(data: dict[str, Any]) -> Fact:
+    """Build a :class:`Fact` from persisted JSON data."""
+
     return Fact(
         fact_id=data["fact_id"],
         text=data["text"],
@@ -299,3 +347,18 @@ def fact_from_dict(data: dict[str, Any]) -> Fact:
         repo=data.get("repo"),
         file_path=Path(data["file_path"]) if data.get("file_path") else None,
     )
+
+
+__all__ = [
+    "Scope",
+    "MemoryType",
+    "Verification",
+    "SourceType",
+    "ConsolidationStatus",
+    "TaskStatus",
+    "AppliesTo",
+    "CodeAnchor",
+    "Provenance",
+    "Fact",
+    "fact_from_dict",
+]

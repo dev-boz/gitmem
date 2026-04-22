@@ -61,3 +61,22 @@ search:
 - `search.embedding.model`: provider-specific model name.
 - `search.embedding.model_version`: cache signature version. Changing provider, model, or model version requires `gitmem rebuild-index --embeddings`.
 - `search.embedding.candidate_limit`: maximum FTS candidate set passed to the semantic reranker in `hybrid` mode.
+
+## Telemetry
+
+```yaml
+telemetry:
+  enabled: false
+  endpoint: https://telemetry.gitmem.dev/v1/events
+  timeout_seconds: 2
+  batch_size: 20
+```
+
+- `telemetry.enabled`: opt in to anonymous product telemetry. Default is `false`.
+- `telemetry.endpoint`: POST endpoint for batched telemetry events. `UMX_TELEMETRY_ENDPOINT` can override it for testing or self-hosted collection.
+- `telemetry.timeout_seconds`: per-upload timeout. Failures are queued locally and retried later.
+- `telemetry.batch_size`: maximum events sent per upload attempt.
+
+Set `UMX_TELEMETRY_DISABLE=1` to honor the local kill switch immediately, even when telemetry is enabled in config.
+
+See [privacy.md](privacy.md) for the exact payload boundaries.

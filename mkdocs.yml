@@ -1,0 +1,63 @@
+site_name: gitmem
+site_description: Git-native shared memory and MCP server for AI coding agents.
+site_url: https://dev-boz.github.io/gitmem/
+repo_url: https://github.com/dev-boz/gitmem
+repo_name: dev-boz/gitmem
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - content.code.copy
+    - search.highlight
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            filters:
+              - "!^_"
+            members_order: source
+            show_root_heading: true
+            show_signature_annotations: true
+            show_source: false
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Quickstart: quickstart.md
+  - Concepts: concepts.md
+  - CLI reference: cli.md
+  - Operations runbook: ops-runbook.md
+  - Governance tutorial: governance-tutorial.md
+  - FAQ: faq.md
+  - API reference:
+      - Overview: api/index.md
+      - umx.config: api/config.md
+      - umx.models: api/models.md
+      - umx.mcp_server: api/mcp-server.md
+  - Reference:
+      - Configuration: config.md
+      - Privacy and telemetry: privacy.md
+      - Threat model: threat-model.md
+      - Upgrade guide: upgrade-0.9-to-1.0.md
+      - CLI spec parity audit: spec-parity.md

@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Callable
 
 import click
@@ -15,8 +16,8 @@ from umx.doctor import run_doctor
 from umx.dream.gates import read_dream_state
 from umx.dream.pipeline import DreamPipeline
 from umx.dream.processing import summarize_processing_log
-from umx.inject import inject_for_tool
-from umx.manifest import manifest_path
+from umx.inject import emit_gap_signal, inject_for_tool
+from umx.manifest import manifest_path, topic_status
 from umx.metrics import compute_metrics, health_flags
 from umx.memory import find_fact_by_id, load_all_facts, remove_fact, replace_fact
 from umx.models import ConsolidationStatus, Scope, SourceType, Verification
@@ -55,10 +56,20 @@ from umx.supersession import walk_history
 from umx.tasks import open_tasks
 from umx.tombstones import forget_fact, forget_topic, load_tombstones
 from umx.status import build_status_payload
+from umx.telemetry import record_cli_invocation
 
 
 def _cfg():
     return load_config(config_path())
+
+
+def _parse_bool_value(value: str) -> bool:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    raise click.ClickException("expected a boolean value: true/false")
 
 
 def _parse_redaction_patterns_value(value: str) -> list[str]:
@@ -82,6 +93,91 @@ def _parse_redaction_patterns_value(value: str) -> list[str]:
 
 
 _SESSION_SWEEP_SUBCOMMANDS = frozenset({"collect", "dream", "sync", "capture"})
+
+
+def _telemetry_command_path(ctx: click.Context) -> str:
+    parts: list[str] = []
+    current: click.Context | None = ctx
+    while current is not None and current.parent is not None:
+        if current.info_name:
+            parts.append(current.info_name)
+        current = current.parent
+    return "/".join(reversed(parts)) or (ctx.info_name or "unknown")
+
+
+def _telemetry_cwd(ctx: click.Context) -> Path | None:
+    cwd = ctx.params.get("cwd")
+    return cwd if isinstance(cwd, Path) else None
+
+
+def _emit_cli_telemetry(
+    ctx: click.Context,
+    *,
+    success: bool,
+    duration_ms: int,
+    error_kind: str | None = None,
+) -> None:
+    if _telemetry_command_path(ctx) == "config/set" and ctx.params.get("key") == "telemetry.enabled":
+        return
+    record_cli_invocation(
+        _telemetry_command_path(ctx),
+        cwd=_telemetry_cwd(ctx),
+        success=success,
+        duration_ms=duration_ms,
+        error_kind=error_kind,
+        config=ctx.meta.get("telemetry_config") or _cfg(),
+    )
+
+
+class TelemetryCommand(click.Command):
+    def invoke(self, ctx: click.Context) -> Any:
+        ctx.meta["telemetry_config"] = _cfg()
+        started = perf_counter()
+        try:
+            result = super().invoke(ctx)
+        except click.exceptions.Exit as exc:
+            _emit_cli_telemetry(
+                ctx,
+                success=exc.exit_code == 0,
+                duration_ms=int((perf_counter() - started) * 1000),
+                error_kind=None if exc.exit_code == 0 else "Exit",
+            )
+            raise
+        except click.Abort:
+            _emit_cli_telemetry(
+                ctx,
+                success=False,
+                duration_ms=int((perf_counter() - started) * 1000),
+                error_kind="Abort",
+            )
+            raise
+        except click.ClickException as exc:
+            _emit_cli_telemetry(
+                ctx,
+                success=False,
+                duration_ms=int((perf_counter() - started) * 1000),
+                error_kind=type(exc).__name__,
+            )
+            raise
+        except Exception as exc:
+            _emit_cli_telemetry(
+                ctx,
+                success=False,
+                duration_ms=int((perf_counter() - started) * 1000),
+                error_kind=type(exc).__name__,
+            )
+            raise
+        _emit_cli_telemetry(
+            ctx,
+            success=True,
+            duration_ms=int((perf_counter() - started) * 1000),
+        )
+        return result
+
+
+class TelemetryGroup(click.Group):
+    command_class = TelemetryCommand
+    group_class = type
 
 
 def _require_direct_fact_write_allowed(operation: str) -> None:
@@ -201,7 +297,7 @@ def _emit_governance_protection_status(mode: str) -> None:
         click.echo(f"governance-protection reason: {plan.deferred_reason}")
 
 
-@click.group()
+@click.group(cls=TelemetryGroup)
 @click.pass_context
 def main(ctx: click.Context) -> None:
     """UMX CLI."""
@@ -236,7 +332,7 @@ def main(ctx: click.Context) -> None:
 def init_cmd(org: str | None, init_mode: str) -> None:
     from umx.git_ops import GitCommitError
 
-    config = default_config()
+    config = _cfg()
     config.org = org
     config.dream.mode = init_mode
     try:
@@ -398,7 +494,7 @@ def inject_cmd(
     "input_file",
     type=click.Path(path_type=Path),
     default=None,
-    help="Transcript or JSONL input file. Defaults to stdin.",
+    help="Transcript or JSONL input file. When omitted, piped stdin wins; otherwise gitmem falls back to cwd/workspace/events.jsonl if present.",
 )
 @click.option(
     "--format",
@@ -437,11 +533,11 @@ def collect_cmd(
         resolved_file = input_file
         stdin_text = ""
         if resolved_file is None:
-            default_file = cwd / "workspace" / "events.jsonl"
-            if default_file.exists():
-                resolved_file = default_file
-            else:
-                stdin_text = click.get_text_stream("stdin").read()
+            stdin_text = click.get_text_stream("stdin").read()
+            if not stdin_text:
+                default_file = cwd / "workspace" / "events.jsonl"
+                if default_file.exists():
+                    resolved_file = default_file
         if resolved_file is not None:
             if not resolved_file.exists():
                 raise click.ClickException(f"Collect input file not found: {resolved_file}")
@@ -643,8 +739,37 @@ def conflicts_cmd(cwd: Path) -> None:
 
 @main.command("gaps")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-def gaps_cmd(cwd: Path) -> None:
-    path = project_memory_dir(cwd) / "meta" / "gaps.jsonl"
+@click.option("--query", default=None)
+@click.option("--resolution-context", default=None)
+@click.option("--proposed-fact", default=None)
+@click.option("--session", "session_id", default=None)
+def gaps_cmd(
+    cwd: Path,
+    query: str | None,
+    resolution_context: str | None,
+    proposed_fact: str | None,
+    session_id: str | None,
+) -> None:
+    repo = project_memory_dir(cwd)
+    emit_values = [query, resolution_context, proposed_fact, session_id]
+    if any(value is not None for value in emit_values):
+        if not all(value is not None for value in emit_values):
+            raise click.ClickException(
+                "gap emission requires --query, --resolution-context, --proposed-fact, and --session"
+            )
+        try:
+            record = emit_gap_signal(
+                repo,
+                query=query,
+                resolution_context=resolution_context,
+                proposed_fact=proposed_fact,
+                session=session_id,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(record, sort_keys=True))
+        return
+    path = repo / "meta" / "gaps.jsonl"
     click.echo(path.read_text() if path.exists() else "", nl=False)
 
 
@@ -743,7 +868,7 @@ def resume_cmd(cwd: Path, include_abandoned: bool) -> None:
 def meta_cmd(cwd: Path, topic: str) -> None:
     path = manifest_path(project_memory_dir(cwd))
     data = json.loads(path.read_text()) if path.exists() else {"topics": {}}
-    click.echo(json.dumps(data.get("topics", {}).get(topic, {}), sort_keys=True))
+    click.echo(json.dumps(topic_status(data, topic), sort_keys=True))
 
 
 @main.command("merge")
@@ -1162,6 +1287,8 @@ def config_set_cmd(key: str, value: str) -> None:
     cfg = _cfg()
     if key == "redaction.patterns":
         cfg.sessions.redaction_patterns = _parse_redaction_patterns_value(value)
+    elif key == "telemetry.enabled":
+        cfg.telemetry.enabled = _parse_bool_value(value)
     else:
         raise click.ClickException(f"unsupported config key: {key}")
     save_config(config_path(), cfg)

@@ -2,7 +2,7 @@
 
 **Target release:** v1.0.0 — GitHub-synced memory as the marquee feature.
 **Baseline:** 0.9.1-alpha, 477 tests, local mode production-quality.
-**Last updated:** 2026-04-20
+**Last updated:** 2026-04-21
 **Plan owner:** `copilot-cli`
 
 ## North star
@@ -634,8 +634,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.4 — Opt-in telemetry
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: —
 - Files: `umx/telemetry.py` (new), `umx/config.py`
 - Outcome: Anonymous opt-in metrics (errors, latency, fact counts, feature usage). Off by default; enabled with `telemetry.enabled=true`.
@@ -644,11 +644,15 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Privacy doc enumerates what is and isn't sent
   - Kill switch honored
 - Notes: Consider whether this is worth building pre-1.0. Skip if the beta cohort is small enough for direct feedback.
+  - Added `umx/telemetry.py`, nested telemetry config, and `config set telemetry.enabled <true|false>` wiring so gitmem can emit anonymous opt-in CLI command metrics while staying dark by default.
+  - The local slice now batches coarse command usage/error/latency and repo-size buckets, honors server kill switches plus env overrides, and fails open on local persistence or transport errors so successful commands stay successful.
+  - Privacy/config/README docs and dedicated telemetry tests are in place; local validation is complete at `python3 -m pytest -q` → 714 passed plus `mkdocs build --strict`.
+  - Current scope is CLI instrumentation; extending the same telemetry model to MCP/hooks can follow if the beta cohort needs broader surface coverage.
 
 ### T5.5 — Docs site
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T1.5
 - Files: `docs/`, `mkdocs.yml` (new)
 - Outcome: mkdocs-material site with: quickstart, concepts, CLI ref, ops runbook, threat model, FAQ, governance tutorial.
@@ -657,11 +661,14 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Published on gh-pages
   - Quickstart runnable end-to-end against a fresh environment
 - Notes:
+  - Added an MkDocs Material site plus GitHub Pages deploy workflow covering quickstart, concepts, CLI reference, ops runbook, FAQ, governance tutorial, config, privacy, threat model, spec parity, and upgrade guidance.
+  - CI now runs `mkdocs build --strict`, `site/` is gitignored for local builds, and `tests/test_docs_site.py` exercises the quickstart flow end-to-end against a fresh `UMX_HOME`.
+  - Keep `[~]` until merge/CI and gh-pages publish per plan rules.
 
 ### T5.6 — Generated API reference
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.5
 - Files: `docs/api/`, `mkdocs.yml`
 - Outcome: API reference generated from docstrings (mkdocstrings or similar). Covers public modules.
@@ -669,6 +676,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Internal `_private` names excluded
   - Build fails on missing docstring for public API
 - Notes:
+  - Added a curated mkdocstrings API reference for the supported public surfaces in `umx.config`, `umx.models`, and `umx.mcp_server` instead of promising documentation for the entire internal package.
+  - Public exports are now documented and guarded by `tests/test_api_docstrings.py`, so missing docstrings fail the docs lane while internal/private names stay out of the generated reference.
+  - Keep `[~]` until merge/CI per plan rules.
 
 ### T5.7 — 0.9 → 1.0 upgrade guide
 
@@ -847,6 +857,9 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-21 [T5.4] copilot-cli: added opt-in anonymous CLI telemetry with fail-open local queue/upload handling, privacy docs, kill-switch support, and revalidated the branch at 714 passing tests plus a strict docs build
+- 2026-04-21 [T5.6] copilot-cli: added a curated mkdocstrings API reference plus a public-docstring test gate so the docs build covers supported config/model/MCP surfaces without publishing internal APIs
+- 2026-04-21 [T5.5] copilot-cli: added the mkdocs-material docs site, CI/pages workflows, and a fresh-environment quickstart regression test for init/collect/dream/search/inject/status
 - 2026-04-20 [T4.3] copilot-cli: added a thin embedding-provider seam with provider-aware cache metadata, blocked mixed-cache lazy refresh on provider/model/version drift, surfaced `umx rebuild-index --embeddings` guidance through search/doctor, and revalidated the branch at 705 passing tests
 - 2026-04-20 [T5.7] copilot-cli: added a concrete `docs/upgrade-0.9-to-1.0.md` runbook covering backup, doctor/migrate sequencing, optional config additions, validation, and rollback, aligned to the current branch-head CLI/config surfaces after the 701-test baseline
 - 2026-04-20 [T4.5] copilot-cli: added bounded parallel prep for `capture --all` on Claude Code, Gemini, and Amp while keeping `write_session` serial and the final batch commit singular, then revalidated the branch at 701 passing tests

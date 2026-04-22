@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import shutil
 import subprocess
@@ -154,6 +155,20 @@ def _run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.Comp
         return subprocess.CompletedProcess(args=["git"], returncode=128, stdout="", stderr="git not found")
 
 
+def git_blob_sha(path: Path) -> str | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    header = f"blob {len(data)}\0".encode("utf-8")
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def git_revert_head(repo_dir: Path) -> bool:
+    result = _run_git(repo_dir, "revert", "--no-edit", "HEAD")
+    return result.returncode == 0
+
+
 def _resolve_commit_signing(config: UMXConfig | None = None) -> tuple[bool, bool]:
     resolved = config
     if resolved is None:
@@ -294,12 +309,20 @@ def git_add_and_commit(
         return GitCommitResult.failed_result(returncode=128, stderr="not a git repository")
 
     if paths is not None:
+        relatives = []
         for p in paths:
             try:
                 rel = p.relative_to(repo_dir)
             except ValueError:
                 rel = p
-            add_result = _run_git(repo_dir, "add", "--force", str(rel))
+            rel_text = str(rel)
+            if rel_text in {"", "."}:
+                continue
+            relatives.append(rel_text)
+        if not relatives:
+            return GitCommitResult.noop_result()
+        for rel in relatives:
+            add_result = _run_git(repo_dir, "add", "--force", "-A", "--", rel)
             if add_result.returncode != 0:
                 return GitCommitResult.failed_result(
                     returncode=add_result.returncode,
@@ -307,6 +330,7 @@ def git_add_and_commit(
                     stderr=add_result.stderr,
                 )
     else:
+        relatives = None
         add_result = _run_git(repo_dir, "add", "-A")
         if add_result.returncode != 0:
             return GitCommitResult.failed_result(
@@ -315,7 +339,10 @@ def git_add_and_commit(
                 stderr=add_result.stderr,
             )
 
-    status = _run_git(repo_dir, "diff", "--cached", "--quiet")
+    status_args = ["diff", "--cached", "--quiet"]
+    if relatives:
+        status_args.extend(["--", *relatives])
+    status = _run_git(repo_dir, *status_args)
     if status.returncode == 0:
         return GitCommitResult.noop_result()
     if status.returncode != 1:
@@ -330,6 +357,8 @@ def git_add_and_commit(
     if sign_commits:
         commit_args.append("-S")
     commit_args.extend(["-m", message])
+    if relatives:
+        commit_args.extend(["--", *relatives])
     result = _run_git(repo_dir, *commit_args)
     if result.returncode != 0:
         context = "git signed commit failed" if require_signed_commits else "git commit failed"

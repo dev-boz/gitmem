@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 from umx.config import UMXConfig, load_config
 from umx.conventions import ConventionSet, apply_conventions_to_fact, normalize_fact_text, parse_conventions
+from umx.dream.anchors import anchor_current_sha, code_anchor_is_stale
 from umx.dream.conflict import facts_conflict, resolve_conflict
 from umx.dream.consolidation import stabilize_facts
 from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
@@ -79,7 +80,7 @@ from umx.memory import (
     save_repository_facts,
     write_memory_md,
 )
-from umx.models import ConsolidationStatus, Fact, Provenance, SourceType, Verification
+from umx.models import CodeAnchor, ConsolidationStatus, Fact, Provenance, SourceType, Verification
 from umx.push_safety import PushSafetyError, assert_push_safe
 from umx.schema import detect_schema_state
 from umx.scope import (
@@ -134,10 +135,16 @@ class DreamPipeline:
         updated: list[Fact] = []
         for fact in facts:
             if fact.source_type == SourceType.GROUND_TRUTH_CODE and fact.code_anchor:
-                if not (self.project_root / fact.code_anchor.path).exists():
+                if code_anchor_is_stale(self.project_root, fact):
                     updated.append(fact.clone(consolidation_status=ConsolidationStatus.FRAGILE))
-                else:
-                    updated.append(fact)
+                    continue
+                current_sha = anchor_current_sha(self.project_root, fact)
+                if not fact.code_anchor.git_sha and current_sha:
+                    anchor = CodeAnchor.from_dict(fact.code_anchor.to_dict()) or fact.code_anchor
+                    anchor.git_sha = current_sha
+                    updated.append(fact.clone(code_anchor=anchor))
+                    continue
+                updated.append(fact)
             else:
                 updated.append(fact)
         return updated

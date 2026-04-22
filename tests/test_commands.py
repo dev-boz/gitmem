@@ -8,6 +8,7 @@ from click.testing import CliRunner
 
 from umx.cli import main
 from umx.config import default_config
+from umx.git_ops import git_add_and_commit
 from umx.memory import add_fact, load_all_facts
 from umx.models import (
     ConsolidationStatus,
@@ -113,8 +114,8 @@ def test_merge_dry_run(project_repo: Path) -> None:
 
 
 def test_merge_apply_persists_resolution(project_dir: Path, project_repo: Path) -> None:
-    add_fact(project_repo, _make_fact("FACT_D3", "postgres runs on 5433 in dev"), auto_commit=False)
-    add_fact(project_repo, _make_fact("FACT_D4", "postgres runs on 5432 in dev"), auto_commit=False)
+    add_fact(project_repo, _make_fact("FACT_D3", "postgres runs on 5433 in dev"))
+    add_fact(project_repo, _make_fact("FACT_D4", "postgres runs on 5432 in dev"))
 
     runner = CliRunner()
     result = runner.invoke(main, ["merge", "--cwd", str(project_dir)])
@@ -228,7 +229,7 @@ def test_promote_to_project_moves_fact_into_project_scope(
         topic="deploy",
         scope=Scope.FOLDER,
     )
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -255,7 +256,7 @@ def test_promote_to_principle_moves_fact_into_principles(
         "prefer additive migrations over destructive rewrites",
         topic="migrations",
     )
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -282,7 +283,7 @@ def test_promote_folder_fact_to_principle_moves_into_principles(
         topic="config",
         scope=Scope.FOLDER,
     )
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -308,7 +309,7 @@ def test_promote_to_user_moves_fact_into_user_scope(
         "release notes live in docs/releases",
         topic="docs",
     )
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -334,7 +335,7 @@ def test_promote_invalid_destination_leaves_source_fact_untouched(
         "feature flags live in settings.toml",
         topic="config",
     )
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -352,7 +353,7 @@ def test_confirm_marks_fact_human_confirmed(
     project_repo: Path,
 ) -> None:
     fact = _make_fact("FACT_CONFIRM", "staging uses blue/green cutovers", topic="deploy")
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
 
     runner = CliRunner()
     result = runner.invoke(main, ["confirm", "--cwd", str(project_dir), "--fact", fact.fact_id])
@@ -370,7 +371,10 @@ def test_forget_fact_creates_tombstone(
     project_repo: Path,
 ) -> None:
     fact = _make_fact("FACT_FORGET", "staging deploys need smoke checks", topic="deploy")
-    add_fact(project_repo, fact, auto_commit=False)
+    add_fact(project_repo, fact)
+    tombstones_path = project_repo / "meta" / "tombstones.jsonl"
+    if tombstones_path.exists():
+        git_add_and_commit(project_repo, paths=[tombstones_path], message="baseline tombstones")
 
     runner = CliRunner()
     result = runner.invoke(main, ["forget", "--cwd", str(project_dir), "--fact", fact.fact_id])

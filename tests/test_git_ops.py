@@ -92,7 +92,7 @@ def test_git_add_and_commit_returns_failed_result_on_commit_error(
             return _completed(*args, returncode=0, stdout=".git\n")
         if args[:2] == ("add", "--force"):
             return _completed(*args, returncode=0)
-        if args == ("diff", "--cached", "--quiet"):
+        if args[:3] == ("diff", "--cached", "--quiet"):
             return _completed(*args, returncode=1)
         if args[0] == "commit":
             return _completed(*args, returncode=128, stderr="gpg failed to sign the data")
@@ -122,7 +122,7 @@ def test_git_add_and_commit_adds_signing_flag_when_enabled(
             return _completed(*args, returncode=0, stdout=".git\n")
         if args[:2] == ("add", "--force"):
             return _completed(*args, returncode=0)
-        if args == ("diff", "--cached", "--quiet"):
+        if args[:3] == ("diff", "--cached", "--quiet"):
             return _completed(*args, returncode=1)
         if args[0] == "commit":
             return _completed(*args, returncode=0, stdout="[main 1234567] signed\n")
@@ -140,6 +140,30 @@ def test_git_add_and_commit_adds_signing_flag_when_enabled(
         signed=True,
     )
     assert any(args[:2] == ("commit", "-S") for args in calls)
+    assert any(args[:4] == ("commit", "-S", "-m", "signed commit") and args[-2:] == ("--", "hello.txt") for args in calls)
+
+
+def test_git_add_and_commit_with_empty_paths_is_noop(repo: Path) -> None:
+    git_init(repo)
+    staged = repo / "staged.txt"
+    staged.write_text("leave staged\n")
+    subprocess.run(["git", "add", "staged.txt"], cwd=repo, check=True, capture_output=True, text=True)
+
+    result = git_add_and_commit(repo, paths=[], message="scoped noop")
+    root_result = git_add_and_commit(repo, paths=[repo], message="root noop")
+    dot_result = git_add_and_commit(repo, paths=[Path(".")], message="dot noop")
+
+    assert result.noop is True
+    assert root_result.noop is True
+    assert dot_result.noop is True
+    cached_diff = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--", "staged.txt"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert cached_diff.stdout.strip() == "staged.txt"
 
 
 def test_git_init_raises_when_initial_commit_fails(

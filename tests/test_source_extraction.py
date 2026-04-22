@@ -13,9 +13,11 @@ from umx.dream.extract import (
     source_files_to_facts,
 )
 from umx.dream.pipeline import DreamPipeline
+from umx.git_ops import git_blob_sha
 from umx.inject import emit_gap_signal
-from umx.memory import load_all_facts
+from umx.memory import add_fact, load_all_facts
 from umx.models import (
+    CodeAnchor,
     ConsolidationStatus,
     Fact,
     MemoryType,
@@ -366,3 +368,72 @@ def test_gather_includes_source_files(
     for sf in source_facts:
         assert sf.code_anchor is not None
         assert sf.code_anchor.path == "lib/config.py"
+        assert sf.code_anchor.git_sha == git_blob_sha(project_dir / "lib" / "config.py")
+
+
+def test_orient_marks_ground_truth_fact_fragile_when_anchor_blob_changes(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    src_dir = project_dir / "lib"
+    src_dir.mkdir()
+    source_path = src_dir / "config.py"
+    source_path.write_text('DATABASE_PORT = 5432\n')
+
+    fact = Fact(
+        fact_id="01TESTFACT0000000000000991",
+        text="database port is 5432",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="manual",
+        source_session="2026-04-21-manual",
+        consolidation_status=ConsolidationStatus.STABLE,
+        provenance=Provenance(extracted_by="test"),
+        code_anchor=CodeAnchor(repo=project_repo.name, path="lib/config.py", git_sha=git_blob_sha(source_path)),
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    source_path.write_text('DATABASE_PORT = 5433\n')
+
+    oriented = DreamPipeline(project_dir).orient()
+    refreshed = next(item for item in oriented if item.fact_id == fact.fact_id)
+    assert refreshed.consolidation_status == ConsolidationStatus.FRAGILE
+    assert refreshed.code_anchor is not None
+    assert refreshed.code_anchor.git_sha == fact.code_anchor.git_sha
+
+
+def test_orient_backfills_missing_anchor_git_sha_for_ground_truth_fact(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    src_dir = project_dir / "lib"
+    src_dir.mkdir()
+    source_path = src_dir / "config.py"
+    source_path.write_text('DATABASE_PORT = 5432\n')
+
+    fact = Fact(
+        fact_id="01TESTFACT0000000000000992",
+        text="database port is 5432",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="manual",
+        source_session="2026-04-21-manual",
+        consolidation_status=ConsolidationStatus.STABLE,
+        provenance=Provenance(extracted_by="test"),
+        code_anchor=CodeAnchor(repo=project_repo.name, path="lib/config.py"),
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    oriented = DreamPipeline(project_dir).orient()
+    refreshed = next(item for item in oriented if item.fact_id == fact.fact_id)
+    assert refreshed.consolidation_status == ConsolidationStatus.STABLE
+    assert refreshed.code_anchor is not None
+    assert refreshed.code_anchor.git_sha == git_blob_sha(source_path)
