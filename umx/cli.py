@@ -1334,6 +1334,39 @@ def eval_inject_cmd(
         raise click.exceptions.Exit(1)
 
 
+@eval_group.command("long-memory")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "long_memory",
+)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=1.0)
+@click.option("--search-limit", type=int, default=5)
+def eval_long_memory_cmd(
+    cases_path: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    search_limit: int,
+) -> None:
+    from umx.long_memory_eval import run_long_memory_eval
+
+    try:
+        payload = run_long_memory_eval(
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+            search_limit=search_limit,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
 @main.group("config")
 def config_group() -> None:
     """Config operations."""

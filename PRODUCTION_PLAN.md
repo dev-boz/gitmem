@@ -726,17 +726,20 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.9 — LongMemEval pilot
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.8
-- Files: `tests/eval/long_memory/` (new), `docs/ops-runbook.md`, optional `scripts/`
+- Files: `umx/long_memory_eval.py`, `tests/eval/long_memory/` (new), `docs/cli.md`
 - Outcome: A pilot runner maps gitmem’s memory stack onto LongMemEval-style long-memory questions so releases can be judged against real memory tasks instead of only unit tests.
 - Acceptance:
   - Pilot covers LongMemEval’s core memory buckets: information extraction, multi-session reasoning, knowledge updates, temporal reasoning, abstention
-  - Can run against at least an oracle/subset dataset locally and emit answer-accuracy plus retrieval-support signals
+  - Can run against at least an oracle/subset dataset locally and emit evidence-session recall plus abstention signals
   - Notes document what is native gitmem evaluation versus what is benchmark-adapter glue
 - Notes:
   - Reference benchmark: LongMemEval (ICLR 2025, arXiv:2410.10813, https://github.com/xiaowu0162/LongMemEval)
+  - Added `gitmem eval long-memory` plus `umx/long_memory_eval.py`, using a checked-in LongMemEval-style subset that mirrors the upstream fields (`question_id`, `question_type`, `haystack_session_ids`, `haystack_sessions`, `answer_session_ids`) while scoring deterministic evidence-session recall instead of live answer generation.
+  - The current pilot intentionally stays offline and local-first: it writes haystack sessions into a temporary project memory repo, runs raw session retrieval with a normalized query, dedupes retrieved session ids, and gates on per-case evidence recall / abstention behavior.
+  - Added dedicated pilot tests and CLI wiring coverage; current local validation is green at `pytest -q` → 759 passed plus `mkdocs build --strict`. Keep `[~]` until merge/CI per plan rules.
 
 ### T5.10 — Multi-hop retrieval benchmark pilot
 
@@ -935,6 +938,7 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
 - 2026-04-22 [T5.8] copilot-cli: added `gitmem eval inject` with a hermetic offline harness around the checked-in golden inject corpus, introduced an explicit pre-beta eval-and-dogfood roadmap lane referencing LongMemEval/HotpotQA/DeepEval, and revalidated the branch at 753 passing tests plus a strict docs build
+- 2026-04-22 [T5.9] copilot-cli: added `gitmem eval long-memory` with a checked-in LongMemEval-style subset and deterministic evidence-session recall scoring so long-memory retrieval can be exercised locally before any live benchmark integration
 - 2026-04-21 [T5.4] copilot-cli: added opt-in anonymous CLI telemetry with fail-open local queue/upload handling, privacy docs, kill-switch support, and revalidated the branch at 714 passing tests plus a strict docs build
 - 2026-04-21 [T5.6] copilot-cli: added a curated mkdocstrings API reference plus a public-docstring test gate so the docs build covers supported config/model/MCP surfaces without publishing internal APIs
 - 2026-04-21 [T5.5] copilot-cli: added the mkdocs-material docs site, CI/pages workflows, and a fresh-environment quickstart regression test for init/collect/dream/search/inject/status

@@ -65,6 +65,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem init-actions` | Write workflow templates into a target directory | `--dir` |
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate` |
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
+| `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
 
 ## Maintenance and recovery
 

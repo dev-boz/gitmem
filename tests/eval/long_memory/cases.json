@@ -1,0 +1,208 @@
+[
+  {
+    "question_id": "longmem-single-session-user-001",
+    "question_type": "single-session-user",
+    "question": "Which tea does Sam prefer?",
+    "answer_session_ids": [
+      "2026-01-10-tea-pref"
+    ],
+    "haystack_session_ids": [
+      "2026-01-10-tea-pref",
+      "2026-01-11-printer-paper"
+    ],
+    "haystack_dates": [
+      "2026-01-10T09:00:00Z",
+      "2026-01-11T11:00:00Z"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I prefer oolong tea in the morning.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "Noted, your tea preference is oolong."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Please remind me to buy printer paper."
+        },
+        {
+          "role": "assistant",
+          "content": "Okay, I will remember the printer paper reminder."
+        }
+      ]
+    ]
+  },
+  {
+    "question_id": "longmem-multi-session-001",
+    "question_type": "multi-session",
+    "question": "Which city is linked to Nina for the Python service?",
+    "answer_session_ids": [
+      "2026-02-01-python-owner",
+      "2026-02-07-berlin-move"
+    ],
+    "haystack_session_ids": [
+      "2026-02-01-python-owner",
+      "2026-02-07-berlin-move",
+      "2026-02-09-team-lunch"
+    ],
+    "haystack_dates": [
+      "2026-02-01T10:00:00Z",
+      "2026-02-07T10:00:00Z",
+      "2026-02-09T12:00:00Z"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Nina maintains the Python service.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "Understood, Nina owns the Python service."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Nina relocated to Berlin last quarter.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "I will remember that Nina moved to Berlin."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "The team lunch is on Friday."
+        },
+        {
+          "role": "assistant",
+          "content": "Friday team lunch noted."
+        }
+      ]
+    ]
+  },
+  {
+    "question_id": "longmem-knowledge-update-001",
+    "question_type": "knowledge-update",
+    "question": "Where does Sam work now?",
+    "answer_session_ids": [
+      "2026-03-12-lisbon-update"
+    ],
+    "haystack_session_ids": [
+      "2026-03-01-madrid-office",
+      "2026-03-12-lisbon-update"
+    ],
+    "haystack_dates": [
+      "2026-03-01T09:00:00Z",
+      "2026-03-12T09:00:00Z"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I work from Madrid during the winter."
+        },
+        {
+          "role": "assistant",
+          "content": "Okay, I remember your Madrid office."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I work from Lisbon now instead of Madrid.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "Understood, your current office is Lisbon."
+        }
+      ]
+    ]
+  },
+  {
+    "question_id": "longmem-temporal-reasoning-001",
+    "question_type": "temporal-reasoning",
+    "question": "Which month did Sam switch to the analytics team?",
+    "answer_session_ids": [
+      "2026-04-03-analytics-switch"
+    ],
+    "haystack_session_ids": [
+      "2026-04-03-analytics-switch",
+      "2026-04-15-running-club"
+    ],
+    "haystack_dates": [
+      "2026-04-03T08:00:00Z",
+      "2026-04-15T18:00:00Z"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "In March 2025 I switched to the analytics team.",
+          "has_answer": true
+        },
+        {
+          "role": "assistant",
+          "content": "Got it, the analytics team switch happened in March 2025."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "I joined a local running club."
+        },
+        {
+          "role": "assistant",
+          "content": "Nice, I will remember the running club."
+        }
+      ]
+    ]
+  },
+  {
+    "question_id": "longmem-abstention-001",
+    "question_type": "abstention",
+    "question": "What is the passport number?",
+    "answer_session_ids": [],
+    "haystack_session_ids": [
+      "2026-05-01-weekend-plans",
+      "2026-05-02-grocery-list"
+    ],
+    "haystack_dates": [
+      "2026-05-01T19:00:00Z",
+      "2026-05-02T08:30:00Z"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "I am planning a hiking trip this weekend."
+        },
+        {
+          "role": "assistant",
+          "content": "Sounds good, weekend hiking trip noted."
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Please remember to buy oranges and basil."
+        },
+        {
+          "role": "assistant",
+          "content": "I will remember oranges and basil."
+        }
+      ]
+    ]
+  }
+]

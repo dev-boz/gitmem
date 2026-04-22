@@ -663,6 +663,78 @@ def test_cli_eval_inject_forwards_slack_override(monkeypatch, tmp_path: Path) ->
     }
 
 
+def test_cli_eval_long_memory_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.long_memory_eval.run_long_memory_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 5,
+            "passed": 4,
+            "pass_rate": 0.8,
+            "min_pass_rate": 1.0,
+            "average_recall": 0.8,
+            "search_limit": 5,
+            "type_summary": {},
+            "failures": [{"case": "longmem-fail"}],
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(main, ["eval", "long-memory", "--cases", str(tmp_path)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_long_memory_forwards_search_limit(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(cases_path, config, *, case_id=None, min_pass_rate=1.0, search_limit=5):
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_pass_rate"] = min_pass_rate
+        captured["search_limit"] = search_limit
+        return {
+            "status": "ok",
+            "total": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "average_recall": 1.0,
+            "search_limit": search_limit,
+            "type_summary": {},
+            "failures": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.long_memory_eval.run_long_memory_eval", _run)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "long-memory",
+            "--cases",
+            str(tmp_path),
+            "--case",
+            "longmem-single-session-user-001",
+            "--min-pass-rate",
+            "0.9",
+            "--search-limit",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "cases_path": tmp_path,
+        "case_id": "longmem-single-session-user-001",
+        "min_pass_rate": 0.9,
+        "search_limit": 7,
+    }
+
+
 def test_cli_dream_rejects_blank_force_reason(umx_home) -> None:
     runner = CliRunner()
     result = runner.invoke(
