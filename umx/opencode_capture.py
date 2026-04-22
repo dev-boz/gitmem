@@ -29,7 +29,7 @@ class OpenCodeSession:
     @property
     def umx_session_id(self) -> str:
         date = (self.started or "1970-01-01")[:10]
-        return f"{date}-opencode-{self.session_id[:8]}"
+        return f"{date}-opencode-{self.session_id}"
 
 
 def _opencode_db_path(source_root: Path | None = None) -> Path:

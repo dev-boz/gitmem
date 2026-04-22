@@ -287,10 +287,30 @@ def git_init(repo_dir: Path) -> None:
     if result.returncode != 0:
         logger.warning("git init failed: %s", result.stderr.strip())
         return
-    gitignore = repo_dir / ".gitignore"
-    gitignore.write_text("\n".join(_GITIGNORE_ENTRIES) + "\n")
+    gitignore = ensure_umx_gitignore(repo_dir)
     commit_result = git_add_and_commit(repo_dir, paths=[gitignore], message="umx: initial commit")
     raise_for_git_commit_failure(commit_result, context="git init commit failed")
+
+
+def ensure_umx_gitignore(repo_dir: Path) -> Path:
+    gitignore = repo_dir / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text("\n".join(_GITIGNORE_ENTRIES) + "\n")
+    return gitignore
+
+
+def git_is_fresh_bootstrap_repo(repo_dir: Path) -> bool:
+    """Return True when ``repo_dir`` is a newly bootstrapped local memory repo."""
+    if not is_git_repo(repo_dir):
+        return False
+    count_result = _run_git(repo_dir, "rev-list", "--count", "HEAD")
+    if count_result.returncode != 0 or count_result.stdout.strip() != "1":
+        return False
+    tracked_result = _run_git(repo_dir, "ls-tree", "-r", "--name-only", "HEAD")
+    if tracked_result.returncode != 0:
+        return False
+    tracked = {line.strip() for line in tracked_result.stdout.splitlines() if line.strip()}
+    return tracked == {".gitignore"}
 
 
 def git_add_and_commit(
@@ -433,6 +453,28 @@ def git_fetch(repo_dir: Path) -> bool:
     """Fetch from remote."""
     result = _run_git(repo_dir, "fetch", "--prune", "origin")
     return result.returncode == 0
+
+
+def git_clone(url: str, repo_dir: Path, *, replace: bool = False) -> subprocess.CompletedProcess[str]:
+    """Clone ``url`` into ``repo_dir``."""
+    if replace and repo_dir.exists():
+        shutil.rmtree(repo_dir)
+    repo_dir.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        return subprocess.run(
+            ["git", "clone", url, str(repo_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        logger.warning("git is not installed; skipping git clone")
+        return subprocess.CompletedProcess(
+            args=["git", "clone", url, str(repo_dir)],
+            returncode=128,
+            stdout="",
+            stderr="git not found",
+        )
 
 
 def git_pull_rebase(repo_dir: Path, *, config: UMXConfig | None = None) -> bool:

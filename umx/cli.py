@@ -39,6 +39,7 @@ from umx.search_semantic import embedding_rebuild_message, embeddings_available
 from umx.scope import (
     config_path,
     discover_project_slug,
+    ensure_repo_structure,
     find_project_root,
     get_umx_home,
     init_local_umx,
@@ -215,14 +216,39 @@ def _bootstrap_remote_repo(
     project_root: Path | None = None,
     config=None,
 ) -> None:
-    from umx.git_ops import GitSignedHistoryError, assert_signed_commit_range, git_push
+    from umx.git_ops import (
+        GitSignedHistoryError,
+        assert_signed_commit_range,
+        ensure_umx_gitignore,
+        git_clone,
+        git_fetch,
+        git_is_fresh_bootstrap_repo,
+        git_push,
+        git_ref_exists,
+        git_remote_url,
+    )
 
-    _commit_repo(repo, message, allow_governed=True)
+    adopted_remote = False
+    if git_is_fresh_bootstrap_repo(repo) and git_fetch(repo) and git_ref_exists(repo, "refs/remotes/origin/main"):
+        remote = git_remote_url(repo)
+        if remote:
+            clone_result = git_clone(remote, repo, replace=True)
+            if clone_result.returncode != 0:
+                detail = clone_result.stderr.strip() or clone_result.stdout.strip() or "git clone failed"
+                raise click.ClickException(f"git clone failed: {detail}")
+            ensure_repo_structure(repo)
+            ensure_umx_gitignore(repo)
+            adopted_remote = True
+
+    committed = _commit_repo(repo, message, allow_governed=True)
+    if adopted_remote and not committed:
+        return
+    base_ref = "origin/main" if adopted_remote else None
     try:
         assert_push_safe(
             repo,
             project_root=project_root,
-            base_ref=None,
+            base_ref=base_ref,
             branch="main",
             config=config or _cfg(),
             include_bridge=project_root is not None,
@@ -232,7 +258,7 @@ def _bootstrap_remote_repo(
     try:
         assert_signed_commit_range(
             repo,
-            base_ref=None,
+            base_ref=base_ref,
             head_ref="HEAD",
             config=config or _cfg(),
             operation="remote bootstrap",

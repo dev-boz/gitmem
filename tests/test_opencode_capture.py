@@ -319,3 +319,49 @@ class TestCapture:
         assert meta["tool"] == "opencode"
         assert meta["opencode_session_id"] == session.session_id
         assert meta["opencode_slug"] == "happy-planet"
+
+    def test_capture_uses_collision_resistant_umx_session_ids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from umx.config import default_config, save_config
+        from umx.scope import config_path
+        from umx.scope import init_local_umx, init_project_memory
+        from umx.scope import project_memory_dir
+        from umx.sessions import session_path
+
+        home = tmp_path / "umxhome"
+        monkeypatch.setenv("UMX_HOME", str(home))
+        init_local_umx()
+        save_config(config_path(), default_config())
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".git").mkdir()
+        init_project_memory(project)
+
+        first = OpenCodeSession(
+            session_id="ses_28fb6a341ffeaupTJ2rub5rLaB",
+            slug="happy-planet",
+            directory=str(project),
+            title="Session A",
+            version="1.2.27",
+            time_created=1712664000000,
+            events=[{"role": "user", "content": "First"}],
+        )
+        second = OpenCodeSession(
+            session_id="ses_28fb6a341ffeZZZZZZZZZZZZZZ",
+            slug="happy-planet",
+            directory=str(project),
+            title="Session B",
+            version="1.2.27",
+            time_created=1712664000000,
+            events=[{"role": "user", "content": "Second"}],
+        )
+
+        first_result = capture_opencode_session(project, first)
+        second_result = capture_opencode_session(project, second)
+
+        assert first_result["umx_session_id"] != second_result["umx_session_id"]
+        repo = project_memory_dir(project)
+        assert session_path(repo, first_result["umx_session_id"]).exists()
+        assert session_path(repo, second_result["umx_session_id"]).exists()

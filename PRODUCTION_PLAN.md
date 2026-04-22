@@ -460,8 +460,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T3.11 — Cross-org support + credential rotation path
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T3.1, T3.6
 - Files: `umx/config.py`, `umx/github_ops.py`, `docs/ops-runbook.md`
 - Outcome: Memory repos can live in a different org from the reviewer's credentials; rotation procedure documented.
@@ -470,6 +470,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Rotation doc walks through revoking a PAT and swapping without data loss
   - Test: swap remote mid-flight doesn't lose in-flight PRs
 - Notes:
+  - Live-dogfooded the shipped cross-org flow against `dev-boz-gitmem2` in an isolated `UMX_HOME`, including `gitmem init --org ... --mode hybrid`, `init-project`, `setup-remote`, OpenCode capture, sync, health, search, inject, export, and a fresh-home reattach pass.
+  - Fresh local homes now reuse existing remote `umx-user` and project memory repos instead of failing with a non-fast-forward bootstrap push; the operator-facing attach pattern is documented in `docs/ops-runbook.md`.
+  - Remaining scope is the explicit credential-rotation procedure and the acceptance test that proves swapping credentials mid-flight preserves any open governance PR context.
 
 ---
 
@@ -621,8 +624,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.3 — Multi-machine sync test matrix
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T3.11
 - Files: `tests/test_multi_machine.py` (new)
 - Outcome: Matrix: 2 machines × {local, hybrid, remote} × {user, project} scopes — verify consistent state after sync.
@@ -631,6 +634,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Conflict scenarios documented (branch divergence, parallel dreams)
   - Resolution steps in runbook
 - Notes:
+  - Added bootstrap-reattach regression coverage in `tests/test_cli.py` for `init`, `init-project`, and `setup-remote` when a fresh local memory repo encounters an already-populated remote repo.
+  - Live rebootstrap against `dev-boz-gitmem2/gitmem` now succeeds from a brand-new `UMX_HOME`, restoring the expected 21 synced sessions before a follow-up `gitmem sync`.
+  - Remaining scope is the full 2-machine matrix in CI plus documented divergence/conflict handling for parallel dreams and other concurrent writes.
 
 ### T5.4 — Opt-in telemetry
 

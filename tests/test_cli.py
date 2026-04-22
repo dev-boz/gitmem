@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 import subprocess
 from unittest.mock import Mock, patch
 
@@ -10,9 +11,58 @@ from tests.secret_literals import AWS_ACCESS_KEY_ID
 from umx.config import default_config, load_config, save_config
 from umx.cli import main
 from umx.github_ops import GitHubError
-from umx.scope import config_path, project_memory_dir
+from umx.scope import config_path, init_local_umx, project_memory_dir
 from umx.sessions import write_session
 from umx.telemetry import telemetry_queue_path
+
+
+def _seed_bare_remote(
+    tmp_path: Path,
+    name: str,
+    relative_path: str,
+    content: str,
+    *,
+    message: str,
+) -> Path:
+    remote = tmp_path / f"{name}.git"
+    worktree = tmp_path / f"{name}-seed"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+    subprocess.run(["git", "init", "-b", "main", str(worktree)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "config", "user.name", "Test User"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "config", "user.email", "test@example.com"],
+        capture_output=True,
+        check=True,
+    )
+    target = worktree / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    subprocess.run(["git", "-C", str(worktree), "add", "-A"], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(worktree), "commit", "-m", message],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "remote", "add", "origin", str(remote)],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(worktree), "push", "-u", "origin", "main"],
+        capture_output=True,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "--git-dir", str(remote), "symbolic-ref", "HEAD", "refs/heads/main"],
+        capture_output=True,
+        check=True,
+    )
+    return remote
 
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
@@ -480,6 +530,71 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
     assert ".github/workflows/l2-review.yml" in tree.stdout
 
 
+def test_cli_init_hybrid_attaches_existing_user_remote_repo(umx_home, tmp_path, monkeypatch) -> None:
+    remote = _seed_bare_remote(
+        tmp_path,
+        "existing-user-memory",
+        "facts/topics/seed.md",
+        "# seed\n\n## Facts\n- existing user remote memory\n",
+        message="seed remote user memory",
+    )
+    fresh_home = tmp_path / "fresh-home"
+    monkeypatch.setenv("UMX_HOME", str(fresh_home))
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli.assert_push_safe"), patch("umx.git_ops.assert_signed_commit_range"):
+        result = runner.invoke(main, ["init", "--org", "memory-org", "--mode", "hybrid"])
+
+    assert result.exit_code == 0, result.output
+    fresh_user_repo = fresh_home / "user"
+    assert (fresh_user_repo / "facts" / "topics" / "seed.md").exists()
+    remote_url = subprocess.run(
+        ["git", "-C", str(fresh_user_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert remote_url.stdout.strip() == str(remote)
+
+
+def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx_home, tmp_path, monkeypatch) -> None:
+    remote = _seed_bare_remote(
+        tmp_path,
+        "existing-project-memory",
+        "facts/topics/seed.md",
+        "# seed\n\n## Facts\n- existing project remote memory\n",
+        message="seed remote project memory",
+    )
+    fresh_home = tmp_path / "fresh-home"
+    monkeypatch.setenv("UMX_HOME", str(fresh_home))
+    init_local_umx()
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "hybrid"
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli.assert_push_safe"), patch("umx.git_ops.assert_signed_commit_range"):
+        result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "project"])
+
+    assert result.exit_code == 0, result.output
+    attached_repo = fresh_home / "projects" / "project"
+    assert (attached_repo / "facts" / "topics" / "seed.md").exists()
+    remote_url = subprocess.run(
+        ["git", "-C", str(attached_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert remote_url.stdout.strip() == str(remote)
+
+
 def test_cli_dream_rejects_blank_force_reason(umx_home) -> None:
     runner = CliRunner()
     result = runner.invoke(
@@ -654,6 +769,42 @@ def test_cli_setup_remote_remote_reports_deferred_governance_protection(
     assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
+
+
+def test_cli_setup_remote_attaches_existing_remote_repo_for_fresh_local_project_repo(
+    project_dir,
+    project_repo,
+    tmp_path,
+) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "hybrid"
+    save_config(config_path(), cfg)
+
+    remote = _seed_bare_remote(
+        tmp_path,
+        "setup-remote-existing-project",
+        "facts/topics/seed.md",
+        "# seed\n\n## Facts\n- existing remote setup memory\n",
+        message="seed setup remote project memory",
+    )
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli.assert_push_safe"), patch("umx.git_ops.assert_signed_commit_range"):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "hybrid"])
+
+    assert result.exit_code == 0, result.output
+    assert (project_repo / "facts" / "topics" / "seed.md").exists()
+    remote_url = subprocess.run(
+        ["git", "-C", str(project_repo), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert remote_url.stdout.strip() == str(remote)
 
 
 def test_cli_setup_remote_rejects_unsigned_bootstrap_history(project_dir, project_repo, tmp_path) -> None:

@@ -72,6 +72,20 @@ Review the archive cadence in [config.md](config.md).
 
 - Review the current trust boundaries before wider rollout: [threat-model.md](threat-model.md)
 
+## If you need a fresh machine or isolated test org
+
+Use a dedicated `UMX_HOME` when you want to attach the same project to a separate machine, sandbox, or GitHub org without touching your primary local state:
+
+```bash
+export UMX_HOME=/path/to/isolated-umx-home
+gitmem init --org <org> --mode hybrid
+gitmem init-project --cwd /path/to/project --yes
+```
+
+- A fresh home now reuses existing remote `umx-user` and project memory repos instead of failing on a non-fast-forward bootstrap push.
+- Keep the alternate `UMX_HOME` isolated when dogfooding a different org or credential set.
+- Use `gitmem sync --cwd /path/to/project` after attachment to confirm the remote is reachable from the new machine.
+
 ## Backups and recovery
 
 Before migrations or risky repairs:
