@@ -451,6 +451,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#if-you-need-a-fresh-machine-or-isolated-test-org" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If you need a fresh machine or isolated test org
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#backups-and-recovery" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -990,6 +1001,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#if-you-need-a-fresh-machine-or-isolated-test-org" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        If you need a fresh machine or isolated test org
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#backups-and-recovery" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1085,6 +1107,17 @@ gitmem<span class="w"> </span>forget<span class="w"> </span>--cwd<span class="w"
 </code></pre></div>
 <ul>
 <li>Review the current trust boundaries before wider rollout: <a href="../threat-model/">threat-model.md</a></li>
+</ul>
+<h2 id="if-you-need-a-fresh-machine-or-isolated-test-org">If you need a fresh machine or isolated test org<a class="headerlink" href="#if-you-need-a-fresh-machine-or-isolated-test-org" title="Permanent link">&para;</a></h2>
+<p>Use a dedicated <code>UMX_HOME</code> when you want to attach the same project to a separate machine, sandbox, or GitHub org without touching your primary local state:</p>
+<div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">UMX_HOME</span><span class="o">=</span>/path/to/isolated-umx-home
+gitmem<span class="w"> </span>init<span class="w"> </span>--org<span class="w"> </span>&lt;org&gt;<span class="w"> </span>--mode<span class="w"> </span>hybrid
+gitmem<span class="w"> </span>init-project<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--yes
+</code></pre></div>
+<ul>
+<li>A fresh home now reuses existing remote <code>umx-user</code> and project memory repos instead of failing on a non-fast-forward bootstrap push.</li>
+<li>Keep the alternate <code>UMX_HOME</code> isolated when dogfooding a different org or credential set.</li>
+<li>Use <code>gitmem sync --cwd /path/to/project</code> after attachment to confirm the remote is reachable from the new machine.</li>
 </ul>
 <h2 id="backups-and-recovery">Backups and recovery<a class="headerlink" href="#backups-and-recovery" title="Permanent link">&para;</a></h2>
 <p>Before migrations or risky repairs:</p>
