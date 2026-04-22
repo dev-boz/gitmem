@@ -86,6 +86,27 @@ gitmem init-project --cwd /path/to/project --yes
 - Keep the alternate `UMX_HOME` isolated when dogfooding a different org or credential set.
 - Use `gitmem sync --cwd /path/to/project` after attachment to confirm the remote is reachable from the new machine.
 
+## If you need to rotate GitHub credentials
+
+1. Confirm the current account still sees the expected org:
+
+   ```bash
+   gh auth status
+   gitmem health --cwd /path/to/project --governance --format human
+   ```
+
+2. Re-authenticate `gh` with the replacement credential that still has access to the same memory-repo org.
+
+3. Re-run a managed sync:
+
+   ```bash
+   gitmem sync --cwd /path/to/project
+   ```
+
+4. If you need to test or stage the rotation first, use an isolated `UMX_HOME` and reattach with `gitmem init --org ... --mode hybrid` plus `gitmem init-project --cwd ... --yes`.
+
+The memory state stays in the remote `umx-user` and project repos, so a fresh `UMX_HOME` can reattach after the credential swap as long as the new credential still has access to the target org.
+
 ## Backups and recovery
 
 Before migrations or risky repairs:

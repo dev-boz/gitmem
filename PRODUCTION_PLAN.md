@@ -471,8 +471,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Test: swap remote mid-flight doesn't lose in-flight PRs
 - Notes:
   - Live-dogfooded the shipped cross-org flow against `dev-boz-gitmem2` in an isolated `UMX_HOME`, including `gitmem init --org ... --mode hybrid`, `init-project`, `setup-remote`, OpenCode capture, sync, health, search, inject, export, and a fresh-home reattach pass.
-  - Fresh local homes now reuse existing remote `umx-user` and project memory repos instead of failing with a non-fast-forward bootstrap push; the operator-facing attach pattern is documented in `docs/ops-runbook.md`.
-  - Remaining scope is the explicit credential-rotation procedure and the acceptance test that proves swapping credentials mid-flight preserves any open governance PR context.
+  - Fresh local homes now reuse existing remote `umx-user` and project memory repos instead of failing with a non-fast-forward bootstrap push; `docs/ops-runbook.md` now documents both the isolated-home attach flow and the supported GitHub credential-rotation checklist.
+  - Remaining scope is the acceptance test that proves swapping credentials mid-flight preserves any open governance PR context.
 
 ---
 
