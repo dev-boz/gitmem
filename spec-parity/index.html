@@ -1039,10 +1039,17 @@
 </tr>
 <tr>
 <td><code>forget</code></td>
-<td><code>--cwd</code>, <code>--fact</code>, <code>--topic</code></td>
-<td><code>umx/cli.py:517-536</code></td>
+<td><code>--cwd</code>, <code>--fact</code>, <code>--topic</code>, <code>--governed</code></td>
+<td><code>umx/cli.py:802-840</code></td>
 <td>Match</td>
-<td>Existing dual-target surface retained.</td>
+<td>Governing a forget now routes fact or topic tombstones through proposal PR branches instead of direct writes.</td>
+</tr>
+<tr>
+<td><code>rollback</code></td>
+<td><code>--cwd</code>, <code>--pr</code></td>
+<td><code>umx/cli.py:843-852</code></td>
+<td>Documented</td>
+<td>Governed reverse-PR maintenance surface for restoring facts removed by a prior tombstone PR.</td>
 </tr>
 <tr>
 <td><code>promote</code></td>
@@ -1207,10 +1214,10 @@
 </tr>
 <tr>
 <td><code>eval</code></td>
-<td><code>l2-review(--cases,--case,--min-pass-rate)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code></td>
-<td><code>umx/cli.py:1273-1363</code></td>
+<td><code>l2-review(--cases,--case,--min-pass-rate)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code></td>
+<td><code>umx/cli.py:1273-1400</code></td>
 <td>Documented</td>
-<td>On-demand eval harnesses for governance review, inject/retrieval ranking drift, and LongMemEval-style evidence retrieval.</td>
+<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval.</td>
 </tr>
 <tr>
 <td><code>hooks claude-code</code></td>
