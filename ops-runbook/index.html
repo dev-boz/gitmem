@@ -1186,6 +1186,10 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 <li><code>long-memory</code> and <code>retrieval</code> are offline benchmark adapters built from LongMemEval-style and HotpotQA-style subsets.</li>
 <li>Each command exits nonzero when its pass-rate gate fails, so the same commands work in local smoke checks, CI, and release checklists.</li>
 </ul>
+<p><code>gitmem eval l2-review</code> defaults to the Anthropic API and requires <code>ANTHROPIC_API_KEY</code>. To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass <code>--provider claude-cli</code>:</p>
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>l2-review<span class="w"> </span>--provider<span class="w"> </span>claude-cli<span class="w"> </span>&gt;<span class="w"> </span>artifacts/l2-review.json
+</code></pre></div>
+<p>The <code>claude-cli</code> path shells out to <code>claude --print --output-format json</code> per case, so wall-clock time and per-call cost mirror Claude Code itself; reserve it for release-gate runs rather than tight inner loops.</p>
 <p>If you want a minimal CI/pytest-style gate, run the normal test suite first and then the eval commands as plain subprocess steps:</p>
 <div class="highlight"><pre><span></span><code>pytest<span class="w"> </span>-q
 gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>inject<span class="w"> </span>&gt;<span class="w"> </span>artifacts/inject.json

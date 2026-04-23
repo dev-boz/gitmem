@@ -1214,10 +1214,10 @@
 </tr>
 <tr>
 <td><code>eval</code></td>
-<td><code>l2-review(--cases,--case,--min-pass-rate)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code></td>
+<td><code>l2-review(--cases,--case,--min-pass-rate,--provider)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code></td>
 <td><code>umx/cli.py:1273-1400</code></td>
 <td>Documented</td>
-<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval.</td>
+<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. <code>l2-review --provider</code> selects between the Anthropic API and the Claude Code CLI (OAuth) reviewer.</td>
 </tr>
 <tr>
 <td><code>hooks claude-code</code></td>

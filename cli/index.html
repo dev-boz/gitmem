@@ -421,6 +421,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Governance, sync, and cross-project work">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l2-reviewer-providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L2 reviewer providers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -987,6 +1004,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Governance, sync, and cross-project work">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l2-reviewer-providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L2 reviewer providers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -1275,7 +1309,7 @@
 <tr>
 <td><code>gitmem eval l2-review</code></td>
 <td>Run the L2 review eval harness</td>
-<td><code>--cases</code>, <code>--case</code>, <code>--min-pass-rate</code></td>
+<td><code>--cases</code>, <code>--case</code>, <code>--min-pass-rate</code>, <code>--provider</code></td>
 </tr>
 <tr>
 <td><code>gitmem eval inject</code></td>
@@ -1296,6 +1330,13 @@
 </table>
 <p><code>gitmem eval l2-review</code> and <code>gitmem eval inject</code> are native gitmem evals over checked-in corpora. <code>gitmem eval long-memory</code> and <code>gitmem eval retrieval</code> are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.</p>
 <p>All <code>gitmem eval ...</code> commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.</p>
+<h3 id="l2-reviewer-providers">L2 reviewer providers<a class="headerlink" href="#l2-reviewer-providers" title="Permanent link">&para;</a></h3>
+<p><code>gitmem eval l2-review</code> chooses a reviewer via <code>--provider</code>:</p>
+<ul>
+<li><code>--provider anthropic</code> (default) — direct Anthropic API. Requires <code>ANTHROPIC_API_KEY</code> in the environment.</li>
+<li><code>--provider claude-cli</code> — shells out to the locally installed Claude Code CLI in headless <code>-p</code> mode (<code>claude --print --output-format json</code>). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with <code>UMX_CLAUDE_CLI_BIN</code>, and the per-call timeout with <code>UMX_CLAUDE_CLI_TIMEOUT</code> (seconds, default 180).</li>
+</ul>
+<p>Both providers emit the same JSON payload shape and the same <code>prompt_version</code>; only the <code>prompt_id</code> differs (<code>anthropic-l2-review</code> vs <code>claude-cli-l2-review</code>) so historical runs stay comparable within a provider.</p>
 <h2 id="maintenance-and-recovery">Maintenance and recovery<a class="headerlink" href="#maintenance-and-recovery" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
