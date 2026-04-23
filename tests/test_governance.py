@@ -2594,16 +2594,178 @@ def test_direct_fact_mutators_are_blocked_in_governed_mode(
     assert "fact changes must go through Dream PR branches" in result.output
 
 
-def test_forget_governed_requires_fact_not_topic(project_dir: Path) -> None:
+def test_forget_governed_topic_opens_tombstone_pr_and_merge_removes_facts(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "forget-governed-topic.git"
+    _connect_origin(project_repo, remote)
+    fact_one = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_GOVERNED_1",
+        text="legacy deploy runbook moved to docs/operations",
+        topic="ops",
+    )
+    fact_two = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_GOVERNED_2",
+        text="rollback guide moved to docs/rollback",
+        topic="ops",
+    )
+    other_fact = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_GOVERNED_3",
+        text="billing dashboard owner is Priya",
+        topic="billing",
+    )
+    for fact in (fact_one, fact_two, other_fact):
+        add_fact(project_repo, fact, auto_commit=False)
+    git_add_and_commit(project_repo, message="seed governed forget topic facts")
+    git_push(project_repo)
     _set_governed_mode()
+
+    pr_calls: list[dict[str, object]] = []
+    monkeypatch.setattr("umx.github_ops.gh_available", lambda: True)
+    monkeypatch.setattr("umx.github_ops.push_branch", lambda *args, **kwargs: True)
+
+    def _create_pr(
+        org: str,
+        repo_name: str,
+        branch: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> int:
+        pr_calls.append(
+            {
+                "org": org,
+                "repo_name": repo_name,
+                "branch": branch,
+                "title": title,
+                "body": body,
+                "labels": list(labels or []),
+            }
+        )
+        return 17
+
+    monkeypatch.setattr("umx.github_ops.create_pr", _create_pr)
 
     result = CliRunner().invoke(
         main,
-        ["forget", "--cwd", str(project_dir), "--topic", "devenv", "--governed"],
+        ["forget", "--cwd", str(project_dir), "--topic", "ops", "--governed"],
     )
 
-    assert result.exit_code != 0
-    assert "--governed currently supports --fact only" in result.output
+    assert result.exit_code == 0, result.output
+    assert "opened governed tombstone PR #17 for topic ops (2 facts)" in result.output
+    assert len(pr_calls) == 1
+    proposal = pr_calls[0]
+    assert str(proposal["branch"]).startswith("proposal/")
+    assert set(proposal["labels"]) >= {
+        LABEL_TYPE_DELETION,
+        LABEL_STATE_EXTRACTION,
+        LABEL_HUMAN_REVIEW,
+    }
+    payload = assert_governance_pr_body(str(proposal["body"]))
+    assert payload is not None
+    tombstoned_ids = {entry["fact_id"] for entry in payload["tombstoned"]}
+    assert tombstoned_ids == {fact_one.fact_id, fact_two.fact_id}
+    assert {entry["path"] for entry in payload["tombstoned"]} == {"facts/topics/ops.md"}
+
+    current_branch = subprocess.run(
+        ["git", "-C", str(project_repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert current_branch.stdout.strip() == "main"
+    assert {item.fact_id for item in load_all_facts(project_repo, include_superseded=False)} == {
+        fact_one.fact_id,
+        fact_two.fact_id,
+        other_fact.fact_id,
+    }
+    assert load_tombstones(project_repo) == []
+
+    subprocess.run(
+        ["git", "-C", str(project_repo), "merge", "--ff-only", str(proposal["branch"])],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert {item.fact_id for item in load_all_facts(project_repo, include_superseded=False)} == {
+        other_fact.fact_id
+    }
+    assert {item.fact_id for item in load_tombstones(project_repo)} == {
+        fact_one.fact_id,
+        fact_two.fact_id,
+    }
+
+
+def test_forget_governed_topic_ignores_superseded_facts(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "forget-governed-topic-superseded.git"
+    _connect_origin(project_repo, remote)
+    superseded_fact = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_SUPERSEDED_1",
+        text="legacy deploy runbook lived in docs/operations-old",
+        topic="ops",
+        superseded_by="FACT_FORGET_TOPIC_SUPERSEDED_2",
+    )
+    active_fact = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_SUPERSEDED_2",
+        text="deploy runbook moved to docs/operations",
+        topic="ops",
+    )
+    add_fact(project_repo, superseded_fact, auto_commit=False)
+    add_fact(project_repo, active_fact, auto_commit=False)
+    git_add_and_commit(project_repo, message="seed governed forget topic superseded facts")
+    git_push(project_repo)
+    _set_governed_mode()
+
+    pr_calls: list[dict[str, object]] = []
+    monkeypatch.setattr("umx.github_ops.gh_available", lambda: True)
+    monkeypatch.setattr("umx.github_ops.push_branch", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "umx.github_ops.create_pr",
+        lambda org, repo_name, branch, title, body, labels=None: pr_calls.append(
+            {
+                "org": org,
+                "repo_name": repo_name,
+                "branch": branch,
+                "title": title,
+                "body": body,
+                "labels": list(labels or []),
+            }
+        )
+        or 19,
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["forget", "--cwd", str(project_dir), "--topic", "ops", "--governed"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "opened governed tombstone PR #19 for topic ops (1 facts)" in result.output
+    payload = assert_governance_pr_body(str(pr_calls[0]["body"]))
+    assert payload is not None
+    assert [entry["fact_id"] for entry in payload["tombstoned"]] == [active_fact.fact_id]
+
+    subprocess.run(
+        ["git", "-C", str(project_repo), "merge", "--ff-only", str(pr_calls[0]["branch"])],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert [item.fact_id for item in load_tombstones(project_repo)] == [active_fact.fact_id]
 
 
 def test_forget_governed_opens_tombstone_pr_and_merge_removes_fact(
@@ -2743,7 +2905,234 @@ def test_forget_governed_restores_main_when_branch_commit_fails(
     assert [item.fact_id for item in load_all_facts(project_repo, include_superseded=False)] == [
         fact.fact_id
     ]
+
+
+def test_forget_governed_topic_restores_main_when_branch_commit_fails(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import GitCommitResult, git_add_and_commit, git_push
+
+    remote = tmp_path / "forget-governed-topic-fail.git"
+    _connect_origin(project_repo, remote)
+    fact = _make_fact(
+        fact_id="FACT_FORGET_TOPIC_GOVERNED_FAIL",
+        text="obsolete topic fact that should stay on main after failure",
+        topic="ops",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+    git_add_and_commit(project_repo, message="seed governed forget topic failure fact")
+    git_push(project_repo)
+    _set_governed_mode()
+    monkeypatch.setattr(
+        "umx.fact_actions.git_add_and_commit",
+        lambda *args, **kwargs: GitCommitResult.failed_result(stderr="simulated commit failure"),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["forget", "--cwd", str(project_dir), "--topic", "ops", "--governed"],
+    )
+
+    assert result.exit_code != 0
+    assert "commit failed: simulated commit failure" in result.output
+    current_branch = subprocess.run(
+        ["git", "-C", str(project_repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert current_branch.stdout.strip() == "main"
+    status = subprocess.run(
+        ["git", "-C", str(project_repo), "status", "--short"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout.strip() == ""
+    assert [item.fact_id for item in load_all_facts(project_repo, include_superseded=False)] == [
+        fact.fact_id
+    ]
+
+
+def test_rollback_governed_opens_restore_pr_and_merge_restores_fact(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "rollback-governed.git"
+    _connect_origin(project_repo, remote)
+    fact = _make_fact(
+        fact_id="FACT_ROLLBACK_GOVERNED",
+        text="legacy deploy runbook moved to docs/operations",
+        topic="ops",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+    git_add_and_commit(project_repo, message="seed governed rollback fact")
+    git_push(project_repo)
+    _set_governed_mode()
+
+    pr_calls: list[dict[str, object]] = []
+    monkeypatch.setattr("umx.github_ops.gh_available", lambda: True)
+    monkeypatch.setattr("umx.github_ops.push_branch", lambda *args, **kwargs: True)
+
+    def _create_pr(
+        org: str,
+        repo_name: str,
+        branch: str,
+        title: str,
+        body: str,
+        labels: list[str] | None = None,
+    ) -> int:
+        pr_calls.append(
+            {
+                "org": org,
+                "repo_name": repo_name,
+                "branch": branch,
+                "title": title,
+                "body": body,
+                "labels": list(labels or []),
+            }
+        )
+        return 17 if len(pr_calls) == 1 else 18
+
+    monkeypatch.setattr("umx.github_ops.create_pr", _create_pr)
+
+    forget_result = CliRunner().invoke(
+        main,
+        ["forget", "--cwd", str(project_dir), "--fact", fact.fact_id, "--governed"],
+    )
+
+    assert forget_result.exit_code == 0, forget_result.output
+    forget_proposal = pr_calls[0]
+    subprocess.run(
+        ["git", "-C", str(project_repo), "merge", "--ff-only", str(forget_proposal["branch"])],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert load_all_facts(project_repo, include_superseded=False) == []
+    assert [item.fact_id for item in load_tombstones(project_repo)] == [fact.fact_id]
+
+    monkeypatch.setattr(
+        "umx.github_ops.read_pr_body",
+        lambda org, repo_name, pr_number: str(forget_proposal["body"]) if pr_number == 17 else None,
+    )
+
+    rollback_result = CliRunner().invoke(
+        main,
+        ["rollback", "--cwd", str(project_dir), "--pr", "17"],
+    )
+
+    assert rollback_result.exit_code == 0, rollback_result.output
+    assert "opened governed rollback PR #18 for source PR #17 (1 facts)" in rollback_result.output
+    assert len(pr_calls) == 2
+    rollback_proposal = pr_calls[1]
+    payload = assert_governance_pr_body(str(rollback_proposal["body"]))
+    assert payload is not None
+    assert [entry["fact_id"] for entry in payload["added"]] == [fact.fact_id]
+
+    subprocess.run(
+        ["git", "-C", str(project_repo), "merge", "--ff-only", str(rollback_proposal["branch"])],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert [item.fact_id for item in load_all_facts(project_repo, include_superseded=False)] == [
+        fact.fact_id
+    ]
     assert load_tombstones(project_repo) == []
+
+
+def test_rollback_governed_restores_main_when_branch_commit_fails(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import GitCommitResult, git_add_and_commit, git_push
+
+    remote = tmp_path / "rollback-governed-fail.git"
+    _connect_origin(project_repo, remote)
+    fact = _make_fact(
+        fact_id="FACT_ROLLBACK_GOVERNED_FAIL",
+        text="obsolete fact should stay deleted when rollback branch commit fails",
+        topic="ops",
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+    git_add_and_commit(project_repo, message="seed governed rollback failure fact")
+    git_push(project_repo)
+    _set_governed_mode()
+
+    pr_calls: list[dict[str, object]] = []
+    monkeypatch.setattr("umx.github_ops.gh_available", lambda: True)
+    monkeypatch.setattr("umx.github_ops.push_branch", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "umx.github_ops.create_pr",
+        lambda org, repo_name, branch, title, body, labels=None: pr_calls.append(
+            {
+                "org": org,
+                "repo_name": repo_name,
+                "branch": branch,
+                "title": title,
+                "body": body,
+                "labels": list(labels or []),
+            }
+        )
+        or 17,
+    )
+
+    forget_result = CliRunner().invoke(
+        main,
+        ["forget", "--cwd", str(project_dir), "--fact", fact.fact_id, "--governed"],
+    )
+
+    assert forget_result.exit_code == 0, forget_result.output
+    forget_proposal = pr_calls[0]
+    subprocess.run(
+        ["git", "-C", str(project_repo), "merge", "--ff-only", str(forget_proposal["branch"])],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    monkeypatch.setattr(
+        "umx.github_ops.read_pr_body",
+        lambda org, repo_name, pr_number: str(forget_proposal["body"]) if pr_number == 17 else None,
+    )
+    monkeypatch.setattr(
+        "umx.fact_actions.git_add_and_commit",
+        lambda *args, **kwargs: GitCommitResult.failed_result(stderr="simulated commit failure"),
+    )
+
+    rollback_result = CliRunner().invoke(
+        main,
+        ["rollback", "--cwd", str(project_dir), "--pr", "17"],
+    )
+
+    assert rollback_result.exit_code != 0
+    assert "commit failed: simulated commit failure" in rollback_result.output
+    current_branch = subprocess.run(
+        ["git", "-C", str(project_repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert current_branch.stdout.strip() == "main"
+    status = subprocess.run(
+        ["git", "-C", str(project_repo), "status", "--short"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert status.stdout.strip() == ""
+    assert load_all_facts(project_repo, include_superseded=False) == []
+    assert [item.fact_id for item in load_tombstones(project_repo)] == [fact.fact_id]
 
 
 def test_sync_remote_mode_rejects_non_session_changes(

@@ -72,6 +72,32 @@ Review the archive cadence in [config.md](config.md).
 
 - Review the current trust boundaries before wider rollout: [threat-model.md](threat-model.md)
 
+## Eval gates before release
+
+Run the eval suite after meaningful ranking, retrieval, review, or dogfood-facing changes:
+
+```bash
+gitmem eval l2-review > artifacts/l2-review.json
+gitmem eval inject > artifacts/inject.json
+gitmem eval long-memory > artifacts/long-memory.json
+gitmem eval retrieval > artifacts/retrieval.json
+```
+
+- `l2-review` and `inject` are native gitmem evals over checked-in local corpora.
+- `long-memory` and `retrieval` are offline benchmark adapters built from LongMemEval-style and HotpotQA-style subsets.
+- Each command exits nonzero when its pass-rate gate fails, so the same commands work in local smoke checks, CI, and release checklists.
+
+If you want a minimal CI/pytest-style gate, run the normal test suite first and then the eval commands as plain subprocess steps:
+
+```bash
+pytest -q
+gitmem eval inject > artifacts/inject.json
+gitmem eval long-memory > artifacts/long-memory.json
+gitmem eval retrieval > artifacts/retrieval.json
+```
+
+Keep external frameworks optional. If you want DeepEval or another reporting layer, ingest the emitted JSON artifacts there rather than adding framework-specific runtime dependencies to the core gitmem path.
+
 ## If you need a fresh machine or isolated test org
 
 Use a dedicated `UMX_HOME` when you want to attach the same project to a separate machine, sandbox, or GitHub org without touching your primary local state:
@@ -106,6 +132,25 @@ gitmem init-project --cwd /path/to/project --yes
 4. If you need to test or stage the rotation first, use an isolated `UMX_HOME` and reattach with `gitmem init --org ... --mode hybrid` plus `gitmem init-project --cwd ... --yes`.
 
 The memory state stays in the remote `umx-user` and project repos, so a fresh `UMX_HOME` can reattach after the credential swap as long as the new credential still has access to the target org.
+
+## If you work from multiple machines
+
+For the currently supported low-friction flow, keep each machine on the same project slug and remote memory repo, then use managed sync when handing work off:
+
+```bash
+gitmem sync --cwd /path/to/project
+```
+
+- Sync on machine A before switching away, especially after new session capture or other operational state changes.
+- Sync on machine B before starting new work so `main` fast-forwards to the latest shared memory state.
+- The current automated coverage exercises this sequential two-home hybrid flow, including the case where machine B rebases its own new session commit after machine A has already advanced `main`.
+- Governed fact changes still belong in PR branches; this guidance is only for shared session history and coordination state on `main`.
+
+If you expect overlap or divergence:
+
+- Avoid parallel `dream` runs against the same project memory repo until the broader multi-machine matrix lands; keep one machine responsible for governed PR creation at a time.
+- If one machine already opened a governed PR, let the others sync `main` and review that PR instead of trying to produce competing direct-main changes.
+- Treat `pull --rebase failed` during `gitmem sync` as a handoff problem, not something to bulldoze through with raw pushes.
 
 ## Backups and recovery
 

@@ -598,6 +598,14 @@ def git_read_text_at_ref_strict(repo_dir: Path, ref: str, path: str) -> str:
     return result.stdout
 
 
+def git_rev_list_for_path(repo_dir: Path, path: str, *, ref: str = "HEAD") -> tuple[str, ...]:
+    """Return commit SHAs touching ``path`` from newest to oldest."""
+    result = _run_git(repo_dir, "rev-list", ref, "--", path)
+    if result.returncode != 0:
+        return ()
+    return tuple(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
 def git_restore_path(repo_dir: Path, ref: str, path: str) -> bool:
     """Restore one path from ``ref`` into the working tree."""
     result = _run_git(repo_dir, "checkout", ref, "--", path)

@@ -2,7 +2,7 @@
 
 **Target release:** v1.0.0 — GitHub-synced memory as the marquee feature.
 **Baseline:** 0.9.1-alpha, 477 tests, local mode production-quality.
-**Last updated:** 2026-04-21
+**Last updated:** 2026-04-23
 **Plan owner:** `copilot-cli`
 
 ## North star
@@ -44,11 +44,11 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 | M2 Security baseline for sync | 0/7 | 2026-05-22 | copilot-cli |
 | M3 GitHub governance GA ★ | 0/11 | 2026-07-03 | — |
 | M4 Scale & performance | 1/6 | 2026-07-17 | copilot-cli |
-| M5 Ops & docs | 0/7 | 2026-07-31 | copilot-cli |
+| M5 Ops & docs | 0/11 | 2026-07-31 | copilot-cli |
 | M6 Private beta | 0/5 | 2026-08-28 | — |
 | M7 GA 1.0.0 | 0/5 | 2026-09-04 | — |
 
-**Overall: 1/49 tasks · 2% · ~20 weeks.**
+**Overall: 1/53 tasks · 2% · ~20 weeks.**
 
 ---
 
@@ -422,7 +422,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Added an explicit governed path for single-fact forgets: plain governed `forget` remains blocked, while `forget --fact <id> --governed` now creates a proposal branch from `main`, applies the existing tombstone mutation on that branch, and opens a deletion-labeled governance PR with a `tombstoned` fact-delta entry.
   - Kept the data-plane mutation model unchanged by reusing `umx.tombstones.forget_fact()`; after merge the fact disappears from active read paths and the tombstone persists in `meta/tombstones.jsonl`, so gather/rederive/audit suppression behavior stays aligned with existing local forget semantics.
   - Hardened the governed branch path after review: failed branch materialization now restores `main` cleanly instead of leaking staged tombstone edits back onto the default branch, and tombstone fact-delta entries now require `fact_id` so concurrent deletion PRs participate in overlap detection.
-  - Local validation is complete for the shipped slice: targeted PR-render/governance/commands/viewer coverage is green at 117 passing tests, the full local suite is green at 637 passing tests, and ad hoc review found no remaining blockers after the cleanup/identity fixes. `--topic --governed` and an explicit reverse-PR rollback CLI remain follow-up work.
+  - Followed up by extending the same governed path to `forget --topic <topic> --governed`, including multi-fact tombstone PR bodies, branch-restore failure coverage, and active-only topic forget behavior so already-superseded facts are not tombstoned again.
+  - Added `gitmem rollback --pr <number>` as the explicit reverse-PR maintenance path: it reads the source tombstone PR body, reconstructs the deleted facts from git history, removes the matching tombstones on a proposal branch, and opens a governed rollback PR instead of rewinding whole files.
+  - Current local validation is green at `pytest -q` → 774 passed plus `mkdocs build --strict`; remaining T3.8 work is no longer an operator-facing CLI gap.
 
 ### T3.9 — `gh` CLI retry & rate-limit handling
 
@@ -472,7 +474,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Live-dogfooded the shipped cross-org flow against `dev-boz-gitmem2` in an isolated `UMX_HOME`, including `gitmem init --org ... --mode hybrid`, `init-project`, `setup-remote`, OpenCode capture, sync, health, search, inject, export, and a fresh-home reattach pass.
   - Fresh local homes now reuse existing remote `umx-user` and project memory repos instead of failing with a non-fast-forward bootstrap push; `docs/ops-runbook.md` now documents both the isolated-home attach flow and the supported GitHub credential-rotation checklist.
-  - Remaining scope is the acceptance test that proves swapping credentials mid-flight preserves any open governance PR context.
+  - Added local acceptance coverage for the remaining rotation/reattach gap: governance health now has a rotated credentialed-origin test, and the CLI suite now exercises fresh-home reattach followed by `health --governance` so in-flight PR context stays visible after credential swaps.
+  - Current local validation is green at `pytest -q` → 770 passed plus `mkdocs build --strict`; remaining scope is the broader multi-machine matrix under T5.3 rather than a missing single-machine rotation acceptance proof.
 
 ---
 
@@ -636,7 +639,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Added bootstrap-reattach regression coverage in `tests/test_cli.py` for `init`, `init-project`, and `setup-remote` when a fresh local memory repo encounters an already-populated remote repo.
   - Live rebootstrap against `dev-boz-gitmem2/gitmem` now succeeds from a brand-new `UMX_HOME`, restoring the expected 21 synced sessions before a follow-up `gitmem sync`.
-  - Remaining scope is the full 2-machine matrix in CI plus documented divergence/conflict handling for parallel dreams and other concurrent writes.
+  - Added `tests/test_multi_machine.py` with a first hermetic two-home hybrid project harness over a shared bare remote, covering straight session propagation from machine A to B and the rebase path where machine B syncs its own new session after A has already advanced `main`.
+  - `docs/ops-runbook.md` now records the currently supported sequential multi-machine discipline: sync before switching machines, sync before resuming work, and keep governed fact changes on PR branches instead of `main`.
+  - Remaining scope is the broader 2-machine matrix in CI plus documented divergence/conflict handling for parallel dreams and other concurrent writes.
 
 ### T5.4 — Opt-in telemetry
 
@@ -743,10 +748,10 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T5.10 — Multi-hop retrieval benchmark pilot
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.8
-- Files: `tests/eval/retrieval/` (new), `docs/cli.md`
+- Files: `umx/retrieval_eval.py`, `tests/eval/retrieval/` (new), `tests/test_retrieval_eval.py`, `docs/cli.md`
 - Outcome: gitmem has a benchmark slice for multi-hop retrieval / supporting-fact recall so retrieval quality is tested on harder questions than single-hop goldens.
 - Acceptance:
   - Pilot task maps gitmem search/inject behavior onto HotpotQA-style multi-hop questions
@@ -754,11 +759,14 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Results are reproducible enough to compare ranking/config changes over time
 - Notes:
   - Initial target benchmark: HotpotQA (https://hotpotqa.github.io/)
+  - Added `gitmem eval retrieval` plus `umx/retrieval_eval.py`, using a checked-in HotpotQA-style subset that writes facts into a temporary project memory repo and scores top-k supporting-fact recall with stable JSON output.
+  - The adapter intentionally leaves global `query_index()` semantics unchanged: it runs local multi-query retrieval plus overlap reranking because FTS5 space-separated queries behave like conjunctions, which would otherwise miss multi-hop support spread across multiple facts.
+  - Dedicated harness tests and CLI coverage are in place, malformed fixture facts now fail closed instead of being silently stringified, and current local validation is green at `pytest -q` → 766 passed plus `mkdocs build --strict`. Keep `[~]` until merge/CI per plan rules.
 
 ### T5.11 — Eval reporting and framework integration
 
-- Status: `[ ]`
-- Owner: —
+- Status: `[~]`
+- Owner: copilot-cli
 - Depends on: T5.8, T5.9, T5.10
 - Files: `docs/cli.md`, `docs/ops-runbook.md`, optional `tests/eval/README.md`
 - Outcome: Eval runs have a stable operator workflow and can feed release decisions, whether through native JSON payloads, pytest, or an external framework such as DeepEval.
@@ -768,6 +776,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - At least one path is documented for integrating eval runs into pytest/CI or an external framework like DeepEval
 - Notes:
   - External framework reference: DeepEval (https://github.com/confident-ai/deepeval)
+  - `docs/cli.md` now classifies the eval family into native gitmem goldens (`l2-review`, `inject`) versus offline benchmark adapters (`long-memory`, `retrieval`) and calls out the shared stable-JSON/nonzero-exit contract.
+  - `docs/ops-runbook.md` now documents a release-gate workflow that captures eval JSON artifacts directly from the CLI, reuses those commands in CI after `pytest -q`, and keeps DeepEval-style reporting optional downstream of the native JSON outputs.
+  - Current local validation for the documented workflow is green at `gitmem eval retrieval --case four-color-theorem-birthplace` → `status: ok`, alongside the 766-test branch baseline and a strict docs build. Keep `[~]` until merge/CI per plan rules.
 
 ---
 
@@ -937,8 +948,14 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-23 [T3.11] copilot-cli: added credential-rotation acceptance coverage for governance PR inventory, including rotated credentialed-origin parsing and a fresh-home reattach + `health --governance` CLI proof, and revalidated the branch at 770 passing tests plus a strict docs build
+- 2026-04-23 [T5.3] copilot-cli: added a first hermetic two-home hybrid sync harness for session propagation and rebase-preserving sequential sync, documented the sequential multi-machine operator flow, and revalidated the branch at 772 passing tests plus a strict docs build
+- 2026-04-23 [T3.8] copilot-cli: added `gitmem rollback --pr ...` to open governed reverse PRs from prior tombstone PRs, reconstruct facts from git history without whole-file rewinds, and revalidated the branch at 774 passing tests plus a strict docs build
+- 2026-04-23 [T3.8] copilot-cli: extended governed forget to support topic tombstone PRs, kept branch rollback clean on failure, excluded superseded facts from topic tombstones, and revalidated the branch at 768 passing tests plus a strict docs build
 - 2026-04-22 [T5.8] copilot-cli: added `gitmem eval inject` with a hermetic offline harness around the checked-in golden inject corpus, introduced an explicit pre-beta eval-and-dogfood roadmap lane referencing LongMemEval/HotpotQA/DeepEval, and revalidated the branch at 753 passing tests plus a strict docs build
 - 2026-04-22 [T5.9] copilot-cli: added `gitmem eval long-memory` with a checked-in LongMemEval-style subset and deterministic evidence-session recall scoring so long-memory retrieval can be exercised locally before any live benchmark integration
+- 2026-04-22 [T5.10] copilot-cli: added `gitmem eval retrieval` with a checked-in HotpotQA-style subset, adapter-local multi-query retrieval, overlap reranking, and fixture validation so supporting-fact recall can be tracked without changing global search semantics
+- 2026-04-22 [T5.11] copilot-cli: documented the eval family as stable JSON release gates, split native versus benchmark-shaped evals in the CLI docs, and recorded a pytest/CI plus optional DeepEval consumption path in the ops runbook
 - 2026-04-21 [T5.4] copilot-cli: added opt-in anonymous CLI telemetry with fail-open local queue/upload handling, privacy docs, kill-switch support, and revalidated the branch at 714 passing tests plus a strict docs build
 - 2026-04-21 [T5.6] copilot-cli: added a curated mkdocstrings API reference plus a public-docstring test gate so the docs build covers supported config/model/MCP surfaces without publishing internal APIs
 - 2026-04-21 [T5.5] copilot-cli: added the mkdocs-material docs site, CI/pages workflows, and a fresh-environment quickstart regression test for init/collect/dream/search/inject/status

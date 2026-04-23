@@ -813,6 +813,7 @@ def forget_cmd(
     from umx.fact_actions import (
         forget_fact_action,
         forget_fact_governed_action,
+        forget_topic_governed_action,
         forget_topic_action,
     )
 
@@ -827,14 +828,28 @@ def forget_cmd(
         click.echo(result.message)
         return
     if topic:
-        if governed:
-            raise click.ClickException("--governed currently supports --fact only")
-        result = forget_topic_action(cwd, topic)
+        result = (
+            forget_topic_governed_action(cwd, topic)
+            if governed
+            else forget_topic_action(cwd, topic)
+        )
         if not result.ok:
             raise click.ClickException(result.message)
         click.echo(result.message)
         return
     raise click.UsageError("pass --fact or --topic")
+
+
+@main.command("rollback")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--pr", "source_pr_number", type=int, required=True)
+def rollback_cmd(cwd: Path, source_pr_number: int) -> None:
+    from umx.fact_actions import rollback_governed_action
+
+    result = rollback_governed_action(cwd, source_pr_number)
+    if not result.ok:
+        raise click.ClickException(result.message)
+    click.echo(result.message)
 
 
 @main.command("promote")
@@ -1359,6 +1374,39 @@ def eval_long_memory_cmd(
             case_id=case_id,
             min_pass_rate=min_pass_rate,
             search_limit=search_limit,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("retrieval")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "retrieval",
+)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=1.0)
+@click.option("--top-k", type=int, default=5)
+def eval_retrieval_cmd(
+    cases_path: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    top_k: int,
+) -> None:
+    from umx.retrieval_eval import run_retrieval_eval
+
+    try:
+        payload = run_retrieval_eval(
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+            top_k=top_k,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

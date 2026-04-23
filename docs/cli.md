@@ -51,6 +51,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 |---|---|---|
 | `gitmem confirm` | Confirm a fact | `--cwd`, `--fact` |
 | `gitmem forget` | Tombstone a fact or topic | `--cwd`, `--fact` or `--topic`, `--governed` |
+| `gitmem rollback` | Open a governed reverse PR for a prior tombstone PR | `--cwd`, `--pr` |
 | `gitmem promote` | Promote a fact across scopes | `--cwd`, `--fact`, `--to user\|project\|principle` |
 | `gitmem merge` | Merge conflict candidates | `--cwd`, `--dry-run` |
 | `gitmem purge` | Remove a session and derived facts | `--cwd`, `--session`, `--dry-run` |
@@ -66,6 +67,11 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate` |
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 | `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
+| `gitmem eval retrieval` | Run the HotpotQA-style supporting-fact retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--top-k` |
+
+`gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.
+
+All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.
 
 ## Maintenance and recovery
 

@@ -10,7 +10,8 @@ from click.testing import CliRunner
 from tests.secret_literals import AWS_ACCESS_KEY_ID
 from umx.config import default_config, load_config, save_config
 from umx.cli import main
-from umx.github_ops import GitHubError
+from umx.dream.pr_render import FACT_DELTA_BLOCK_VERSION, FACT_DELTA_END_MARKER, FACT_DELTA_START_MARKER
+from umx.github_ops import GitHubError, OpenPullRequestSummary
 from umx.scope import config_path, init_local_umx, project_memory_dir
 from umx.sessions import write_session
 from umx.telemetry import telemetry_queue_path
@@ -63,6 +64,24 @@ def _seed_bare_remote(
         check=True,
     )
     return remote
+
+
+def _governance_pr_body() -> str:
+    payload = {
+        "version": FACT_DELTA_BLOCK_VERSION,
+        "added": [],
+        "modified": [],
+        "superseded": [],
+        "tombstoned": [],
+    }
+    return (
+        "Governance summary\n\n"
+        f"{FACT_DELTA_START_MARKER}\n"
+        "```json\n"
+        f"{json.dumps(payload, sort_keys=True)}\n"
+        "```\n"
+        f"{FACT_DELTA_END_MARKER}\n"
+    )
 
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
@@ -595,6 +614,81 @@ def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx
     assert remote_url.stdout.strip() == str(remote)
 
 
+def test_cli_health_governance_preserves_open_pr_context_after_fresh_home_reattach(
+    project_dir,
+    umx_home,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    remote = _seed_bare_remote(
+        tmp_path,
+        "existing-project-governance",
+        "facts/topics/seed.md",
+        "# seed\n\n## Facts\n- existing project remote memory\n",
+        message="seed project remote for governance health",
+    )
+    fresh_home = tmp_path / "fresh-home"
+    monkeypatch.setenv("UMX_HOME", str(fresh_home))
+    init_local_umx()
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "hybrid"
+    save_config(config_path(), cfg)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli.assert_push_safe"), patch("umx.git_ops.assert_signed_commit_range"):
+        result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "project"])
+
+    assert result.exit_code == 0, result.output
+    attached_repo = fresh_home / "projects" / "project"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(attached_repo),
+            "remote",
+            "set-url",
+            "origin",
+            "https://x-access-token:rotated-secret@github.com/memory-org/project.git",
+        ],
+        capture_output=True,
+        check=True,
+    )
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "umx.governance_health.list_open_pull_requests",
+        lambda org, repo: captured.append((org, repo))
+        or [
+            OpenPullRequestSummary(
+                number=44,
+                title="Open governed change",
+                url="https://github.com/memory-org/project/pull/44",
+                head_ref="proposal/cleanup",
+                body=_governance_pr_body(),
+                labels=("type: extraction", "confidence:high", "impact:local", "state:reviewed"),
+            )
+        ],
+    )
+    monkeypatch.setattr("umx.governance_health.list_local_branches", lambda repo: ())
+    monkeypatch.setattr("umx.governance_health.read_processing_log", lambda repo, ref=None: [])
+    monkeypatch.setattr("umx.governance_health.git_ref_exists", lambda repo, ref: False)
+
+    health = runner.invoke(
+        main,
+        ["health", "--cwd", str(project_dir), "--governance", "--format", "json"],
+    )
+
+    assert health.exit_code == 0, health.output
+    payload = json.loads(health.output)
+    assert captured == [("memory-org", "project")]
+    assert payload["summary"]["open_governance_prs"] == 1
+    assert payload["open_prs"][0]["number"] == 44
+    assert payload["open_prs"][0]["head_ref"] == "proposal/cleanup"
+
+
 def test_cli_eval_inject_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "umx.inject_eval.run_inject_eval",
@@ -732,6 +826,76 @@ def test_cli_eval_long_memory_forwards_search_limit(monkeypatch, tmp_path: Path)
         "case_id": "longmem-single-session-user-001",
         "min_pass_rate": 0.9,
         "search_limit": 7,
+    }
+
+
+def test_cli_eval_retrieval_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.retrieval_eval.run_retrieval_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 3,
+            "passed": 2,
+            "pass_rate": 2 / 3,
+            "min_pass_rate": 1.0,
+            "average_recall": 2 / 3,
+            "top_k": 5,
+            "failures": [{"case": "retrieval-fail"}],
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(main, ["eval", "retrieval", "--cases", str(tmp_path)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_retrieval_forwards_top_k(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(cases_path, config, *, case_id=None, min_pass_rate=1.0, top_k=5):
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_pass_rate"] = min_pass_rate
+        captured["top_k"] = top_k
+        return {
+            "status": "ok",
+            "total": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "average_recall": 1.0,
+            "top_k": top_k,
+            "failures": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.retrieval_eval.run_retrieval_eval", _run)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "retrieval",
+            "--cases",
+            str(tmp_path),
+            "--case",
+            "four-color-theorem-birthplace",
+            "--min-pass-rate",
+            "0.9",
+            "--top-k",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "cases_path": tmp_path,
+        "case_id": "four-color-theorem-birthplace",
+        "min_pass_rate": 0.9,
+        "top_k": 7,
     }
 
 

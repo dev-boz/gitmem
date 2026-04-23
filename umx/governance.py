@@ -509,6 +509,100 @@ def build_tombstone_pr_proposal(fact: Fact, repo_dir: Path) -> PRProposal:
     )
 
 
+def build_topic_tombstone_pr_proposal(
+    facts: list[Fact],
+    topic: str,
+    repo_dir: Path,
+) -> PRProposal:
+    if not facts:
+        raise ValueError("topic tombstone proposal requires at least one fact")
+    relative_paths = sorted(
+        {
+            _repo_relative_path(fact.file_path or target_path_for_fact(repo_dir, fact), repo_dir=repo_dir)
+            for fact in facts
+        }
+    )
+    summary_lines = [
+        "This proposal records governed tombstones for an existing topic.",
+        "Main stays unchanged until the proposal branch is approved and merged.",
+        "",
+        "### Tombstone target",
+        "",
+        f"- Topic: `{topic}`",
+        f"- Fact count: {len(facts)}",
+        f"- Files: {', '.join(f'`{path}`' for path in relative_paths)}",
+        f"- Fact IDs: {', '.join(f'`{fact.fact_id}`' for fact in sorted(facts, key=lambda item: item.fact_id))}",
+        "",
+        "### Provenance",
+        "",
+        "- Proposed by: `umx forget --topic ... --governed`",
+    ]
+    labels = [label for label in classify_pr_labels(facts) if not label.startswith("type:")]
+    labels.append(LABEL_TYPE_DELETION)
+    return PRProposal(
+        title=f"[forget] Tombstone topic {topic}",
+        body=render_governance_pr_body(
+            heading="Governed topic tombstone proposal",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_for_tombstones(facts, repo_dir),
+        ),
+        branch=branch_name_for_proposal(f"forget-topic-{topic}"),
+        labels=desired_governance_labels(
+            labels,
+            lifecycle_label=LABEL_STATE_EXTRACTION,
+            human_review=True,
+        ),
+        files_changed=[*relative_paths, "meta/tombstones.jsonl"],
+    )
+
+
+def build_rollback_pr_proposal(
+    facts: list[Fact],
+    *,
+    source_pr_number: int,
+    repo_dir: Path,
+) -> PRProposal:
+    if not facts:
+        raise ValueError("rollback proposal requires at least one fact")
+    relative_paths = sorted(
+        {
+            _repo_relative_path(fact.file_path or target_path_for_fact(repo_dir, fact), repo_dir=repo_dir)
+            for fact in facts
+        }
+    )
+    summary_lines = [
+        "This proposal restores facts removed by a prior governed tombstone PR.",
+        "Main stays unchanged until the proposal branch is approved and merged.",
+        "",
+        "### Rollback source",
+        "",
+        f"- Source PR: `#{source_pr_number}`",
+        f"- Fact count: {len(facts)}",
+        f"- Files: {', '.join(f'`{path}`' for path in relative_paths)}",
+        f"- Fact IDs: {', '.join(f'`{fact.fact_id}`' for fact in sorted(facts, key=lambda item: item.fact_id))}",
+        "",
+        "### Provenance",
+        "",
+        f"- Proposed by: `gitmem rollback --pr {source_pr_number}`",
+    ]
+    labels = [label for label in classify_pr_labels(facts) if not label.startswith("type:")]
+    return PRProposal(
+        title=f"[rollback] Restore facts from PR #{source_pr_number}",
+        body=render_governance_pr_body(
+            heading="Governed rollback proposal",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_from_facts(facts, repo_dir),
+        ),
+        branch=branch_name_for_proposal(f"rollback-pr-{source_pr_number}"),
+        labels=desired_governance_labels(
+            labels,
+            lifecycle_label=LABEL_STATE_EXTRACTION,
+            human_review=True,
+        ),
+        files_changed=[*relative_paths, "meta/tombstones.jsonl"],
+    )
+
+
 def generate_l2_review(
     pr: PRProposal,
     conventions: ConventionSet,

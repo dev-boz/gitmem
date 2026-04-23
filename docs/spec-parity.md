@@ -22,7 +22,8 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 | `health` | `--cwd` | `umx/cli.py:487-506` | Match | Added to spec to reflect shipped diagnostics surface. |
 | `conflicts` | `--cwd` | `umx/cli.py:509-515` | Match | No flag divergence. |
 | `gaps` | `--cwd` | `umx/cli.py:518-520` | Match | No flag divergence. |
-| `forget` | `--cwd`, `--fact`, `--topic` | `umx/cli.py:517-536` | Match | Existing dual-target surface retained. |
+| `forget` | `--cwd`, `--fact`, `--topic`, `--governed` | `umx/cli.py:802-840` | Match | Governing a forget now routes fact or topic tombstones through proposal PR branches instead of direct writes. |
+| `rollback` | `--cwd`, `--pr` | `umx/cli.py:843-852` | Documented | Governed reverse-PR maintenance surface for restoring facts removed by a prior tombstone PR. |
 | `promote` | `--cwd`, `--fact`, `--to user\|project\|principle` | `umx/cli.py:539-555` | Match | Spec updated from `--to user` only. |
 | `confirm` | `--cwd`, `--fact` | `umx/cli.py:557-566` | Match | No flag divergence. |
 | `history` | `--cwd`, `--fact` | `umx/cli.py:569-575` | Match | No flag divergence. |
@@ -49,7 +50,7 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 | Family | Shipped subcommands / flags | Code location | Status | Notes |
 |---|---|---|---|---|
 | `capture` | `codex(--cwd,--file,--source-root,--dry-run)`, `copilot(--cwd,--file,--source-root,--dry-run)`, `claude-code(--cwd,--file,--source-root,--all,--dry-run)`, `gemini(--cwd,--file,--source-root,--all,--dry-run)`, `opencode(--cwd,--db,--session-id,--all,--dry-run)`, `amp(--cwd,--file,--source-root,--thread-id,--all,--dry-run)` | `umx/cli.py:1206-1635` | Documented | Auxiliary transcript-import surfaces referenced in the spec and enumerated here. |
-| `eval` | `l2-review(--cases,--case,--min-pass-rate)`, `inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)`, `long-memory(--cases,--case,--min-pass-rate,--search-limit)` | `umx/cli.py:1273-1363` | Documented | On-demand eval harnesses for governance review, inject/retrieval ranking drift, and LongMemEval-style evidence retrieval. |
+| `eval` | `l2-review(--cases,--case,--min-pass-rate)`, `inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)`, `long-memory(--cases,--case,--min-pass-rate,--search-limit)`, `retrieval(--cases,--case,--min-pass-rate,--top-k)` | `umx/cli.py:1273-1400` | Documented | On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. |
 | `hooks claude-code` | `print(--command)`, `install(--cwd,--scope,--command)`, `session-start(--payload-file)`, `pre-tool-use(--payload-file)`, `pre-compact(--payload-file)`, `session-end(--payload-file)` | `umx/cli.py:937-1022` | Documented | Hook-install and hook-dispatch helpers for Claude Code. |
 | `bridge` | `sync(--cwd,--target ...)`, `remove(--cwd,--target ...)`, `import(--cwd,--target ...,--topic,--dry-run)` | `umx/cli.py:1025-1078` | Documented | Legacy compatibility surface for project-repo bridge files. |
 | `shim` | `aider(--cwd,--output,--max-tokens)`, `generic(--cwd,--tool,--output,--max-tokens)`, `amp(--cwd,--output,--max-tokens)`, `cursor(--cwd,--output,--max-tokens)`, `jules(--cwd,--output,--max-tokens)`, `qodo(--cwd,--output,--max-tokens)` | `umx/cli.py:1081-1135` | Documented | Wrapper/shim helpers for tool integration. |

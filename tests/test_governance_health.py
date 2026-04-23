@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 from umx.config import default_config, save_config
@@ -60,6 +61,19 @@ def _branch(name: str, *, age_days: int, current: bool = False) -> GitLocalBranc
         last_commit_ts=stamp,
         current=current,
         upstream=None,
+    )
+
+
+def _set_origin(repo_dir, url: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "remote", "remove", "origin"],
+        capture_output=True,
+        check=False,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo_dir), "remote", "add", "origin", url],
+        capture_output=True,
+        check=True,
     )
 
 
@@ -133,6 +147,51 @@ def test_governance_health_healthy_state(project_dir, monkeypatch) -> None:
     assert "Governance health: ok" in human
     assert "Open governance PRs: 1" in human
     assert "Last L2 review: 2026-04-18T12:00:00Z" in human
+
+
+def test_governance_health_uses_rotated_credentialed_origin_for_open_pr_inventory(
+    project_dir,
+    project_repo,
+    monkeypatch,
+) -> None:
+    _configure_remote_mode()
+    _set_origin(
+        project_repo,
+        f"https://github.com/memory-org/{project_repo.name}.git",
+    )
+    _set_origin(
+        project_repo,
+        f"https://x-access-token:rotated-secret@github.com/memory-org/{project_repo.name}.git",
+    )
+    captured: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "umx.governance_health.list_open_pull_requests",
+        lambda org, repo: captured.append((org, repo))
+        or [
+            OpenPullRequestSummary(
+                number=44,
+                title="Open governed change",
+                url=f"https://github.com/memory-org/{project_repo.name}/pull/44",
+                head_ref="proposal/cleanup",
+                body=_governance_pr_body(),
+                labels=(
+                    LABEL_TYPE_EXTRACTION,
+                    LABEL_CONFIDENCE_HIGH,
+                    LABEL_IMPACT_LOCAL,
+                    LABEL_STATE_REVIEWED,
+                ),
+            )
+        ],
+    )
+    monkeypatch.setattr("umx.governance_health.list_local_branches", lambda repo: ())
+    monkeypatch.setattr("umx.governance_health.read_processing_log", lambda repo, ref=None: [])
+    monkeypatch.setattr("umx.governance_health.git_ref_exists", lambda repo, ref: False)
+
+    payload = build_governance_health_payload(project_dir)
+
+    assert captured == [("memory-org", project_repo.name)]
+    assert payload["summary"]["open_governance_prs"] == 1
+    assert payload["open_prs"][0]["number"] == 44
 
 
 def test_governance_health_degraded_state(project_dir, monkeypatch) -> None:

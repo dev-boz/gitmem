@@ -12,12 +12,17 @@ from umx.git_ops import (
     git_create_branch,
     git_current_branch,
     git_path_exists_at_ref,
+    git_read_text_at_ref,
     git_ref_sha,
+    git_rev_list_for_path,
     git_revert_head,
     git_reset_paths,
     git_restore_path,
 )
 from umx.governance import (
+    assert_governance_pr_body,
+    build_rollback_pr_proposal,
+    build_topic_tombstone_pr_proposal,
     build_tombstone_pr_proposal,
     direct_fact_write_error,
     format_repo_paths,
@@ -29,6 +34,7 @@ from umx.memory import (
     find_fact_by_id,
     load_all_facts,
     manual_edit_successor,
+    parse_fact_line,
     remove_fact,
     replace_fact,
     target_path_for_fact,
@@ -37,7 +43,7 @@ from umx.memory import (
 from umx.merge import merge_all
 from umx.models import ConsolidationStatus, Fact, Scope, Verification
 from umx.scope import config_path, project_memory_dir, user_memory_dir
-from umx.tombstones import forget_fact, forget_topic
+from umx.tombstones import forget_fact, forget_topic, load_tombstones, remove_tombstones
 
 
 @dataclass(slots=True)
@@ -196,7 +202,7 @@ def forget_topic_action(cwd: Path, topic: str) -> ActionResult:
     if blocked:
         return blocked
     repo = project_memory_dir(cwd)
-    facts = [fact for fact in load_all_facts(repo) if fact.topic == topic]
+    facts = [fact for fact in load_all_facts(repo, include_superseded=False) if fact.topic == topic]
     if not facts:
         return ActionResult(ok=False, action="forget", message=f"topic not found: {topic}")
     affected_paths = [fact.file_path or target_path_for_fact(repo, fact) for fact in facts]
@@ -225,17 +231,17 @@ def forget_topic_action(cwd: Path, topic: str) -> ActionResult:
     )
 
 
-def _governed_forget_preflight(repo: Path) -> str | None:
+def _governed_proposal_preflight(repo: Path) -> str | None:
     current_branch = git_current_branch(repo)
     if current_branch != "main":
         return (
-            "governed forget must run from main; current branch is "
+            "governed proposal must run from main; current branch is "
             f"{current_branch or 'detached'}"
         )
     pending = changed_paths(repo)
     if pending:
         return (
-            "governed forget requires a clean working tree; pending paths: "
+            "governed proposal requires a clean working tree; pending paths: "
             f"{format_repo_paths(repo, pending)}"
         )
     return None
@@ -243,9 +249,13 @@ def _governed_forget_preflight(repo: Path) -> str | None:
 
 def _materialize_governed_forget_branch(
     repo: Path,
-    fact_id: str,
     branch: str,
-) -> tuple[str | None, str | None]:
+    *,
+    fact_id: str | None = None,
+    topic: str | None = None,
+) -> tuple[list[Fact] | None, str | None]:
+    if (fact_id is None) == (topic is None):
+        raise ValueError("pass exactly one of fact_id or topic")
     original_branch = git_current_branch(repo)
     if original_branch != "main":
         return None, (
@@ -260,25 +270,40 @@ def _materialize_governed_forget_branch(
     committed = False
     restore_error: str | None = None
     try:
-        removed = forget_fact(
-            repo,
-            fact_id,
-            author="human",
-            reason=f"governed forget proposal for {fact_id}",
-        )
-        if removed is None:
-            return None, f"fact not found: {fact_id}"
+        if fact_id is not None:
+            removed = forget_fact(
+                repo,
+                fact_id,
+                author="human",
+                reason=f"governed forget proposal for {fact_id}",
+            )
+            if removed is None:
+                return None, f"fact not found: {fact_id}"
+            removed_facts = [removed]
+            commit_message = f"umx: forget {removed.fact_id}"
+            noop_message = f"no tombstone changes recorded for {removed.fact_id}"
+        else:
+            removed_facts = forget_topic(
+                repo,
+                topic,
+                author="human",
+                reason=f"governed forget proposal for topic {topic}",
+            )
+            if not removed_facts:
+                return None, f"topic not found: {topic}"
+            commit_message = f"umx: forget topic {topic}"
+            noop_message = f"no tombstone changes recorded for topic {topic}"
         commit_result = git_add_and_commit(
             repo,
-            message=f"umx: forget {removed.fact_id}",
+            message=commit_message,
             config=_cfg(),
         )
         if commit_result.failed:
             return None, git_commit_failure_message(commit_result, context="commit failed")
         if commit_result.noop:
-            return None, f"no tombstone changes recorded for {removed.fact_id}"
+            return None, noop_message
         committed = True
-        return removed.fact_id, None
+        return removed_facts, None
     finally:
         if not committed:
             dirty_paths = changed_paths(repo)
@@ -302,6 +327,54 @@ def _materialize_governed_forget_branch(
             raise RuntimeError(restore_error)
 
 
+def _open_governed_proposal_pr(
+    cwd: Path,
+    repo: Path,
+    proposal,
+    *,
+    action: str,
+    failure_message: str,
+    success_message: str,
+    changed: list[str],
+    fact_id: str | None = None,
+) -> ActionResult:
+    cfg = _cfg()
+    from umx.dream.pipeline import DreamPipeline
+    from umx.github_ops import resolve_repo_ref
+
+    pipeline = DreamPipeline(cwd, config=cfg)
+    pr_number = pipeline._push_and_open_pr(proposal)
+    if pr_number is None:
+        return ActionResult(
+            ok=False,
+            action=action,
+            message=pipeline._push_block_reason or failure_message,
+            fact_id=fact_id,
+            changed=changed,
+            branch=proposal.branch,
+        )
+    repo_ref = resolve_repo_ref(repo, config_org=cfg.org)
+    repo_owner = repo_ref.owner or cfg.org
+    pr_url = (
+        f"https://github.com/{repo_owner}/{repo_ref.name}/pull/{pr_number}"
+        if repo_owner
+        else None
+    )
+    message = success_message.format(pr_number=f"#{pr_number}")
+    if pr_url:
+        message += f" ({pr_url})"
+    return ActionResult(
+        ok=True,
+        action=action,
+        message=message,
+        fact_id=fact_id,
+        changed=changed,
+        branch=proposal.branch,
+        pr_number=pr_number,
+        pr_url=pr_url,
+    )
+
+
 def forget_fact_governed_action(cwd: Path, fact_id: str) -> ActionResult:
     cfg = _cfg()
     if not is_governed_mode(cfg.dream.mode):
@@ -312,7 +385,7 @@ def forget_fact_governed_action(cwd: Path, fact_id: str) -> ActionResult:
             fact_id=fact_id,
         )
     repo = project_memory_dir(cwd)
-    preflight_error = _governed_forget_preflight(repo)
+    preflight_error = _governed_proposal_preflight(repo)
     if preflight_error:
         return ActionResult(
             ok=False,
@@ -330,10 +403,10 @@ def forget_fact_governed_action(cwd: Path, fact_id: str) -> ActionResult:
         )
     proposal = build_tombstone_pr_proposal(fact, repo)
     try:
-        materialized_fact_id, materialize_error = _materialize_governed_forget_branch(
+        removed_facts, materialize_error = _materialize_governed_forget_branch(
             repo,
-            fact.fact_id,
             proposal.branch,
+            fact_id=fact.fact_id,
         )
     except RuntimeError as exc:
         return ActionResult(
@@ -351,39 +424,243 @@ def forget_fact_governed_action(cwd: Path, fact_id: str) -> ActionResult:
             fact_id=fact.fact_id,
             branch=proposal.branch,
         )
-    from umx.dream.pipeline import DreamPipeline
-    from umx.github_ops import resolve_repo_ref
+    changed = [item.fact_id for item in (removed_facts or [fact])]
+    return _open_governed_proposal_pr(
+        cwd,
+        repo,
+        proposal,
+        action="forget",
+        failure_message="failed to open governed tombstone PR",
+        success_message=f"opened governed tombstone PR {{pr_number}} for {fact.fact_id}",
+        changed=changed,
+        fact_id=fact.fact_id,
+    )
 
-    pipeline = DreamPipeline(cwd, config=cfg)
-    pr_number = pipeline._push_and_open_pr(proposal)
-    if pr_number is None:
+
+def forget_topic_governed_action(cwd: Path, topic: str) -> ActionResult:
+    cfg = _cfg()
+    if not is_governed_mode(cfg.dream.mode):
         return ActionResult(
             ok=False,
             action="forget",
-            message=pipeline._push_block_reason or "failed to open governed tombstone PR",
-            fact_id=fact.fact_id,
-            branch=proposal.branch,
-            changed=list(proposal.files_changed),
+            message="--governed requires remote or hybrid mode",
         )
-    repo_ref = resolve_repo_ref(repo, config_org=cfg.org)
-    repo_owner = repo_ref.owner or cfg.org
-    pr_url = (
-        f"https://github.com/{repo_owner}/{repo_ref.name}/pull/{pr_number}"
-        if repo_owner
-        else None
-    )
-    message = f"opened governed tombstone PR #{pr_number} for {fact.fact_id}"
-    if pr_url:
-        message += f" ({pr_url})"
-    return ActionResult(
-        ok=True,
+    repo = project_memory_dir(cwd)
+    preflight_error = _governed_proposal_preflight(repo)
+    if preflight_error:
+        return ActionResult(
+            ok=False,
+            action="forget",
+            message=preflight_error,
+        )
+    facts = [fact for fact in load_all_facts(repo, include_superseded=False) if fact.topic == topic]
+    if not facts:
+        return ActionResult(ok=False, action="forget", message=f"topic not found: {topic}")
+    proposal = build_topic_tombstone_pr_proposal(facts, topic, repo)
+    try:
+        removed_facts, materialize_error = _materialize_governed_forget_branch(
+            repo,
+            proposal.branch,
+            topic=topic,
+        )
+    except RuntimeError as exc:
+        return ActionResult(
+            ok=False,
+            action="forget",
+            message=str(exc),
+            branch=proposal.branch,
+        )
+    if materialize_error:
+        return ActionResult(
+            ok=False,
+            action="forget",
+            message=materialize_error,
+            branch=proposal.branch,
+        )
+    changed = [fact.fact_id for fact in (removed_facts or facts)]
+    count = len(changed)
+    return _open_governed_proposal_pr(
+        cwd,
+        repo,
+        proposal,
         action="forget",
-        message=message,
-        fact_id=materialized_fact_id,
-        changed=list(proposal.files_changed),
-        branch=proposal.branch,
-        pr_number=pr_number,
-        pr_url=pr_url,
+        failure_message="failed to open governed tombstone PR",
+        success_message=f"opened governed tombstone PR {{pr_number}} for topic {topic}"
+        + (f" ({count} facts)" if count else ""),
+        changed=changed,
+    )
+
+
+def _find_fact_in_history(repo: Path, *, fact_id: str, relative_path: str) -> Fact | None:
+    fact_path = repo / relative_path
+    for ref in git_rev_list_for_path(repo, relative_path):
+        text = git_read_text_at_ref(repo, ref, relative_path)
+        if text is None:
+            continue
+        for line in text.splitlines():
+            fact = parse_fact_line(line, repo_dir=repo, path=fact_path)
+            if fact is not None and fact.fact_id == fact_id:
+                return fact
+    return None
+
+
+def _resolve_governed_rollback_facts(repo: Path, *, source_pr_number: int) -> tuple[list[Fact], str | None]:
+    from umx.github_ops import read_pr_body, resolve_repo_ref
+
+    repo_ref = resolve_repo_ref(repo, config_org=_cfg().org)
+    repo_owner = repo_ref.owner or _cfg().org
+    if not repo_owner:
+        return [], "governed rollback requires a GitHub owner (set org or origin remote)"
+    body = read_pr_body(repo_owner, repo_ref.name, source_pr_number)
+    if body is None:
+        return [], f"could not read governance PR #{source_pr_number}"
+    payload = assert_governance_pr_body(body)
+    if payload is None:
+        return [], f"governance PR #{source_pr_number} does not contain a fact-delta block"
+    tombstoned = payload.get("tombstoned")
+    if not isinstance(tombstoned, list) or not tombstoned:
+        return [], f"governance PR #{source_pr_number} does not tombstone any facts"
+
+    current_tombstones = {item.fact_id for item in load_tombstones(repo) if item.fact_id}
+    facts: list[Fact] = []
+    expected_fact_ids: set[str] = set()
+    for entry in tombstoned:
+        if not isinstance(entry, dict):
+            return [], f"governance PR #{source_pr_number} contains malformed tombstone entries"
+        fact_id = entry.get("fact_id")
+        relative_path = entry.get("path")
+        if not isinstance(fact_id, str) or not fact_id.strip():
+            return [], f"governance PR #{source_pr_number} tombstone entries must include fact_id"
+        if not isinstance(relative_path, str) or not relative_path.strip():
+            return [], f"governance PR #{source_pr_number} tombstone entries must include path"
+        fact_id = fact_id.strip()
+        relative_path = relative_path.strip()
+        expected_fact_ids.add(fact_id)
+        if find_fact_by_id(repo, fact_id) is not None:
+            return [], f"fact already exists on main: {fact_id}"
+        fact = _find_fact_in_history(repo, fact_id=fact_id, relative_path=relative_path)
+        if fact is None:
+            return [], f"could not reconstruct {fact_id} from git history"
+        facts.append(fact)
+
+    missing_tombstones = sorted(expected_fact_ids - current_tombstones)
+    if missing_tombstones:
+        return [], (
+            "rollback requires active tombstones for all source facts; missing: "
+            + ", ".join(missing_tombstones)
+        )
+    return facts, None
+
+
+def _materialize_governed_rollback_branch(
+    repo: Path,
+    *,
+    source_pr_number: int,
+    facts: list[Fact],
+    branch: str,
+) -> str | None:
+    original_branch = git_current_branch(repo)
+    if original_branch != "main":
+        return (
+            "governed proposal must run from main; current branch is "
+            f"{original_branch or 'detached'}"
+        )
+    if not git_create_branch(repo, branch):
+        return (
+            f"failed to create proposal branch {branch}; "
+            "delete or rename the existing branch and retry"
+        )
+    committed = False
+    restore_error: str | None = None
+    try:
+        removed = remove_tombstones(repo, fact_ids={fact.fact_id for fact in facts})
+        removed_ids = {item.fact_id for item in removed if item.fact_id}
+        missing = sorted({fact.fact_id for fact in facts} - removed_ids)
+        if missing:
+            return "rollback requires active tombstones for all source facts; missing: " + ", ".join(missing)
+        for fact in facts:
+            add_fact(repo, fact, auto_commit=False)
+        commit_result = git_add_and_commit(
+            repo,
+            message=f"umx: rollback PR #{source_pr_number}",
+            config=_cfg(),
+        )
+        if commit_result.failed:
+            return git_commit_failure_message(commit_result, context="commit failed")
+        if commit_result.noop:
+            return f"no rollback changes recorded for PR #{source_pr_number}"
+        committed = True
+        return None
+    finally:
+        if not committed:
+            dirty_paths = changed_paths(repo)
+            git_reset_paths(repo, dirty_paths)
+            for path in dirty_paths:
+                relative = (
+                    path.relative_to(repo).as_posix()
+                    if repo in path.parents
+                    else path.as_posix()
+                )
+                if git_path_exists_at_ref(repo, "HEAD", relative):
+                    git_restore_path(repo, "HEAD", relative)
+                else:
+                    path.unlink(missing_ok=True)
+        if original_branch and not git_checkout(repo, original_branch):
+            restore_error = (
+                f"proposal branch {branch} was created but the repo could not be restored "
+                f"to {original_branch}; run `git checkout {original_branch}` manually"
+            )
+        if restore_error is not None:
+            raise RuntimeError(restore_error)
+
+
+def rollback_governed_action(cwd: Path, source_pr_number: int) -> ActionResult:
+    cfg = _cfg()
+    if not is_governed_mode(cfg.dream.mode):
+        return ActionResult(
+            ok=False,
+            action="rollback",
+            message="rollback requires remote or hybrid mode",
+        )
+    repo = project_memory_dir(cwd)
+    preflight_error = _governed_proposal_preflight(repo)
+    if preflight_error:
+        return ActionResult(ok=False, action="rollback", message=preflight_error)
+    facts, resolve_error = _resolve_governed_rollback_facts(repo, source_pr_number=source_pr_number)
+    if resolve_error:
+        return ActionResult(ok=False, action="rollback", message=resolve_error)
+    proposal = build_rollback_pr_proposal(facts, source_pr_number=source_pr_number, repo_dir=repo)
+    try:
+        materialize_error = _materialize_governed_rollback_branch(
+            repo,
+            source_pr_number=source_pr_number,
+            facts=facts,
+            branch=proposal.branch,
+        )
+    except RuntimeError as exc:
+        return ActionResult(
+            ok=False,
+            action="rollback",
+            message=str(exc),
+            branch=proposal.branch,
+        )
+    if materialize_error:
+        return ActionResult(
+            ok=False,
+            action="rollback",
+            message=materialize_error,
+            branch=proposal.branch,
+        )
+    count = len(facts)
+    return _open_governed_proposal_pr(
+        cwd,
+        repo,
+        proposal,
+        action="rollback",
+        failure_message="failed to open governed rollback PR",
+        success_message=f"opened governed rollback PR {{pr_number}} for source PR #{source_pr_number}"
+        + (f" ({count} facts)" if count else ""),
+        changed=[fact.fact_id for fact in facts],
     )
 
 

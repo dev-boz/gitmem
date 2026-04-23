@@ -1,0 +1,86 @@
+[
+  {
+    "id": "four-color-theorem-birthplace",
+    "question": "Where was Alfred Kempe, the mathematician who proved the four color theorem, born?",
+    "supporting_fact_ids": [
+      "01TESTRETRIEVALEVAL000001",
+      "01TESTRETRIEVALEVAL000002"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000001",
+        "text": "The mathematician Alfred Kempe proved the four color theorem.",
+        "topic": "math",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000002",
+        "text": "The mathematician Alfred Kempe was born in London.",
+        "topic": "biography",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000003",
+        "text": "William Rowan Hamilton discovered quaternions.",
+        "topic": "math",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "id": "python-service-preference",
+    "question": "What beverage does Nina, the engineer who maintains the Python service, prefer?",
+    "supporting_fact_ids": [
+      "01TESTRETRIEVALEVAL000004",
+      "01TESTRETRIEVALEVAL000005"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000004",
+        "text": "Engineer Nina maintains the Python service.",
+        "topic": "ownership",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000005",
+        "text": "Engineer Nina prefers jasmine tea as a beverage.",
+        "topic": "preferences",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000006",
+        "text": "Engineer Omar maintains the Rust service.",
+        "topic": "ownership",
+        "scope": "project"
+      }
+    ]
+  },
+  {
+    "id": "payments-migration-city",
+    "question": "Which city is associated with Marco, the teammate who owns the payments migration?",
+    "supporting_fact_ids": [
+      "01TESTRETRIEVALEVAL000007",
+      "01TESTRETRIEVALEVAL000008"
+    ],
+    "facts": [
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000007",
+        "text": "Teammate Marco owns the payments migration.",
+        "topic": "ownership",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000008",
+        "text": "Teammate Marco works from Lisbon.",
+        "topic": "locations",
+        "scope": "project"
+      },
+      {
+        "fact_id": "01TESTRETRIEVALEVAL000009",
+        "text": "Teammate Priya owns the billing dashboard.",
+        "topic": "ownership",
+        "scope": "project"
+      }
+    ]
+  }
+]

@@ -50,6 +50,26 @@ def append_tombstone(repo_dir: Path, tombstone: Tombstone) -> None:
         handle.write(json.dumps(asdict(tombstone), sort_keys=True) + "\n")
 
 
+def write_tombstones(repo_dir: Path, tombstones: list[Tombstone]) -> None:
+    path = tombstones_path(repo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = "\n".join(json.dumps(asdict(item), sort_keys=True) for item in tombstones)
+    path.write_text(f"{payload}\n" if payload else "")
+
+
+def remove_tombstones(repo_dir: Path, *, fact_ids: set[str]) -> list[Tombstone]:
+    removed: list[Tombstone] = []
+    retained: list[Tombstone] = []
+    for item in load_tombstones(repo_dir):
+        if item.fact_id and item.fact_id in fact_ids:
+            removed.append(item)
+        else:
+            retained.append(item)
+    if removed:
+        write_tombstones(repo_dir, retained)
+    return removed
+
+
 def is_suppressed(fact: Fact, tombstones: list[Tombstone], phase: str = "gather") -> bool:
     for tombstone in tombstones:
         if tombstone.expired():
@@ -84,7 +104,9 @@ def forget_fact(repo_dir: Path, fact_id: str, author: str = "human", reason: str
 
 def forget_topic(repo_dir: Path, topic: str, author: str = "human", reason: str | None = None) -> list[Fact]:
     removed: list[Fact] = []
-    for fact in [fact for fact in load_all_facts(repo_dir) if fact.topic == topic]:
+    for fact in [
+        fact for fact in load_all_facts(repo_dir, include_superseded=False) if fact.topic == topic
+    ]:
         forgotten = forget_fact(repo_dir, fact.fact_id, author=author, reason=reason or f"forgot topic {topic}")
         if forgotten:
             removed.append(forgotten)
