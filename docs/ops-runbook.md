@@ -87,6 +87,14 @@ gitmem eval retrieval > artifacts/retrieval.json
 - `long-memory` and `retrieval` are offline benchmark adapters built from LongMemEval-style and HotpotQA-style subsets.
 - Each command exits nonzero when its pass-rate gate fails, so the same commands work in local smoke checks, CI, and release checklists.
 
+`gitmem eval l2-review` defaults to the Anthropic API and requires `ANTHROPIC_API_KEY`. To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass `--provider claude-cli`:
+
+```bash
+gitmem eval l2-review --provider claude-cli > artifacts/l2-review.json
+```
+
+The `claude-cli` path shells out to `claude --print --output-format json` per case, so wall-clock time and per-call cost mirror Claude Code itself; reserve it for release-gate runs rather than tight inner loops.
+
 If you want a minimal CI/pytest-style gate, run the normal test suite first and then the eval commands as plain subprocess steps:
 
 ```bash

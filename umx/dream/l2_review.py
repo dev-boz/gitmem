@@ -11,13 +11,18 @@ from umx.dream.providers import ProviderUnavailableError
 from umx.governance import PRProposal
 from umx.models import Fact
 from umx.providers import anthropic as anthropic_provider
+from umx.providers import claude_cli as claude_cli_provider
 
 
 L2_REVIEW_PROMPT_ID = "anthropic-l2-review"
 L2_REVIEW_PROMPT_VERSION = "v1"
+L2_CLAUDE_CLI_PROMPT_ID = "claude-cli-l2-review"
 REVIEW_COMMENT_MARKER = "<!-- umx:l2-review -->"
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(?P<payload>\{.*\})\s*```", re.DOTALL)
 _VALID_ACTIONS = frozenset({"approve", "reject", "escalate"})
+
+ANTHROPIC_PROVIDER_ALIASES = frozenset({"anthropic", "anthropic-api", "api"})
+CLAUDE_CLI_PROVIDER_ALIASES = frozenset({"claude-cli", "claude-code", "cli", "oauth"})
 
 
 def anthropic_l2_reviewer(
@@ -42,7 +47,82 @@ def anthropic_l2_reviewer(
         system=_review_system_prompt(),
         prompt=_review_user_prompt(context),
     )
-    parsed = parse_l2_review_response(response.text)
+    return _build_review_payload(
+        response_text=response.text,
+        response_model=response.model,
+        usage=response.usage,
+        existing_facts=existing_facts,
+        new_facts=new_facts,
+        prompt_id=L2_REVIEW_PROMPT_ID,
+    )
+
+
+def claude_cli_l2_reviewer(
+    pr: PRProposal,
+    conventions: ConventionSet,
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+    config: UMXConfig,
+) -> dict[str, object]:
+    """L2 reviewer backed by the Claude Code CLI (`claude -p`).
+
+    Uses the user's existing Claude Code OAuth session, so no
+    `ANTHROPIC_API_KEY` is required. Falls back with a clear error if the
+    CLI is not installed or not authenticated.
+    """
+
+    if not claude_cli_provider.claude_cli_available():
+        raise ProviderUnavailableError(
+            "Claude Code CLI is not available; install `claude` and run `claude login` "
+            "or set UMX_CLAUDE_CLI_BIN to the binary path"
+        )
+
+    context = build_l2_review_context(pr, conventions, existing_facts, new_facts)
+    response = claude_cli_provider.send_claude_cli_message(
+        model=config.dream.l2_model,
+        system=_review_system_prompt(),
+        prompt=_review_user_prompt(context),
+    )
+    return _build_review_payload(
+        response_text=response.text,
+        response_model=response.model,
+        usage=response.usage,
+        existing_facts=existing_facts,
+        new_facts=new_facts,
+        prompt_id=L2_CLAUDE_CLI_PROMPT_ID,
+    )
+
+
+def select_l2_reviewer(provider: str | None):
+    """Resolve a provider name to the matching reviewer callable.
+
+    ``None`` and ``""`` map to the Anthropic API reviewer for backward
+    compatibility with code that does not opt into the new selector.
+    """
+
+    if provider is None:
+        return anthropic_l2_reviewer
+    name = provider.strip().lower()
+    if not name or name in ANTHROPIC_PROVIDER_ALIASES:
+        return anthropic_l2_reviewer
+    if name in CLAUDE_CLI_PROVIDER_ALIASES:
+        return claude_cli_l2_reviewer
+    raise RuntimeError(
+        f"unknown L2 reviewer provider: {provider!r} "
+        f"(expected one of: anthropic, claude-cli)"
+    )
+
+
+def _build_review_payload(
+    *,
+    response_text: str,
+    response_model: str,
+    usage: dict[str, int],
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+    prompt_id: str,
+) -> dict[str, object]:
+    parsed = parse_l2_review_response(response_text)
     _validate_fact_notes(parsed["fact_notes"], existing_facts, new_facts)
     return {
         "action": parsed["action"],
@@ -54,12 +134,12 @@ def anthropic_l2_reviewer(
             reason=str(parsed["reason"]),
             fact_notes=parsed["fact_notes"],
             violations=parsed["violations"],
-            model=response.model,
-            usage=response.usage,
+            model=response_model,
+            usage=usage,
         ),
-        "usage": response.usage,
-        "model": response.model,
-        "prompt_id": L2_REVIEW_PROMPT_ID,
+        "usage": usage,
+        "model": response_model,
+        "prompt_id": prompt_id,
         "prompt_version": L2_REVIEW_PROMPT_VERSION,
     }
 

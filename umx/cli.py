@@ -1299,8 +1299,28 @@ def eval_group() -> None:
 )
 @click.option("--case", "case_id", default=None)
 @click.option("--min-pass-rate", type=float, default=0.85)
-def eval_l2_review_cmd(cases_path: Path, case_id: str | None, min_pass_rate: float) -> None:
+@click.option(
+    "--provider",
+    "provider",
+    default=None,
+    help=(
+        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY) "
+        "or 'claude-cli' (uses Claude Code CLI OAuth via `claude -p`)"
+    ),
+)
+def eval_l2_review_cmd(
+    cases_path: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    provider: str | None,
+) -> None:
     from umx.dream.l2_eval import run_l2_review_eval
+    from umx.dream.l2_review import select_l2_reviewer
+
+    try:
+        reviewer = select_l2_reviewer(provider)
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
 
     try:
         payload = run_l2_review_eval(
@@ -1308,6 +1328,7 @@ def eval_l2_review_cmd(cases_path: Path, case_id: str | None, min_pass_rate: flo
             _cfg(),
             case_id=case_id,
             min_pass_rate=min_pass_rate,
+            reviewer=reviewer,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

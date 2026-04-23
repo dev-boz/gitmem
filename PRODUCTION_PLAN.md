@@ -2,7 +2,7 @@
 
 **Target release:** v1.0.0 — GitHub-synced memory as the marquee feature.
 **Baseline:** 0.9.1-alpha, 477 tests, local mode production-quality.
-**Last updated:** 2026-04-23
+**Last updated:** 2026-04-24
 **Plan owner:** `copilot-cli`
 
 ## North star
@@ -306,6 +306,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Added `umx.dream.l2_review` plus a small `umx.providers.anthropic` client so L2 review can build a deterministic governance prompt, call Claude Opus 4.7 (`claude-opus-4-7` by default), parse structured JSON verdicts, and render a persisted PR review comment with per-fact notes.
   - `umx dream --tier l2 --pr <n>` now passes the validated governance PR body through to provider review, persists model-backed review comments, records token telemetry in the CLI payload and `meta/processing.jsonl`, and fails clearly when Anthropic is required but `ANTHROPIC_API_KEY` is missing.
   - The local slice is covered by recorded fixture tests, provider-plan tests, governance-path tests, and a fresh full-suite pass at 565 tests; live Anthropic invocation and real GitHub PR-comment persistence remain external acceptance gates.
+  - Follow-up (2026-04-24): added an OAuth-friendly second provider in `umx/providers/claude_cli.py` plus `claude_cli_l2_reviewer` and a `select_l2_reviewer` selector so operators without `ANTHROPIC_API_KEY` can drive the same review prompt through the local Claude Code CLI in headless `-p` mode (`gitmem eval l2-review --provider claude-cli`). Live calibration on the 20-case corpus reached 18/20 pass (status `ok` against the `≥0.85` gate) with the only failures sitting in the `suspected_hallucination` bucket where the model preferred `reject` to the corpus-expected `escalate`.
 
 ### T3.2 — L2 reviewer eval harness
 
@@ -948,6 +949,7 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-24 [T3.1] claude-opus-4-7: added `umx/providers/claude_cli.py` plus `claude_cli_l2_reviewer` and a `select_l2_reviewer(provider)` selector so `gitmem eval l2-review --provider claude-cli` can drive the L2 review prompt through the local Claude Code CLI in headless `-p` mode (operator OAuth, no `ANTHROPIC_API_KEY`). Documented the new `--provider` flag in `docs/cli.md`, `docs/ops-runbook.md`, and `docs/spec-parity.md`, and revalidated the branch at 787 passing tests. Live calibration on the 20-case corpus reached 18/20 (status `ok` against the `≥0.85` gate) with both failures sitting in the `suspected_hallucination` bucket where the model preferred `reject` to the corpus-expected `escalate`.
 - 2026-04-23 [T3.11] copilot-cli: added credential-rotation acceptance coverage for governance PR inventory, including rotated credentialed-origin parsing and a fresh-home reattach + `health --governance` CLI proof, and revalidated the branch at 770 passing tests plus a strict docs build
 - 2026-04-23 [T5.3] copilot-cli: added a first hermetic two-home hybrid sync harness for session propagation and rebase-preserving sequential sync, documented the sequential multi-machine operator flow, and revalidated the branch at 772 passing tests plus a strict docs build
 - 2026-04-23 [T3.8] copilot-cli: added `gitmem rollback --pr ...` to open governed reverse PRs from prior tombstone PRs, reconstruct facts from git history without whole-file rewinds, and revalidated the branch at 774 passing tests plus a strict docs build

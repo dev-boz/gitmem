@@ -64,7 +64,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem audit` | Audit a repo or inspect cross-project promotion candidates | `--cwd`, `--rederive`, `--session`, `--cross-project`, `--proposal-key` |
 | `gitmem propose` | Materialize, push, or open cross-project promotion PRs | `--cwd`, `--cross-project`, `--proposal-key`, `--push`, `--open-pr` |
 | `gitmem init-actions` | Write workflow templates into a target directory | `--dir` |
-| `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate` |
+| `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate`, `--provider` |
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 | `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
 | `gitmem eval retrieval` | Run the HotpotQA-style supporting-fact retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--top-k` |
@@ -72,6 +72,15 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 `gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.
 
 All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.
+
+### L2 reviewer providers
+
+`gitmem eval l2-review` chooses a reviewer via `--provider`:
+
+- `--provider anthropic` (default) — direct Anthropic API. Requires `ANTHROPIC_API_KEY` in the environment.
+- `--provider claude-cli` — shells out to the locally installed Claude Code CLI in headless `-p` mode (`claude --print --output-format json`). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with `UMX_CLAUDE_CLI_BIN`, and the per-call timeout with `UMX_CLAUDE_CLI_TIMEOUT` (seconds, default 180).
+
+Both providers emit the same JSON payload shape and the same `prompt_version`; only the `prompt_id` differs (`anthropic-l2-review` vs `claude-cli-l2-review`) so historical runs stay comparable within a provider.
 
 ## Maintenance and recovery
 

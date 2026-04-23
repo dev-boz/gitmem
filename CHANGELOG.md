@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `gitmem eval l2-review --provider claude-cli` runs the L2 reviewer through the Claude Code CLI in headless `-p` mode, using the operator's existing OAuth session instead of an `ANTHROPIC_API_KEY`. New `umx/providers/claude_cli.py` subprocess wrapper, `claude_cli_l2_reviewer`, and `select_l2_reviewer` selector keep the existing Anthropic API path as the default.
 - Cross-scope promotion to `user`, `project`, and `principle` memory via `umx promote --to ...`
 - Cross-project governance flow: `umx audit --cross-project`, proposal previews, local proposal-branch materialization, guarded `--push`, and explicit `--open-pr`
 - Manual session capture via `umx collect` and first-class Amp transcript capture via `umx capture amp`
@@ -43,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - GitHub remote identity guards now block project/user memory repos from syncing or opening PRs against the wrong GitHub targets
 - `init-project` now resolves slug collisions interactively or with `--yes` and rejects unsafe slug overrides
 - Packaged installs now include the governance protection reference asset required by remote setup and ruleset-management flows
-- Full test suite is currently green at 661 passing tests
+- Full test suite is currently green at 787 passing tests
 
 ## [0.9.1-alpha] - 2026-04-12
 
