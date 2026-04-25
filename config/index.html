@@ -1030,15 +1030,23 @@
 <span class="w">    </span><span class="nt">provider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sentence-transformers</span>
 <span class="w">    </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">all-MiniLM-L6-v2</span>
 <span class="w">    </span><span class="nt">model_version</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">v1.0</span>
+<span class="w">    </span><span class="nt">api_base</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span>
 <span class="w">    </span><span class="nt">candidate_limit</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
 </code></pre></div>
 <ul>
 <li><code>search.backend</code>: <code>fts5</code> for lexical-only search, <code>hybrid</code> to enable the optional embedding reranker.</li>
-<li><code>search.embedding.provider</code>: embedding provider identifier. <code>sentence-transformers</code> is the supported production value today.</li>
+<li><code>search.embedding.provider</code>: embedding provider identifier. Supported values today are <code>sentence-transformers</code> (default local backend), <code>openai</code>, <code>voyage</code>, and <code>fixture</code> (test-only).</li>
 <li><code>search.embedding.model</code>: provider-specific model name.</li>
 <li><code>search.embedding.model_version</code>: cache signature version. Changing provider, model, or model version requires <code>gitmem rebuild-index --embeddings</code>.</li>
+<li><code>search.embedding.api_base</code>: optional endpoint override for OpenAI-compatible or Voyage-compatible embedding APIs.</li>
 <li><code>search.embedding.candidate_limit</code>: maximum FTS candidate set passed to the semantic reranker in <code>hybrid</code> mode.</li>
 </ul>
+<p>Remote embedding providers read credentials from the environment, not <code>config.yaml</code>:</p>
+<ul>
+<li><code>openai</code>: <code>UMX_OPENAI_API_KEY</code> first, then <code>OPENAI_API_KEY</code></li>
+<li><code>voyage</code>: <code>UMX_VOYAGE_API_KEY</code> first, then <code>VOYAGE_API_KEY</code></li>
+</ul>
+<p>Anthropic does not currently expose a native embeddings endpoint, so there is no <code>anthropic</code> embedding provider yet.</p>
 <h2 id="telemetry">Telemetry<a class="headerlink" href="#telemetry" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="nt">telemetry</span><span class="p">:</span>
 <span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>

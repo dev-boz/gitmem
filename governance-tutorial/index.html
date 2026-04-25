@@ -1080,14 +1080,15 @@
 <h2 id="1-prerequisites">1. Prerequisites<a class="headerlink" href="#1-prerequisites" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>gh</code> CLI installed and authenticated</li>
-<li>a GitHub org you control</li>
+<li>a GitHub owner you control (your personal account works; a separate org is optional)</li>
 <li>a project already initialized with git</li>
 </ul>
 <h2 id="2-bootstrap-user-memory-in-governed-mode">2. Bootstrap user memory in governed mode<a class="headerlink" href="#2-bootstrap-user-memory-in-governed-mode" title="Permanent link">&para;</a></h2>
 <p>Choose <code>hybrid</code> if you want the lighter-weight governed path first:</p>
-<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>init<span class="w"> </span>--org<span class="w"> </span>your-github-org<span class="w"> </span>--mode<span class="w"> </span>hybrid
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>init<span class="w"> </span>--owner<span class="w"> </span>your-github-user<span class="w"> </span>--mode<span class="w"> </span>hybrid
 </code></pre></div>
-<p>Use <code>--mode remote</code> if you want the stricter remote path instead.</p>
+<p>Use <code>--mode remote</code> if you want the stricter remote path instead.
+On GitHub Free org-owned private repos, remote mode falls back to a workflow guard that auto-reverts unauthorized governed pushes to <code>main</code> after the fact.</p>
 <h2 id="3-initialize-project-memory">3. Initialize project memory<a class="headerlink" href="#3-initialize-project-memory" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>init-project<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
@@ -1106,7 +1107,8 @@ gitmem<span class="w"> </span>collect<span class="w"> </span>--cwd<span class="w
 <h2 id="5-sync-sessions">5. Sync sessions<a class="headerlink" href="#5-sync-sessions" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>sync<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
-<p>Use <code>gitmem sync</code>, not raw <code>git push</code>, for the normal governed session flow.</p>
+<p>Use <code>gitmem sync</code>, not raw <code>git push</code>, for the normal governed session flow.
+When repository rulesets are unavailable, the deployed <code>main-guard.yml</code> workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to <code>main</code> are reverted by GitHub Actions.</p>
 <h2 id="6-check-governance-health">6. Check governance health<a class="headerlink" href="#6-check-governance-health" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--governance<span class="w"> </span>--format<span class="w"> </span>human
 </code></pre></div>

@@ -1081,7 +1081,7 @@
 <tr>
 <td><code>gitmem init</code></td>
 <td>Initialize <code>~/.umx/</code></td>
-<td><code>--org</code>, <code>--mode local\|remote\|hybrid</code></td>
+<td><code>--owner</code> (<code>--org</code> compatibility alias), <code>--mode local\|remote\|hybrid</code></td>
 </tr>
 <tr>
 <td><code>gitmem init-project</code></td>
@@ -1288,7 +1288,7 @@
 <tbody>
 <tr>
 <td><code>gitmem sync</code></td>
-<td>Sync governed repos to GitHub</td>
+<td>Sync project and user memory repos to their configured remotes</td>
 <td><code>--cwd</code></td>
 </tr>
 <tr>
@@ -1328,6 +1328,7 @@
 </tr>
 </tbody>
 </table>
+<p>In local mode, <code>gitmem sync</code> remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff.</p>
 <p><code>gitmem eval l2-review</code> and <code>gitmem eval inject</code> are native gitmem evals over checked-in corpora. <code>gitmem eval long-memory</code> and <code>gitmem eval retrieval</code> are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.</p>
 <p>All <code>gitmem eval ...</code> commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.</p>
 <h3 id="l2-reviewer-providers">L2 reviewer providers<a class="headerlink" href="#l2-reviewer-providers" title="Permanent link">&para;</a></h3>

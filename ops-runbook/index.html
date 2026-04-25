@@ -462,10 +462,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#if-you-need-a-fresh-machine-or-isolated-test-org" class="md-nav__link">
+  <a href="#if-you-need-a-fresh-machine-or-isolated-test-owner" class="md-nav__link">
     <span class="md-ellipsis">
       
-        If you need a fresh machine or isolated test org
+        If you need a fresh machine or isolated test owner
       
     </span>
   </a>
@@ -1045,10 +1045,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#if-you-need-a-fresh-machine-or-isolated-test-org" class="md-nav__link">
+  <a href="#if-you-need-a-fresh-machine-or-isolated-test-owner" class="md-nav__link">
     <span class="md-ellipsis">
       
-        If you need a fresh machine or isolated test org
+        If you need a fresh machine or isolated test owner
       
     </span>
   </a>
@@ -1197,27 +1197,27 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>retrieval<span class="w"> </span>&gt;<span class="w"> </span>artifacts/retrieval.json
 </code></pre></div>
 <p>Keep external frameworks optional. If you want DeepEval or another reporting layer, ingest the emitted JSON artifacts there rather than adding framework-specific runtime dependencies to the core gitmem path.</p>
-<h2 id="if-you-need-a-fresh-machine-or-isolated-test-org">If you need a fresh machine or isolated test org<a class="headerlink" href="#if-you-need-a-fresh-machine-or-isolated-test-org" title="Permanent link">&para;</a></h2>
-<p>Use a dedicated <code>UMX_HOME</code> when you want to attach the same project to a separate machine, sandbox, or GitHub org without touching your primary local state:</p>
+<h2 id="if-you-need-a-fresh-machine-or-isolated-test-owner">If you need a fresh machine or isolated test owner<a class="headerlink" href="#if-you-need-a-fresh-machine-or-isolated-test-owner" title="Permanent link">&para;</a></h2>
+<p>Use a dedicated <code>UMX_HOME</code> when you want to attach the same project to a separate machine, sandbox, or GitHub owner without touching your primary local state:</p>
 <div class="highlight"><pre><span></span><code><span class="nb">export</span><span class="w"> </span><span class="nv">UMX_HOME</span><span class="o">=</span>/path/to/isolated-umx-home
-gitmem<span class="w"> </span>init<span class="w"> </span>--org<span class="w"> </span>&lt;org&gt;<span class="w"> </span>--mode<span class="w"> </span>hybrid
+gitmem<span class="w"> </span>init<span class="w"> </span>--owner<span class="w"> </span>&lt;owner&gt;<span class="w"> </span>--mode<span class="w"> </span>hybrid
 gitmem<span class="w"> </span>init-project<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--yes
 </code></pre></div>
 <ul>
 <li>A fresh home now reuses existing remote <code>umx-user</code> and project memory repos instead of failing on a non-fast-forward bootstrap push.</li>
-<li>Keep the alternate <code>UMX_HOME</code> isolated when dogfooding a different org or credential set.</li>
+<li>Keep the alternate <code>UMX_HOME</code> isolated when dogfooding a different owner or credential set.</li>
 <li>Use <code>gitmem sync --cwd /path/to/project</code> after attachment to confirm the remote is reachable from the new machine.</li>
 </ul>
 <h2 id="if-you-need-to-rotate-github-credentials">If you need to rotate GitHub credentials<a class="headerlink" href="#if-you-need-to-rotate-github-credentials" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Confirm the current account still sees the expected org:</li>
+<li>Confirm the current account still sees the expected owner:</li>
 </ol>
 <div class="highlight"><pre><span></span><code>gh<span class="w"> </span>auth<span class="w"> </span>status
 gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--governance<span class="w"> </span>--format<span class="w"> </span>human
 </code></pre></div>
 <ol>
 <li>
-<p>Re-authenticate <code>gh</code> with the replacement credential that still has access to the same memory-repo org.</p>
+<p>Re-authenticate <code>gh</code> with the replacement credential that still has access to the same memory-repo owner.</p>
 </li>
 <li>
 <p>Re-run a managed sync:</p>
@@ -1226,18 +1226,20 @@ gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>sync<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
 <ol>
-<li>If you need to test or stage the rotation first, use an isolated <code>UMX_HOME</code> and reattach with <code>gitmem init --org ... --mode hybrid</code> plus <code>gitmem init-project --cwd ... --yes</code>.</li>
+<li>If you need to test or stage the rotation first, use an isolated <code>UMX_HOME</code> and reattach with <code>gitmem init --owner ... --mode hybrid</code> plus <code>gitmem init-project --cwd ... --yes</code>.</li>
 </ol>
-<p>The memory state stays in the remote <code>umx-user</code> and project repos, so a fresh <code>UMX_HOME</code> can reattach after the credential swap as long as the new credential still has access to the target org.</p>
+<p>The memory state stays in the remote <code>umx-user</code> and project repos, so a fresh <code>UMX_HOME</code> can reattach after the credential swap as long as the new credential still has access to the target owner.</p>
 <h2 id="if-you-work-from-multiple-machines">If you work from multiple machines<a class="headerlink" href="#if-you-work-from-multiple-machines" title="Permanent link">&para;</a></h2>
 <p>For the currently supported low-friction flow, keep each machine on the same project slug and remote memory repo, then use managed sync when handing work off:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>sync<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
 <ul>
+<li>In local mode, <code>gitmem sync</code> stays a no-op until at least one memory repo (<code>projects/&lt;slug&gt;</code> or <code>umx-user</code>) has a configured git remote. Once a remote exists, the same command will fetch/rebase/push local memory-repo commits instead of requiring raw git commands.</li>
 <li>Sync on machine A before switching away, especially after new session capture or other operational state changes.</li>
 <li>Sync on machine B before starting new work so <code>main</code> fast-forwards to the latest shared memory state.</li>
-<li>The current automated coverage exercises this sequential two-home hybrid flow, including the case where machine B rebases its own new session commit after machine A has already advanced <code>main</code>.</li>
-<li>Governed fact changes still belong in PR branches; this guidance is only for shared session history and coordination state on <code>main</code>.</li>
+<li>When the user memory repo also has a configured remote, <code>gitmem sync</code> carries both the project repo and <code>umx-user</code>, so cross-project promotions made in local mode can follow the same handoff path.</li>
+<li>The automated coverage now exercises sequential two-home project handoff in <code>local</code>, <code>hybrid</code>, and <code>remote</code> modes, plus a local-mode user-memory promotion handoff where one machine promotes a fact to user scope and the second machine picks it up through <code>gitmem sync</code>.</li>
+<li>Governed fact changes still belong in PR branches; this guidance is for shared session history, user-memory propagation, and coordination state on <code>main</code>.</li>
 </ul>
 <p>If you expect overlap or divergence:</p>
 <ul>
@@ -1254,6 +1256,7 @@ gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"
 <ul>
 <li>gitmem redacts before session persistence, but operators should still treat captured transcripts as sensitive.</li>
 <li><code>gitmem</code> safety checks cover <code>sync</code> and other managed flows; raw git commands can bypass them.</li>
+<li>On GitHub Free org-owned private repos, <code>main-guard.yml</code> is the current fallback for missing rulesets. It preserves auditability by reverting unauthorized governed pushes with a bot commit, but it is still post-push enforcement rather than hard branch protection.</li>
 <li>In current branch-head behavior, <code>doctor</code> is the safer first stop for repo issues than ad hoc file edits.</li>
 </ul>
 
