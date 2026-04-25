@@ -388,7 +388,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Test against a throwaway repo in CI
 - Notes:
   - Implemented the safe local scaffolding around the committed reference artifact: `umx/github_ops.py` now loads and validates `governance-branch-protection.reference.json`, builds a managed ruleset payload, paginates repository-ruleset discovery, and supports create/update/unchanged apply semantics without auto-enabling live enforcement.
-  - Remote bootstrap/setup flows now surface governance-protection status explicitly after bootstrap. In the current codebase that status is intentionally `deferred`: remote sync, Dream maintenance, and other governed coordination flows still direct-push `main`, so enabling `require_pull_request` today would break remote mode or require an unsafe bypass.
+  - Remote bootstrap/setup flows now surface governance-protection status explicitly after bootstrap. When live rulesets are unavailable because governed maintenance still direct-pushes `main` or the target repo cannot enforce private rulesets, the shipped fallback status is `fallback`: remote mode deploys a `main-guard.yml` workflow that auto-reverts governed direct-main pushes unless the tip commit is associated with a merged PR carrying `state: approved`.
+  - T3.6 should target **repository-level** protection under any GitHub owner, not organization-wide rulesets. GitHub Free org-owned private repos still do not enforce the managed ruleset, so the current workaround is post-push audit/remediation rather than true hard protection.
+  - The CLI/docs/spec now use **GitHub owner** wording and prefer `gitmem init --owner ...` while keeping `--org` as a compatibility alias, so governed mode no longer implies a paid org account is required.
   - Local validation is complete for the safe slice: targeted CLI/GitHub coverage is green at 91 passing tests, the full local suite is green at 632 passing tests, and ad hoc review found one paginated-ruleset discovery bug that was fixed before final validation. Remaining live enforcement stays blocked until governed maintenance/session sync no longer depends on direct pushes to `main`, or a dedicated non-human bypass identity exists.
 
 ### T3.7 — Concurrent PR conflict detection
@@ -524,7 +526,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Status: `[~]`
 - Owner: copilot-cli
 - Depends on: —
-- Files: `umx/search_semantic.py`, `umx/providers/embeddings.py` (new)
+- Files: `umx/search_semantic.py`, `umx/providers/embeddings.py`, `umx/config.py`, `tests/test_embedding_backends.py`, `docs/config.md`, `gitmem-spec-v0_9.md`, `README.md`
 - Outcome: Pluggable embedding backends — local `sentence-transformers`, OpenAI, Anthropic (if available), Voyage — selectable via config.
 - Acceptance:
   - Each backend tested with a fixture
@@ -534,7 +536,10 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Landed the thin first slice instead of the whole provider matrix at once: `search.embedding.provider` now resolves through a new `umx/providers/embeddings.py` seam, with the current production path preserved as `sentence-transformers` plus a deterministic `fixture` backend for regression coverage.
   - `.umx.json` now records both a repo-level `embedding_config` signature and per-fact `embedding_provider` / `embedding_model` / `embedding_model_version` metadata so provider/model/version drift is explicit and lossless.
   - Hybrid search and Dream prewarm no longer silently create mixed caches after a provider/model switch: when the stored signature differs from config, semantic reranking falls back to lexical-only behavior and `doctor` / `search` surface a clear `umx rebuild-index --embeddings` message.
-  - The local slice is covered by new backend/switch tests, updated CLI/doctor expectations, the legacy-cache upgrade regression noted during ad hoc review, and a fresh full-suite pass at `python3 -m pytest -q` → 705 passed. Keep `[~]` until merge/CI per plan rules.
+  - The provider seam now covers remote OpenAI and Voyage embeddings in addition to the existing local `sentence-transformers` and deterministic `fixture` backends. `search.embedding.api_base` allows OpenAI-compatible or Voyage-compatible endpoint overrides, and credentials stay in env vars (`UMX_OPENAI_API_KEY` / `OPENAI_API_KEY`, `UMX_VOYAGE_API_KEY` / `VOYAGE_API_KEY`) rather than config.
+  - `ensure_embeddings()` now batches facts for providers that expose a batch API so `rebuild-index --embeddings` and Dream prewarm do not degrade into one HTTP request per fact, while keeping the legacy `embed_fact` path for local/fixture providers and existing tests.
+  - Docs/spec were updated to describe the shipped provider identifiers and `api_base` override, and to note that Anthropic still lacks a native embeddings endpoint so there is no live `anthropic` embedding backend yet.
+  - Current local validation is green at `python3 -m pytest -q tests/test_embedding_backends.py tests/test_cli_extras.py tests/test_dream.py tests/test_doctor.py` → 42 passed, `python3 -m pytest -q` → 796 passed, plus `mkdocs build --strict` in an isolated docs venv. Keep `[~]` until merge/CI per plan rules.
 
 ### T4.4 — Budget-aware inject retuned
 
@@ -631,7 +636,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Status: `[~]`
 - Owner: copilot-cli
 - Depends on: T3.11
-- Files: `tests/test_multi_machine.py` (new)
+- Files: `umx/cli.py`, `tests/test_multi_machine.py`, `docs/ops-runbook.md`, `docs/cli.md`, `README.md`
 - Outcome: Matrix: 2 machines × {local, hybrid, remote} × {user, project} scopes — verify consistent state after sync.
 - Acceptance:
   - Matrix runs in CI against a test org
@@ -642,7 +647,11 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Live rebootstrap against `dev-boz-gitmem2/gitmem` now succeeds from a brand-new `UMX_HOME`, restoring the expected 21 synced sessions before a follow-up `gitmem sync`.
   - Added `tests/test_multi_machine.py` with a first hermetic two-home hybrid project harness over a shared bare remote, covering straight session propagation from machine A to B and the rebase path where machine B syncs its own new session after A has already advanced `main`.
   - `docs/ops-runbook.md` now records the currently supported sequential multi-machine discipline: sync before switching machines, sync before resuming work, and keep governed fact changes on PR branches instead of `main`.
-  - Remaining scope is the broader 2-machine matrix in CI plus documented divergence/conflict handling for parallel dreams and other concurrent writes.
+  - `gitmem sync` now honors attached remotes in `local` mode instead of always no-oping: when either the project repo or `umx-user` has a remote, the command fetches/rebases/pushes that repo, still leaving remote-less local setups unchanged.
+  - Two-home coverage now spans project-sync handoff in `local`, `hybrid`, and `remote` modes, plus local user-scope promotion handoff and a user-remote-only local sync path so user memory can propagate even when the project repo itself is not shared remotely.
+  - Sync now pushes `umx-user` before the project repo so local promotion handoffs fail safer (duplicate visibility beats disappearing the fact from project scope before user scope lands remotely).
+  - Current local validation is green at `python3 -m pytest -q tests/test_multi_machine.py tests/test_governance.py tests/test_commands.py` → 103 passed, `python3 -m pytest -q` → 793 passed, plus `mkdocs build --strict` in an isolated docs venv.
+  - Remaining scope is the live CI/test-org matrix plus conflict handling for genuinely concurrent writes (parallel dreams and other overlapping direct-main activity), not the sequential handoff path.
 
 ### T5.4 — Opt-in telemetry
 
@@ -949,7 +958,10 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-25 [T3.6] copilot-cli: added a remote-mode `main-guard.yml` workflow fallback for free org-owned private repos, updated bootstrap/setup status output from deferred to fallback when live rulesets are unavailable, refreshed the README/governance tutorial/ops runbook wording around post-push remediation, and revalidated the branch at 797 passing tests plus a strict docs build
 - 2026-04-24 [T3.1] claude-opus-4-7: added `umx/providers/claude_cli.py` plus `claude_cli_l2_reviewer` and a `select_l2_reviewer(provider)` selector so `gitmem eval l2-review --provider claude-cli` can drive the L2 review prompt through the local Claude Code CLI in headless `-p` mode (operator OAuth, no `ANTHROPIC_API_KEY`). Documented the new `--provider` flag in `docs/cli.md`, `docs/ops-runbook.md`, and `docs/spec-parity.md`, and revalidated the branch at 787 passing tests. Live calibration on the 20-case corpus reached 18/20 (status `ok` against the `≥0.85` gate) with both failures sitting in the `suspected_hallucination` bucket where the model preferred `reject` to the corpus-expected `escalate`.
+- 2026-04-24 [T4.3] copilot-cli: added OpenAI and Voyage embedding backends behind the existing provider seam, introduced `search.embedding.api_base`, batched remote embedding generation in `ensure_embeddings()`, refreshed the config/spec/README docs for the new provider surface, and revalidated the branch at 796 passing tests plus a strict docs build
+- 2026-04-24 [T5.3] copilot-cli: taught `gitmem sync` to use attached remotes in local mode, sync `umx-user` alongside the project repo (including a user-remote-only local path), expanded the hermetic two-home matrix across local/hybrid/remote plus local user-scope promotion handoff, refreshed the multi-machine runbook/CLI docs, and revalidated at 793 passing tests plus a strict docs build
 - 2026-04-23 [T3.11] copilot-cli: added credential-rotation acceptance coverage for governance PR inventory, including rotated credentialed-origin parsing and a fresh-home reattach + `health --governance` CLI proof, and revalidated the branch at 770 passing tests plus a strict docs build
 - 2026-04-23 [T5.3] copilot-cli: added a first hermetic two-home hybrid sync harness for session propagation and rebase-preserving sequential sync, documented the sequential multi-machine operator flow, and revalidated the branch at 772 passing tests plus a strict docs build
 - 2026-04-23 [T3.8] copilot-cli: added `gitmem rollback --pr ...` to open governed reverse PRs from prior tombstone PRs, reconstruct facts from git history without whole-file rewinds, and revalidated the branch at 774 passing tests plus a strict docs build

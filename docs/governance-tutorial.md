@@ -5,7 +5,7 @@ This tutorial covers the **current shipped** remote/hybrid path. It is useful, b
 ## 1. Prerequisites
 
 - `gh` CLI installed and authenticated
-- a GitHub org you control
+- a GitHub owner you control (your personal account works; a separate org is optional)
 - a project already initialized with git
 
 ## 2. Bootstrap user memory in governed mode
@@ -13,10 +13,11 @@ This tutorial covers the **current shipped** remote/hybrid path. It is useful, b
 Choose `hybrid` if you want the lighter-weight governed path first:
 
 ```bash
-gitmem init --org your-github-org --mode hybrid
+gitmem init --owner your-github-user --mode hybrid
 ```
 
 Use `--mode remote` if you want the stricter remote path instead.
+On GitHub Free org-owned private repos, remote mode falls back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after the fact.
 
 ## 3. Initialize project memory
 
@@ -54,6 +55,7 @@ gitmem sync --cwd /path/to/project
 ```
 
 Use `gitmem sync`, not raw `git push`, for the normal governed session flow.
+When repository rulesets are unavailable, the deployed `main-guard.yml` workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to `main` are reverted by GitHub Actions.
 
 ## 6. Check governance health
 

@@ -8,7 +8,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 
 | Command | Purpose | Common flags |
 |---|---|---|
-| `gitmem init` | Initialize `~/.umx/` | `--org`, `--mode local\|remote\|hybrid` |
+| `gitmem init` | Initialize `~/.umx/` | `--owner` (`--org` compatibility alias), `--mode local\|remote\|hybrid` |
 | `gitmem init-project` | Create a project memory repo | `--cwd`, `--slug`, `--yes` |
 | `gitmem setup-remote` | Attach an existing project repo to GitHub-backed memory | `--cwd`, `--mode remote\|hybrid` |
 | `gitmem config set` | Set supported config keys | `redaction.patterns <value>`, `telemetry.enabled <true\|false>` |
@@ -60,7 +60,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 
 | Command | Purpose | Common flags |
 |---|---|---|
-| `gitmem sync` | Sync governed repos to GitHub | `--cwd` |
+| `gitmem sync` | Sync project and user memory repos to their configured remotes | `--cwd` |
 | `gitmem audit` | Audit a repo or inspect cross-project promotion candidates | `--cwd`, `--rederive`, `--session`, `--cross-project`, `--proposal-key` |
 | `gitmem propose` | Materialize, push, or open cross-project promotion PRs | `--cwd`, `--cross-project`, `--proposal-key`, `--push`, `--open-pr` |
 | `gitmem init-actions` | Write workflow templates into a target directory | `--dir` |
@@ -68,6 +68,8 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 | `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
 | `gitmem eval retrieval` | Run the HotpotQA-style supporting-fact retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--top-k` |
+
+In local mode, `gitmem sync` remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff.
 
 `gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.
 

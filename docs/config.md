@@ -53,14 +53,23 @@ search:
     provider: sentence-transformers
     model: all-MiniLM-L6-v2
     model_version: v1.0
+    api_base: null
     candidate_limit: 100
 ```
 
 - `search.backend`: `fts5` for lexical-only search, `hybrid` to enable the optional embedding reranker.
-- `search.embedding.provider`: embedding provider identifier. `sentence-transformers` is the supported production value today.
+- `search.embedding.provider`: embedding provider identifier. Supported values today are `sentence-transformers` (default local backend), `openai`, `voyage`, and `fixture` (test-only).
 - `search.embedding.model`: provider-specific model name.
 - `search.embedding.model_version`: cache signature version. Changing provider, model, or model version requires `gitmem rebuild-index --embeddings`.
+- `search.embedding.api_base`: optional endpoint override for OpenAI-compatible or Voyage-compatible embedding APIs.
 - `search.embedding.candidate_limit`: maximum FTS candidate set passed to the semantic reranker in `hybrid` mode.
+
+Remote embedding providers read credentials from the environment, not `config.yaml`:
+
+- `openai`: `UMX_OPENAI_API_KEY` first, then `OPENAI_API_KEY`
+- `voyage`: `UMX_VOYAGE_API_KEY` first, then `VOYAGE_API_KEY`
+
+Anthropic does not currently expose a native embeddings endpoint, so there is no `anthropic` embedding provider yet.
 
 ## Telemetry
 

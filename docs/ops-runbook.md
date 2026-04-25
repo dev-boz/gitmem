@@ -106,30 +106,30 @@ gitmem eval retrieval > artifacts/retrieval.json
 
 Keep external frameworks optional. If you want DeepEval or another reporting layer, ingest the emitted JSON artifacts there rather than adding framework-specific runtime dependencies to the core gitmem path.
 
-## If you need a fresh machine or isolated test org
+## If you need a fresh machine or isolated test owner
 
-Use a dedicated `UMX_HOME` when you want to attach the same project to a separate machine, sandbox, or GitHub org without touching your primary local state:
+Use a dedicated `UMX_HOME` when you want to attach the same project to a separate machine, sandbox, or GitHub owner without touching your primary local state:
 
 ```bash
 export UMX_HOME=/path/to/isolated-umx-home
-gitmem init --org <org> --mode hybrid
+gitmem init --owner <owner> --mode hybrid
 gitmem init-project --cwd /path/to/project --yes
 ```
 
 - A fresh home now reuses existing remote `umx-user` and project memory repos instead of failing on a non-fast-forward bootstrap push.
-- Keep the alternate `UMX_HOME` isolated when dogfooding a different org or credential set.
+- Keep the alternate `UMX_HOME` isolated when dogfooding a different owner or credential set.
 - Use `gitmem sync --cwd /path/to/project` after attachment to confirm the remote is reachable from the new machine.
 
 ## If you need to rotate GitHub credentials
 
-1. Confirm the current account still sees the expected org:
+1. Confirm the current account still sees the expected owner:
 
    ```bash
    gh auth status
    gitmem health --cwd /path/to/project --governance --format human
    ```
 
-2. Re-authenticate `gh` with the replacement credential that still has access to the same memory-repo org.
+2. Re-authenticate `gh` with the replacement credential that still has access to the same memory-repo owner.
 
 3. Re-run a managed sync:
 
@@ -137,9 +137,9 @@ gitmem init-project --cwd /path/to/project --yes
    gitmem sync --cwd /path/to/project
    ```
 
-4. If you need to test or stage the rotation first, use an isolated `UMX_HOME` and reattach with `gitmem init --org ... --mode hybrid` plus `gitmem init-project --cwd ... --yes`.
+4. If you need to test or stage the rotation first, use an isolated `UMX_HOME` and reattach with `gitmem init --owner ... --mode hybrid` plus `gitmem init-project --cwd ... --yes`.
 
-The memory state stays in the remote `umx-user` and project repos, so a fresh `UMX_HOME` can reattach after the credential swap as long as the new credential still has access to the target org.
+The memory state stays in the remote `umx-user` and project repos, so a fresh `UMX_HOME` can reattach after the credential swap as long as the new credential still has access to the target owner.
 
 ## If you work from multiple machines
 
@@ -149,10 +149,12 @@ For the currently supported low-friction flow, keep each machine on the same pro
 gitmem sync --cwd /path/to/project
 ```
 
+- In local mode, `gitmem sync` stays a no-op until at least one memory repo (`projects/<slug>` or `umx-user`) has a configured git remote. Once a remote exists, the same command will fetch/rebase/push local memory-repo commits instead of requiring raw git commands.
 - Sync on machine A before switching away, especially after new session capture or other operational state changes.
 - Sync on machine B before starting new work so `main` fast-forwards to the latest shared memory state.
-- The current automated coverage exercises this sequential two-home hybrid flow, including the case where machine B rebases its own new session commit after machine A has already advanced `main`.
-- Governed fact changes still belong in PR branches; this guidance is only for shared session history and coordination state on `main`.
+- When the user memory repo also has a configured remote, `gitmem sync` carries both the project repo and `umx-user`, so cross-project promotions made in local mode can follow the same handoff path.
+- The automated coverage now exercises sequential two-home project handoff in `local`, `hybrid`, and `remote` modes, plus a local-mode user-memory promotion handoff where one machine promotes a fact to user scope and the second machine picks it up through `gitmem sync`.
+- Governed fact changes still belong in PR branches; this guidance is for shared session history, user-memory propagation, and coordination state on `main`.
 
 If you expect overlap or divergence:
 
@@ -174,4 +176,5 @@ For restore and upgrade details, use the [upgrade guide](upgrade-0.9-to-1.0.md).
 
 - gitmem redacts before session persistence, but operators should still treat captured transcripts as sensitive.
 - `gitmem` safety checks cover `sync` and other managed flows; raw git commands can bypass them.
+- On GitHub Free org-owned private repos, `main-guard.yml` is the current fallback for missing rulesets. It preserves auditability by reverting unauthorized governed pushes with a bot commit, but it is still post-push enforcement rather than hard branch protection.
 - In current branch-head behavior, `doctor` is the safer first stop for repo issues than ad hoc file edits.

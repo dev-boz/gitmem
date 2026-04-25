@@ -86,7 +86,7 @@ def _governance_pr_body() -> str:
 
 def test_cli_init_and_status(project_dir, umx_home) -> None:
     runner = CliRunner()
-    result = runner.invoke(main, ["init", "--org", "memory-org"])
+    result = runner.invoke(main, ["init", "--owner", "memory-owner"])
     assert result.exit_code == 0
 
     result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "demo"])
@@ -490,8 +490,9 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
         result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "demo"])
 
     assert result.exit_code == 0, result.output
-    assert "governance-protection: deferred" in result.output
+    assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts governed main pushes" in result.output
 
     repo = project_memory_dir(project_dir)
     verify = subprocess.run(
@@ -510,6 +511,7 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
     assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
 
     log = subprocess.run(
         ["git", "-C", str(repo), "log", "--oneline"],
@@ -532,11 +534,13 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
         result = runner.invoke(main, ["init", "--org", "memory-org", "--mode", "remote"])
 
     assert result.exit_code == 0, result.output
-    assert "governance-protection: deferred" in result.output
+    assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts governed main pushes" in result.output
     assert (user_repo / ".github" / "workflows" / "approval-gate.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l1-dream.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l2-review.yml").exists()
+    assert (user_repo / ".github" / "workflows" / "main-guard.yml").exists()
 
     tree = subprocess.run(
         ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
@@ -547,6 +551,7 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
     assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
 
 
 def test_cli_init_hybrid_attaches_existing_user_remote_repo(umx_home, tmp_path, monkeypatch) -> None:
@@ -1061,8 +1066,9 @@ def test_cli_setup_remote_remote_reports_deferred_governance_protection(
         result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
 
     assert result.exit_code == 0, result.output
-    assert "governance-protection: deferred" in result.output
+    assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts governed main pushes" in result.output
 
     tree = subprocess.run(
         ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
@@ -1073,6 +1079,18 @@ def test_cli_setup_remote_remote_reports_deferred_governance_protection(
     assert ".github/workflows/approval-gate.yml" in tree.stdout
     assert ".github/workflows/l1-dream.yml" in tree.stdout
     assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
+
+
+def test_cli_setup_remote_requires_owner_config(project_dir) -> None:
+    save_config(config_path(), default_config())
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "remote"])
+
+    assert result.exit_code != 0
+    assert "no GitHub owner configured" in result.output
+    assert "umx init --owner <user-or-org> --mode remote" in result.output
 
 
 def test_cli_setup_remote_attaches_existing_remote_repo_for_fresh_local_project_repo(

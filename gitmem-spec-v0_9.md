@@ -79,8 +79,8 @@ Existing solutions either require cloud infrastructure, are locked to a single t
 
 ## 2  Design Principles
 
-- **Git is the source of truth. Filesystem is the working copy.** Local directories are git clones of repos in the memory org. GitHub is canonical. If local and remote diverge, git merge resolves.
-- **Memory never lives in project repos.** All memory is stored in a separate GitHub organisation. Project repos stay clean — no session logs, no memory files, no dream agent noise polluting code history or leaking to collaborators.
+- **Git is the source of truth. Filesystem is the working copy.** Local directories are git clones of repos under a dedicated GitHub owner you control. GitHub is canonical. If local and remote diverge, git merge resolves.
+- **Memory never lives in project repos.** All memory is stored in dedicated GitHub repos under a GitHub owner you control. Project repos stay clean — no session logs, no memory files, no dream agent noise polluting code history or leaking to collaborators.
 - **Tool-agnostic by convention.** Tools adopt the spec; gitmem does not adopt tools.
 - **Don't fight native memory systems.** Read what tools already write. Aggregate, don't replace.
 - **Hierarchical scoping.** Memory is injected at the most specific relevant level, not dumped wholesale.
@@ -94,7 +94,7 @@ Existing solutions either require cloud infrastructure, are locked to a single t
 - **Storage and presentation are the same layer.** Markdown is the source of truth. JSON is a derived cache. SQLite is a derived search index. Both are local build artifacts, never committed to memory repos.
 - **Redaction fails closed.** If any safety pass (secret scanning, redaction) fails for any reason, the affected content MUST be quarantined — never committed or pushed. Silent failure is a security breach.
 - **Zero injection by default.** Nothing is added to context unless relevant to the current scope.
-- **Separate org, not separate account.** The memory org is owned by your personal GitHub account. Your existing git transport credentials and authenticated `gh` session work automatically — zero extra gitmem-specific auth bootstrap.
+- **Separate repos, optional separate owner.** The memory owner can be your personal GitHub account or a dedicated org. Your existing git transport credentials and authenticated `gh` session work automatically — zero extra gitmem-specific auth bootstrap.
 
 ---
 
@@ -102,7 +102,7 @@ Existing solutions either require cloud infrastructure, are locked to a single t
 
 ### Separation model
 
-Memory is **completely separate** from project repos. Project repos contain code. Memory repos contain cognition. They live in different GitHub organisations and never cross-pollinate.
+Memory is **completely separate** from project repos. Project repos contain code. Memory repos contain cognition. They live in dedicated GitHub memory repos and never cross-pollinate.
 
 Why:
 - Project repos stay clean — no `.umx/` directories, no session logs, no dream commits in history
@@ -112,11 +112,11 @@ Why:
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│  GitHub Memory Org (source of truth)                             │
-│  Separate org, private repos, your personal account owns it      │
+│  GitHub Memory Owner (source of truth)                           │
+│  Personal account or dedicated org; private repos recommended    │
 │                                                                  │
-│  memory-org/user             ← user-global memory                │
-│  memory-org/<project-slug>   ← per-project memory (one per)      │
+│  memory-owner/user           ← user-global memory                │
+│  memory-owner/<project-slug> ← per-project memory (one per)      │
 │                                                                  │
 │  Each repo contains:                                             │
 │    CONVENTIONS.md  human-authored project schema (S:5)           │
@@ -173,7 +173,7 @@ Project memory repos are named by slug matching the project they track. Default:
 
 ### Auth model
 
-The memory org is owned by your personal GitHub account. This means:
+The memory owner is something you control. This means:
 
 - **Locally:** Your existing SSH keys and `gh` auth work. Agents see local directories, not GitHub.
 - **API access:** Current alpha GitHub operations are routed through authenticated `gh` CLI usage rather than a gitmem-managed PAT field.
@@ -519,18 +519,18 @@ When Prune runs in `remote`/`hybrid` mode on a detached worker (for example GitH
 
 ## 7  Scope Hierarchy
 
-Memory is scoped hierarchically. All memory lives in the memory org — **never inside project repos**. Resolution walks from most specific to most general.
+Memory is scoped hierarchically. All memory lives under the memory owner — **never inside project repos**. Resolution walks from most specific to most general.
 
 | Scope | Stored in | Local path | Always loaded |
 |-------|-----------|------------|---------------|
-| **User** | `memory-org/user` | `$UMX_HOME/user/` | Yes |
-| **Tool** | `memory-org/user` (subdirectory) | `$UMX_HOME/user/tools/<n>.md` | Yes |
-| **Machine** | `memory-org/user` (subdirectory) | `$UMX_HOME/user/machines/<hostname>.md` | Yes |
-| **Project** | `memory-org/<slug>` | `$UMX_HOME/projects/<slug>/` | Yes |
-| **Project (private)** | `memory-org/<slug>` (gitignored) | `$UMX_HOME/projects/<slug>/local/private/` | Yes |
-| **Project (secret)** | `memory-org/<slug>` (gitignored) | `$UMX_HOME/projects/<slug>/local/secret/` | **No** |
-| **Folder** | `memory-org/<slug>` (subdirectory) | `$UMX_HOME/projects/<slug>/folders/<path>.md` | Lazy |
-| **File** | `memory-org/<slug>` (subdirectory) | `$UMX_HOME/projects/<slug>/files/<file>.md` | Lazy |
+| **User** | `memory-owner/user` | `$UMX_HOME/user/` | Yes |
+| **Tool** | `memory-owner/user` (subdirectory) | `$UMX_HOME/user/tools/<n>.md` | Yes |
+| **Machine** | `memory-owner/user` (subdirectory) | `$UMX_HOME/user/machines/<hostname>.md` | Yes |
+| **Project** | `memory-owner/<slug>` | `$UMX_HOME/projects/<slug>/` | Yes |
+| **Project (private)** | `memory-owner/<slug>` (gitignored) | `$UMX_HOME/projects/<slug>/local/private/` | Yes |
+| **Project (secret)** | `memory-owner/<slug>` (gitignored) | `$UMX_HOME/projects/<slug>/local/secret/` | **No** |
+| **Folder** | `memory-owner/<slug>` (subdirectory) | `$UMX_HOME/projects/<slug>/folders/<path>.md` | Lazy |
+| **File** | `memory-owner/<slug>` (subdirectory) | `$UMX_HOME/projects/<slug>/files/<file>.md` | Lazy |
 
 ### Private / secret split
 
@@ -563,7 +563,7 @@ When an agent starts in a project directory, umx resolves the project slug by:
 
 ### Slug collision handling
 
-On `umx init-project`, if a slug already exists in the memory org AND the git remote doesn't match the existing project's recorded remote, umx MUST warn and prompt for a custom slug. Alternative format: `<owner>-<repo>` (e.g., `alice-utils`), configurable via `config.yaml` `project.slug_format: name | owner-name`.
+On `umx init-project`, if a slug already exists under the memory owner AND the git remote doesn't match the existing project's recorded remote, umx MUST warn and prompt for a custom slug. Alternative format: `<owner>-<repo>` (e.g., `alice-utils`), configurable via `config.yaml` `project.slug_format: name | owner-name`.
 
 The `.umx-project` file is the **only** umx artifact that MAY optionally exist in a project repo. It contains a single line: the slug.
 
@@ -683,15 +683,15 @@ The Dream pipeline's L2 reviewer checks proposed facts against `CONVENTIONS.md`.
 ### Bootstrap
 
 ```bash
-umx init --org my-memory-org
+umx init --owner my-github-user --mode remote
 ```
 
 This:
-1. Creates the GitHub org if it doesn't exist (free tier, private by default)
-2. Creates the `user` repo in the org
-3. Clones it to `$UMX_HOME/user/`
+1. Initializes local `~/.umx/` state
+2. Creates or reuses the `umx-user` repo under the configured GitHub owner
+3. Attaches `$UMX_HOME/user/` to that repo and bootstraps the initial commit
 4. Initialises directory structure, `meta/schema_version`, and `meta/manifest.json`
-5. Writes `$UMX_HOME/config.yaml` with org name and default settings
+5. Writes `$UMX_HOME/config.yaml` with the GitHub owner and default settings
 
 ```bash
 umx init-project --slug boz
@@ -1860,7 +1860,7 @@ The semantic layer degrades gracefully at every level:
 | Condition | Behaviour |
 |---|---|
 | `search.backend: fts5` (default) | Lexical-only. No embedding code executed. |
-| `search.backend: hybrid`, model not installed | Falls back to lexical-only. Logs notice. `umx status` surfaces. |
+| `search.backend: hybrid`, provider unavailable or local model not installed | Falls back to lexical-only. Logs notice. `umx status` surfaces. |
 | Model installed, fact has no embedding yet | `p_v = 0` for that fact. Lexical score used. |
 | Embedding generation fails mid-Dream | Facts written normally. Embeddings skipped. Non-blocking. |
 | Model version mismatch | Stale embeddings treated as absent. Rebuild scheduled. |
@@ -2071,7 +2071,7 @@ umx/
 ├── redaction.py            # pre-commit secret scanning + pattern matching
 ├── search.py               # SQLite FTS: build, incremental rebuild, query
 ├── search_semantic.py      # optional: embedding generation, provider-aware cache validation, cosine re-rank
-├── providers/embeddings.py # embedding provider registry + local/fixture implementations
+├── providers/embeddings.py # embedding provider registry + local/fixture/remote implementations
 ├── manifest.py             # meta/manifest.json maintenance (topics, uncertainty_hotspots, knowledge_gaps)
 ├── tombstones.py           # tombstone CRUD + suppression checks
 ├── supersession.py         # supersedes/superseded_by chain walking (umx history)
@@ -2117,7 +2117,7 @@ umx/
 ### CLI surface
 
 ```bash
-umx init             [--org <n>] [--mode local|remote|hybrid]
+umx init             [--owner <n>] [--org <n>] [--mode local|remote|hybrid]
 umx init-project     [--cwd .] [--slug <n>] [--yes]
 umx inject           --cwd . [--tool <tool>] [--prompt <text>] [--command <text>] [--session <id>] [--context-window N] [--expand-fact <id>...] [--file <path>...] [--max-tokens N]
 umx collect          --cwd . --tool <tool> [--file <path>] [--format auto|text|jsonl] [--role assistant|tool_result|user] [--session-id <id>] [--meta key=value] [--dry-run]
@@ -2301,9 +2301,10 @@ search:
   rebuild: incremental               # incremental | full
   backend: fts5                      # fts5 (default) | hybrid (fts5 + local embeddings — see §20a)
   embedding:                         # only used when backend: hybrid
-    provider: sentence-transformers  # current production backend; switching requires `umx rebuild-index --embeddings`
-    model: all-MiniLM-L6-v2         # pip-installable sentence-transformers model
+    provider: sentence-transformers  # default local backend; openai/voyage also supported
+    model: all-MiniLM-L6-v2          # provider-specific model name
     model_version: v1.0              # version string — cache invalidated on mismatch
+    api_base: null                   # optional OpenAI/Voyage-compatible endpoint override
     input_fields: [text, topic, scope]  # fields concatenated before embedding
     candidate_limit: 100             # max FTS5 candidates passed to semantic re-ranker
 
@@ -2359,7 +2360,7 @@ Dependency order matters, but **gitmem remains the primary differentiator**. Onc
 
 ## 29  Non-Goals
 
-- **No memory in project repos.** All memory lives in the memory org. Only optional: `.umx-project` (slug) and legacy bridge markers (opt-in).
+- **No memory in project repos.** All memory lives under the memory owner. Only optional: `.umx-project` (slug) and legacy bridge markers (opt-in).
 - **No cloud-only sync.** GitHub is the remote; local is always functional. Offline-capable by default.
 - **No auto-commit to main (in remote/hybrid mode).** All dream fact-writes go through PR review. `local` mode permits direct writes for solo/offline use.
 - **No multi-user shared memory in v1.** umx is single-user. Team memory sharing is a future consideration.

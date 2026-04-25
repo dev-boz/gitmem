@@ -11,7 +11,7 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 
 | Command | Shipped flags / surface | Code location | Status | Notes |
 |---|---|---|---|---|
-| `init` | `--org`, `--mode local\|remote\|hybrid` | `umx/cli.py:136-173` | Match | Spec updated to include mode selection. |
+| `init` | `--owner` (`--org` alias), `--mode local\|remote\|hybrid` | `umx/cli.py:136-173` | Match | Spec updated to include owner-first wording while keeping the legacy alias. |
 | `init-project` | `--cwd`, `--slug`, `--yes` | `umx/cli.py:176-230` | Match | `--slug` bypasses prompting; `--yes` auto-suffixes collisions. |
 | `inject` | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--context-window`, `--expand-fact ...`, `--file ...`, `--max-tokens` | `umx/cli.py:233-289` | Match | Spec now mirrors the actual injection surface. |
 | `collect` | `--cwd`, `--tool`, `--file`, `--format`, `--role`, `--session-id`, `--meta ...`, `--dry-run` | `umx/cli.py:292-376` | Match | Spec updated from the earlier shorthand. |

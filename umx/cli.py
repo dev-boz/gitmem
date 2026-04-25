@@ -313,7 +313,12 @@ def _emit_governance_protection_status(mode: str) -> None:
 
     plan = plan_governance_protection(mode)
     required_checks = ", ".join(plan.required_status_checks) or "<none>"
-    status = "ready" if plan.eligible else "deferred"
+    if plan.eligible:
+        status = "ready"
+    elif plan.deferred_reason and "direct pushes to main" in plan.deferred_reason:
+        status = "fallback"
+    else:
+        status = "deferred"
     click.echo(
         "governance-protection: "
         f"{status} (branch {plan.target_branch}; require PR={str(plan.require_pull_request).lower()}; "
@@ -321,6 +326,121 @@ def _emit_governance_protection_status(mode: str) -> None:
     )
     if plan.deferred_reason:
         click.echo(f"governance-protection reason: {plan.deferred_reason}")
+    if status == "fallback":
+        click.echo(
+            "governance-protection fallback: main-guard workflow auto-reverts governed "
+            "main pushes unless the tip commit is associated with a merged PR carrying "
+            f"{plan.governance_merge_label}"
+        )
+
+
+def _sync_error(prefix: str, message: str) -> str:
+    return f"{prefix}{message}" if prefix else message
+
+
+def _sync_memory_repo(
+    repo: Path,
+    *,
+    config,
+    mode: str,
+    repo_label: str,
+    operation: str,
+    error_prefix: str = "",
+    project_root: Path | None = None,
+    include_bridge: bool = False,
+) -> str | None:
+    from umx.git_ops import (
+        GitSignedHistoryError,
+        assert_signed_commit_range,
+        changed_paths,
+        diff_committed_paths_against_ref,
+        git_add_and_commit,
+        git_commit_failure_message,
+        git_current_branch,
+        git_fetch,
+        git_pull_rebase,
+        git_push,
+        git_remote_url,
+    )
+    from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
+
+    remote = git_remote_url(repo)
+    if not remote:
+        return None
+
+    try:
+        assert_expected_github_origin(
+            repo,
+            config_org=config.org,
+            repo_label=repo_label,
+            operation="sync",
+        )
+    except GitHubRemoteIdentityError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    pending = changed_paths(repo)
+    if is_governed_mode(mode):
+        current_branch = git_current_branch(repo)
+        if current_branch != "main":
+            raise click.ClickException(
+                f"{mode} mode sync must run from main; current branch is {current_branch or 'detached'}"
+            )
+        blocked = filter_non_operational_sync_paths(pending, repo)
+        if blocked:
+            raise click.ClickException(session_sync_error(mode, repo, blocked))
+        sync_paths = [path for path in pending if path not in blocked]
+        commit_message = "umx: sync sessions"
+    else:
+        sync_paths = pending
+        commit_message = "umx: sync local changes"
+
+    if sync_paths:
+        commit_result = git_add_and_commit(
+            repo,
+            paths=sync_paths,
+            message=commit_message,
+            config=config,
+        )
+        if commit_result.failed:
+            raise click.ClickException(
+                git_commit_failure_message(commit_result, context="commit failed")
+            )
+
+    if not git_fetch(repo):
+        raise click.ClickException(_sync_error(error_prefix, "fetch failed"))
+    if is_governed_mode(mode):
+        blocked_committed = filter_non_operational_sync_paths(
+            diff_committed_paths_against_ref(repo, "origin/main"),
+            repo,
+        )
+        if blocked_committed:
+            raise click.ClickException(session_sync_error(mode, repo, blocked_committed))
+    if not git_pull_rebase(repo, config=config):
+        raise click.ClickException(_sync_error(error_prefix, "pull --rebase failed"))
+    try:
+        assert_push_safe(
+            repo,
+            project_root=project_root,
+            base_ref="origin/main",
+            branch="main",
+            config=config,
+            include_bridge=include_bridge,
+        )
+    except PushSafetyError as exc:
+        raise click.ClickException(str(exc)) from exc
+    try:
+        assert_signed_commit_range(
+            repo,
+            base_ref="origin/main",
+            head_ref="HEAD",
+            config=config,
+            operation=operation,
+        )
+    except GitSignedHistoryError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not git_push(repo):
+        raise click.ClickException(_sync_error(error_prefix, "push failed"))
+    return remote
 
 
 @click.group(cls=TelemetryGroup)
@@ -348,7 +468,13 @@ def main(ctx: click.Context) -> None:
 
 
 @main.command("init")
-@click.option("--org", default=None)
+@click.option(
+    "--owner",
+    "--org",
+    "org",
+    default=None,
+    help="GitHub owner for remote memory repos (user or org).",
+)
 @click.option(
     "--mode",
     "init_mode",
@@ -1038,99 +1164,45 @@ def propose_cmd(
 def sync_cmd(cwd: Path) -> None:
     cfg = _cfg()
     mode = cfg.dream.mode
-    if mode == "local":
+    from umx.git_ops import git_remote_url
+
+    root = find_project_root(cwd)
+    project_repo = project_memory_dir(root)
+    user_repo = user_memory_dir()
+    project_remote = git_remote_url(project_repo)
+    user_remote = git_remote_url(user_repo)
+    if mode == "local" and not project_remote and not user_remote:
         click.echo("local mode: nothing to sync")
         return
-
-    from umx.git_ops import (
-        GitSignedHistoryError,
-        assert_signed_commit_range,
-        changed_paths,
-        diff_committed_paths_against_ref,
-        git_add_and_commit,
-        git_commit_failure_message,
-        git_current_branch,
-        git_fetch,
-        git_pull_rebase,
-        git_push,
-        git_remote_url,
-    )
-
-    repo = project_memory_dir(cwd)
-    remote = git_remote_url(repo)
-    if not remote:
+    if mode != "local" and not project_remote:
         click.echo("no remote configured; run 'umx setup-remote' first")
         return
-    from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
 
-    try:
-        assert_expected_github_origin(
-            repo,
-            config_org=cfg.org,
-            repo_label="project memory repo",
-            operation="sync",
-        )
-    except GitHubRemoteIdentityError as exc:
-        raise click.ClickException(str(exc)) from exc
+    user_synced_remote = _sync_memory_repo(
+        user_repo,
+        config=cfg,
+        mode=mode,
+        repo_label="user memory repo",
+        operation="user memory sync",
+        error_prefix="user memory repo ",
+    )
+    project_synced_remote = _sync_memory_repo(
+        project_repo,
+        config=cfg,
+        mode=mode,
+        repo_label="project memory repo",
+        operation="sync",
+        project_root=root,
+        include_bridge=True,
+    )
 
-    pending = changed_paths(repo)
-    if is_governed_mode(mode):
-        current_branch = git_current_branch(repo)
-        if current_branch != "main":
-            raise click.ClickException(
-                f"{mode} mode sync must run from main; current branch is {current_branch or 'detached'}"
-            )
-        blocked = filter_non_operational_sync_paths(pending, repo)
-        if blocked:
-            raise click.ClickException(session_sync_error(mode, repo, blocked))
-        session_paths = [path for path in pending if path not in blocked]
-        if session_paths:
-            commit_result = git_add_and_commit(
-                repo,
-                paths=session_paths,
-                message="umx: sync sessions",
-                config=cfg,
-            )
-            if commit_result.failed:
-                raise click.ClickException(
-                    git_commit_failure_message(commit_result, context="commit failed")
-                )
-
-    if not git_fetch(repo):
-        raise click.ClickException("fetch failed")
-    if is_governed_mode(mode):
-        blocked_committed = filter_non_operational_sync_paths(
-            diff_committed_paths_against_ref(repo, "origin/main"),
-            repo,
-        )
-        if blocked_committed:
-            raise click.ClickException(session_sync_error(mode, repo, blocked_committed))
-    if not git_pull_rebase(repo, config=cfg):
-        raise click.ClickException("pull --rebase failed")
-    try:
-        assert_push_safe(
-            repo,
-            project_root=find_project_root(cwd),
-            base_ref="origin/main",
-            branch="main",
-            config=cfg,
-            include_bridge=True,
-        )
-    except PushSafetyError as exc:
-        raise click.ClickException(str(exc)) from exc
-    try:
-        assert_signed_commit_range(
-            repo,
-            base_ref="origin/main",
-            head_ref="HEAD",
-            config=cfg,
-            operation="sync",
-        )
-    except GitSignedHistoryError as exc:
-        raise click.ClickException(str(exc)) from exc
-    if not git_push(repo):
-        raise click.ClickException("push failed")
-    click.echo(f"synced with {remote}")
+    if project_synced_remote is not None and user_synced_remote is None:
+        click.echo(f"synced with {project_synced_remote}")
+        return
+    if project_synced_remote is not None:
+        click.echo(f"synced project memory with {project_synced_remote}")
+    if user_synced_remote is not None:
+        click.echo(f"synced user memory with {user_synced_remote}")
 
 
 @main.command("setup-remote")
@@ -1143,7 +1215,7 @@ def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
     cfg = _cfg()
     if not cfg.org:
         raise click.ClickException(
-            "no org configured; run 'umx init --org <org> --mode remote' first"
+            "no GitHub owner configured; run 'umx init --owner <user-or-org> --mode remote' first"
         )
 
     from umx.github_ops import GitHubError, gh_available, ensure_repo, set_remote, deploy_workflows

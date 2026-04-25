@@ -104,6 +104,7 @@ class SearchEmbeddingConfig:
     provider: str = DEFAULT_EMBEDDING_PROVIDER
     model: str = "all-MiniLM-L6-v2"
     model_version: str = "v1.0"
+    api_base: str | None = None
     input_fields: list[str] = field(default_factory=lambda: ["text", "topic", "scope"])
     candidate_limit: int = 100
 

@@ -46,10 +46,11 @@ def test_cli_init_actions_writes_templates(tmp_path: Path) -> None:
     result = runner.invoke(main, ["init-actions", "--dir", str(tmp_path)])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert len(payload) == 3
+    assert len(payload) == 4
     assert (tmp_path / ".github" / "workflows" / "approval-gate.yml").exists()
     assert (tmp_path / ".github" / "workflows" / "l1-dream.yml").exists()
     assert (tmp_path / ".github" / "workflows" / "l2-review.yml").exists()
+    assert (tmp_path / ".github" / "workflows" / "main-guard.yml").exists()
 
 
 def test_cli_archive_sessions_moves_old_sessions(project_dir: Path, project_repo: Path) -> None:

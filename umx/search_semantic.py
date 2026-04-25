@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from umx.config import DEFAULT_EMBEDDING_PROVIDER, UMXConfig, default_config
-from umx.providers.embeddings import resolve_embedding_provider
+from umx.providers.embeddings import embed_batch_texts, resolve_embedding_provider
 
 
 CACHE_NAME = ".umx.json"
@@ -274,14 +274,32 @@ def ensure_embeddings(
     fact_cache = {} if force else dict(existing_cache)
     current = current_embedding_signature(cfg)
     updated = 0
+    pending_facts: list[tuple[Any, str]] = []
     for fact in fact_list:
         fact_id = getattr(fact, "fact_id", None)
         if not fact_id:
             continue
         if not force and _cache_entry_valid(fact_cache.get(fact_id), cfg):
             continue
-        embedding = embed_fact(fact, config=cfg)
+        text = _fact_input_text(fact, config=cfg)
+        if not text.strip():
+            continue
+        pending_facts.append((fact, text))
+    try:
+        provider = resolve_embedding_provider(cfg)
+    except RuntimeError:
+        provider = None
+    if provider is None:
+        embeddings = [None] * len(pending_facts)
+    elif callable(getattr(provider, "embed_batch", None)):
+        embeddings = embed_batch_texts([text for _, text in pending_facts], provider, cfg)
+    else:
+        embeddings = [embed_fact(fact, config=cfg) for fact, _ in pending_facts]
+    for (fact, _), embedding in zip(pending_facts, embeddings):
         if embedding is None:
+            continue
+        fact_id = getattr(fact, "fact_id", None)
+        if not fact_id:
             continue
         fact_cache[fact_id] = {
             "embedding": embedding,

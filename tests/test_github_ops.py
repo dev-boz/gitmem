@@ -1116,7 +1116,7 @@ class TestClosePR:
 class TestDeployWorkflows:
     def test_writes_files(self, git_repo: Path) -> None:
         paths = deploy_workflows(git_repo)
-        assert len(paths) == 3
+        assert len(paths) == 4
         for p in paths:
             assert p.exists()
             assert ".github/workflows" in str(p)

@@ -39,7 +39,7 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
 
 ## What sets it apart
 
-**GitHub as the source of truth.** In remote or hybrid mode, memory repos live in a private GitHub org you own. Facts arrive via PR. You review what your agents "learn" the same way you review code. Branch protection, audit logs, and Actions workflows come free.
+**GitHub as the source of truth.** In remote or hybrid mode, memory repos live under a GitHub owner you control. Your personal account works; a separate org is optional. Facts arrive via PR. You review what your agents "learn" the same way you review code. Branch protection, audit logs, and Actions workflows integrate naturally on supported GitHub plans.
 
 **Cognitive science, not vibes.** The memory model is grounded in established research — Tulving's episodic/semantic distinction, Anderson's activation strength, interference theory for contradiction handling, cue-dependent retrieval for injection. This isn't arbitrary; it's why the system handles conflict resolution, fact decay, and context-aware recall the way it does.
 
@@ -78,7 +78,7 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
          (PRs, governance)
 ```
 
-Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in different GitHub orgs and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
+Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in dedicated GitHub memory repos and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
 
 gitmem is the reference implementation of the **UMX specification**.
 The repo is `gitmem`, the Python package name remains `umx`, and both `gitmem` and `umx` CLI commands work.
@@ -204,7 +204,8 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 
 - In `local` mode, sessions, facts, and SQLite indexes stay on your filesystem.
 - Session records are redacted before persistence, project-secret facts are excluded from injection, and facts tied to gitignored paths are routed to private scope.
-- `remote` / `hybrid` mode syncs the memory repo to GitHub; your project code stays in its own repo.
+- `remote` / `hybrid` mode bootstraps GitHub-backed memory automatically; in `local` mode the repos stay on your filesystem unless you attach your own remotes and run `gitmem sync`.
+- Hybrid search can optionally use local `sentence-transformers` embeddings or remote OpenAI/Voyage embedding APIs when you configure `search.embedding.provider` plus the matching environment variable.
 - Anonymous telemetry is available as an **opt-in** config path. It is off by default and does not send prompts, facts, transcripts, repo paths, or raw remote URLs.
 - The local alpha does not require model API keys. The repo includes draft GitHub Actions templates that reference `GROQ_API_KEY` and `ANTHROPIC_API_KEY` for future provider-backed review; that path is still experimental.
 
@@ -212,9 +213,11 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 
 Requires `gh` CLI installed and authenticated.
 
+Use a GitHub owner you control. On GitHub Free org-owned private repos, remote mode now falls back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after they land, preserving auditability even when repository rulesets are unavailable.
+
 ```bash
-# Bootstrap with GitHub org
-gitmem init --org your-github-org --mode remote
+# Bootstrap with a GitHub owner you control
+gitmem init --owner your-github-user --mode remote
 gitmem init-project --cwd /path/to/project
 
 # Dream pipeline uses branch/PR scaffolding for review flows
@@ -227,6 +230,8 @@ gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
 # Sync session history on main (fact changes still go through Dream PR branches)
 gitmem sync --cwd /path/to/project
 ```
+
+On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remote` / `gitmem init --mode remote` now deploy a `main-guard.yml` workflow alongside the approval gate. It is a post-push control, not true pre-push branch protection: bad governed pushes can still land briefly, but the guard reverts them with an explicit bot-authored commit unless the tip commit is associated with a merged PR carrying `state: approved`.
 
 ### Mode comparison
 
@@ -289,7 +294,7 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - **Provider-backed review** — turn the current remote/L1/L2 scaffolding into a provider-backed path with stronger provenance and merge policy
 
 ### Then: GitHub governance hardening
-- **gitmem backend** — GitHub org bootstrap, push queue, PR pipeline
+- **gitmem backend** — GitHub owner bootstrap, push queue, PR pipeline
 - **L1/L2/L3 governance** — cheap models propose (L1), SotA models review (L2), humans confirm (L3)
 - **CONVENTIONS.md enforcement** — human-authored project schema drives extraction taxonomy
 - **Audit trail** — session-to-fact traceability, deep therapy re-derivation
