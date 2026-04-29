@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import click
 import json
 from pathlib import Path
+import pytest
 import subprocess
 from unittest.mock import Mock, patch
 
@@ -9,7 +11,7 @@ from click.testing import CliRunner
 
 from tests.secret_literals import AWS_ACCESS_KEY_ID
 from umx.config import default_config, load_config, save_config
-from umx.cli import main
+from umx.cli import _bootstrap_remote_repo, main
 from umx.dream.pr_render import FACT_DELTA_BLOCK_VERSION, FACT_DELTA_END_MARKER, FACT_DELTA_START_MARKER
 from umx.github_ops import GitHubError, OpenPullRequestSummary
 from umx.scope import config_path, init_local_umx, project_memory_dir
@@ -492,7 +494,7 @@ def test_cli_init_project_remote_bootstraps_main(project_dir, umx_home, tmp_path
     assert result.exit_code == 0, result.output
     assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
-    assert "main-guard workflow auto-reverts governed main pushes" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
 
     repo = project_memory_dir(project_dir)
     verify = subprocess.run(
@@ -536,7 +538,7 @@ def test_cli_init_remote_bootstraps_user_workflows(umx_home, user_repo, tmp_path
     assert result.exit_code == 0, result.output
     assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
-    assert "main-guard workflow auto-reverts governed main pushes" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
     assert (user_repo / ".github" / "workflows" / "approval-gate.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l1-dream.yml").exists()
     assert (user_repo / ".github" / "workflows" / "l2-review.yml").exists()
@@ -573,8 +575,15 @@ def test_cli_init_hybrid_attaches_existing_user_remote_repo(umx_home, tmp_path, 
         result = runner.invoke(main, ["init", "--org", "memory-org", "--mode", "hybrid"])
 
     assert result.exit_code == 0, result.output
+    assert "governance-protection: fallback" in result.output
+    assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
     fresh_user_repo = fresh_home / "user"
     assert (fresh_user_repo / "facts" / "topics" / "seed.md").exists()
+    assert (fresh_user_repo / ".github" / "workflows" / "approval-gate.yml").exists()
+    assert (fresh_user_repo / ".github" / "workflows" / "l1-dream.yml").exists()
+    assert (fresh_user_repo / ".github" / "workflows" / "l2-review.yml").exists()
+    assert (fresh_user_repo / ".github" / "workflows" / "main-guard.yml").exists()
     remote_url = subprocess.run(
         ["git", "-C", str(fresh_user_repo), "remote", "get-url", "origin"],
         capture_output=True,
@@ -582,6 +591,16 @@ def test_cli_init_hybrid_attaches_existing_user_remote_repo(umx_home, tmp_path, 
         check=True,
     )
     assert remote_url.stdout.strip() == str(remote)
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
 
 
 def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx_home, tmp_path, monkeypatch) -> None:
@@ -608,8 +627,15 @@ def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx
         result = runner.invoke(main, ["init-project", "--cwd", str(project_dir), "--slug", "project"])
 
     assert result.exit_code == 0, result.output
+    assert "governance-protection: fallback" in result.output
+    assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
     attached_repo = fresh_home / "projects" / "project"
     assert (attached_repo / "facts" / "topics" / "seed.md").exists()
+    assert (attached_repo / ".github" / "workflows" / "approval-gate.yml").exists()
+    assert (attached_repo / ".github" / "workflows" / "l1-dream.yml").exists()
+    assert (attached_repo / ".github" / "workflows" / "l2-review.yml").exists()
+    assert (attached_repo / ".github" / "workflows" / "main-guard.yml").exists()
     remote_url = subprocess.run(
         ["git", "-C", str(attached_repo), "remote", "get-url", "origin"],
         capture_output=True,
@@ -617,6 +643,16 @@ def test_cli_init_project_attaches_existing_project_remote_repo(project_dir, umx
         check=True,
     )
     assert remote_url.stdout.strip() == str(remote)
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
 
 
 def test_cli_health_governance_preserves_open_pr_context_after_fresh_home_reattach(
@@ -832,6 +868,142 @@ def test_cli_eval_long_memory_forwards_search_limit(monkeypatch, tmp_path: Path)
         "min_pass_rate": 0.9,
         "search_limit": 7,
     }
+
+
+def test_cli_eval_longmemeval_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.longmemeval_eval.run_longmemeval_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 5,
+            "completed": 5,
+            "passed": 3,
+            "pass_rate": 0.6,
+            "min_pass_rate": 0.8,
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["eval", "longmemeval", "--cases", str(tmp_path), "--out-dir", str(tmp_path / "artifacts")],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_longmemeval_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(
+        out_dir,
+        cases_path,
+        config,
+        *,
+        case_id=None,
+        min_pass_rate=1.0,
+        search_limit=5,
+        provider="claude-cli",
+        model=None,
+        judge_provider=None,
+        judge_model=None,
+        history_format="json",
+    ):
+        captured["out_dir"] = out_dir
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_pass_rate"] = min_pass_rate
+        captured["search_limit"] = search_limit
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["judge_provider"] = judge_provider
+        captured["judge_model"] = judge_model
+        captured["history_format"] = history_format
+        return {
+            "status": "ok",
+            "total": 1,
+            "completed": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.longmemeval_eval.run_longmemeval_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "longmemeval",
+            "--cases",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--case",
+            "longmem-case-1",
+            "--min-pass-rate",
+            "0.7",
+            "--search-limit",
+            "9",
+            "--provider",
+            "claude-cli",
+            "--model",
+            "claude-opus-4-7",
+            "--judge-provider",
+            "claude-cli",
+            "--judge-model",
+            "claude-sonnet-4-5",
+            "--history-format",
+            "nl",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "out_dir": out_dir,
+        "cases_path": tmp_path,
+        "case_id": "longmem-case-1",
+        "min_pass_rate": 0.7,
+        "search_limit": 9,
+        "provider": "claude-cli",
+        "model": "claude-opus-4-7",
+        "judge_provider": "claude-cli",
+        "judge_model": "claude-sonnet-4-5",
+        "history_format": "nl",
+    }
+
+
+def test_cli_eval_longmemeval_defaults_to_real_gate(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(out_dir, cases_path, config, *, min_pass_rate=1.0, **kwargs):  # noqa: ARG001
+        captured["out_dir"] = out_dir
+        captured["cases_path"] = cases_path
+        captured["min_pass_rate"] = min_pass_rate
+        return {
+            "status": "ok",
+            "total": 1,
+            "completed": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.longmemeval_eval.run_longmemeval_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        ["eval", "longmemeval", "--cases", str(tmp_path), "--out-dir", str(out_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["min_pass_rate"] == 1.0
 
 
 def test_cli_eval_retrieval_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
@@ -1068,7 +1240,7 @@ def test_cli_setup_remote_remote_reports_deferred_governance_protection(
     assert result.exit_code == 0, result.output
     assert "governance-protection: fallback" in result.output
     assert "direct pushes to main" in result.output
-    assert "main-guard workflow auto-reverts governed main pushes" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
 
     tree = subprocess.run(
         ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
@@ -1119,7 +1291,14 @@ def test_cli_setup_remote_attaches_existing_remote_repo_for_fresh_local_project_
         result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "hybrid"])
 
     assert result.exit_code == 0, result.output
+    assert "governance-protection: fallback" in result.output
+    assert "direct pushes to main" in result.output
+    assert "main-guard workflow auto-reverts unauthorized governed commits in a main push" in result.output
     assert (project_repo / "facts" / "topics" / "seed.md").exists()
+    assert (project_repo / ".github" / "workflows" / "approval-gate.yml").exists()
+    assert (project_repo / ".github" / "workflows" / "l1-dream.yml").exists()
+    assert (project_repo / ".github" / "workflows" / "l2-review.yml").exists()
+    assert (project_repo / ".github" / "workflows" / "main-guard.yml").exists()
     remote_url = subprocess.run(
         ["git", "-C", str(project_repo), "remote", "get-url", "origin"],
         capture_output=True,
@@ -1127,6 +1306,16 @@ def test_cli_setup_remote_attaches_existing_remote_repo_for_fresh_local_project_
         check=True,
     )
     assert remote_url.stdout.strip() == str(remote)
+    tree = subprocess.run(
+        ["git", "--git-dir", str(remote), "ls-tree", "-r", "--name-only", "main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert ".github/workflows/approval-gate.yml" in tree.stdout
+    assert ".github/workflows/l1-dream.yml" in tree.stdout
+    assert ".github/workflows/l2-review.yml" in tree.stdout
+    assert ".github/workflows/main-guard.yml" in tree.stdout
 
 
 def test_cli_setup_remote_rejects_unsigned_bootstrap_history(project_dir, project_repo, tmp_path) -> None:
@@ -1169,6 +1358,53 @@ def test_cli_setup_remote_rejects_unsigned_bootstrap_history(project_dir, projec
 
     assert result.exit_code != 0
     assert "unsigned or invalid commit signatures" in result.output
+
+
+def test_bootstrap_remote_repo_rejects_unsigned_adopted_remote_history(project_repo, tmp_path) -> None:
+    from umx.github_ops import set_remote
+
+    cfg = default_config()
+    cfg.git.require_signed_commits = True
+
+    remote = _seed_bare_remote(
+        tmp_path,
+        "unsigned-adopted-remote",
+        "facts/topics/seed.md",
+        "# seed\n\n## Facts\n- existing remote history is unsigned\n",
+        message="unsigned adopted history",
+    )
+    set_remote(project_repo, str(remote))
+
+    with pytest.raises(
+        click.ClickException,
+        match="remote bootstrap blocked: unsigned or invalid commit signatures in HEAD",
+    ):
+        _bootstrap_remote_repo(
+            project_repo,
+            "umx: bootstrap remote project memory",
+            config=cfg,
+        )
+
+
+def test_cli_setup_remote_does_not_persist_mode_when_bootstrap_fails(project_dir, tmp_path) -> None:
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "local"
+    save_config(config_path(), cfg)
+
+    remote = tmp_path / "setup-remote-failure.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+
+    runner = CliRunner()
+    with patch("umx.github_ops.gh_available", return_value=True), patch(
+        "umx.github_ops.ensure_repo",
+        return_value=str(remote),
+    ), patch("umx.cli._bootstrap_remote_repo", side_effect=click.ClickException("push failed")):
+        result = runner.invoke(main, ["setup-remote", "--cwd", str(project_dir), "--mode", "hybrid"])
+
+    assert result.exit_code != 0
+    assert "push failed" in result.output
+    assert load_config(config_path()).dream.mode == "local"
 
 
 def test_cli_setup_remote_surfaces_github_retry_next_steps(project_dir) -> None:

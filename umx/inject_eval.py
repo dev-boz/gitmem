@@ -61,7 +61,8 @@ def run_inject_eval(
     min_pass_rate: float = 1.0,
     disclosure_slack_pct: float | None = None,
 ) -> dict[str, Any]:
-    cases = load_inject_eval_cases(cases_path)
+    resolved_cases_path = _resolve_cases_path(cases_path)
+    cases = load_inject_eval_cases(resolved_cases_path)
     if case_id is not None:
         cases = [case for case in cases if case.case_id == case_id]
     if not cases:
@@ -109,6 +110,9 @@ def run_inject_eval(
     failures = [result for result in results if not result["passed"]]
     status = "ok" if pass_rate >= min_pass_rate else "error"
     return {
+        "suite": "inject",
+        "cases_path": str(resolved_cases_path),
+        "case_filter": case_id,
         "status": status,
         "total": total,
         "passed": passed,

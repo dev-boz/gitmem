@@ -48,6 +48,7 @@ nav:
   - Concepts: concepts.md
   - CLI reference: cli.md
   - Operations runbook: ops-runbook.md
+  - Launch checklist: launch-checklist.md
   - Governance tutorial: governance-tutorial.md
   - FAQ: faq.md
   - API reference:

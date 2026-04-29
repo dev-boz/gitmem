@@ -8,6 +8,7 @@ __pycache__/
 dist/
 build/
 site/
+artifacts/
 eggs/
 *.whl
 
@@ -41,4 +42,5 @@ Thumbs.db
 .umx/dream.log
 .umx/NOTICE
 *.umx.json
+benchmarks/release-data/
 plan.md

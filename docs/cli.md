@@ -32,7 +32,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 
 | Command | Purpose | Common flags |
 |---|---|---|
-| `gitmem dream` | Run Dream or review a governed PR | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier l2`, `--pr`, `--head-sha` |
+| `gitmem dream` | Run Dream or review a governed PR | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier l2`, `--pr`, `--head-sha`, `--provider` |
 | `gitmem search` | Search facts, or raw sessions with `--raw` | `--cwd`, `--raw` |
 | `gitmem inject` | Build prompt-ready memory context | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--file`, `--max-tokens` |
 | `gitmem view` | List facts, inspect one fact, or launch viewer | `--cwd`, `--list`, `--fact`, `--min-strength` |
@@ -67,17 +67,41 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate`, `--provider` |
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 | `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
+| `gitmem eval longmemeval` | Run the upstream-style LongMemEval QA benchmark through the local Claude Code CLI session | `--cases`, `--out-dir`, `--case`, `--min-pass-rate`, `--search-limit`, `--provider`, `--judge-provider`, `--model`, `--judge-model`, `--history-format` |
 | `gitmem eval retrieval` | Run the HotpotQA-style supporting-fact retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--top-k` |
+| `gitmem eval compare` | Compare two saved eval JSON artifacts and fail on regressions | `--metric`, `--tolerance` |
+| `gitmem eval release-gate` | Write a release-gate artifact bundle | `--out-dir`, `--long-memory-release-cases`, `--retrieval-release-cases`, `--long-memory-release-min-pass-rate`, `--retrieval-release-min-pass-rate`, `--long-memory-baseline`, `--retrieval-baseline` |
 
-In local mode, `gitmem sync` remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff.
+In local mode, `gitmem sync` remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff, but it does so sequentially (`umx-user` first, then the project repo) and reports partial success if the later repo fails.
 
-`gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.
+When concurrent edits touch the same memory file, `gitmem sync` fails closed and surfaces the conflicting paths from the failed rebase so you can resolve or abort the rebase before retrying. If a previous run already left a rebase or merge in progress, the command now fails fast with explicit continue/abort guidance instead of stumbling into a generic git error.
 
-All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.
+`gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos, or against a maintainer-provided public benchmark slice via `--cases`. `gitmem eval longmemeval` is the provider-backed QA path: it reuses gitmem retrieval to select memory sessions, generates answer text, and then scores those answers with the LongMemEval yes/no rubric through the operator's Claude Code CLI session.
+
+All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts. `gitmem eval compare` reads two saved artifacts, compares default suite metrics for `inject`, `long-memory`, and `retrieval`, and exits nonzero when the candidate regresses past the chosen tolerance.
+
+`gitmem eval longmemeval` also writes benchmark artifacts under `--out-dir`:
+
+- `hypotheses.jsonl` with `question_id` / `hypothesis`
+- `judgments.jsonl` with per-case answer labels
+- `summary.json` with aggregate metrics and usage totals
+
+`gitmem eval release-gate` is the thin bundling helper for repeated RC runs: it always writes the local smoke artifacts (`inject`, `long-memory`, `retrieval`) under one `--out-dir`, can optionally add release-grade LongMemEval / HotpotQA artifacts from `--*-release-cases`, and can optionally write compare artifacts when baseline JSON paths are supplied. If you need a first benchmark capture before an accepted baseline exists, lower the release-case gates with `--long-memory-release-min-pass-rate 0` and `--retrieval-release-min-pass-rate 0`.
+
+For `gitmem eval long-memory` and `gitmem eval retrieval`, `--cases` can point at:
+
+- raw LongMemEval JSON
+- raw HotpotQA JSON
+- a `hotpotqa-manifest` file that selects pinned HotpotQA `_id` values from a larger dataset file
+- the checked-in offline subsets under `tests/eval/`
+
+That means a release-grade HotpotQA rerun can point straight at a filtered raw benchmark slice without pre-converting it into gitmem’s native eval schema. `gitmem eval longmemeval` is stricter: it expects upstream-style LongMemEval JSON with `answer`, `question_date`, and haystack session fields, and writes answer/judgment artifacts under `--out-dir`.
+
+For 1.0, release stays blocked until both claims are signed off: **it works personally** and **it works on benchmarks**. Use the [operations runbook](ops-runbook.md) for the step-by-step workflow and the [launch checklist](launch-checklist.md) for the final ship/no-ship record.
 
 ### L2 reviewer providers
 
-`gitmem eval l2-review` chooses a reviewer via `--provider`:
+`gitmem eval l2-review` and `gitmem dream --tier l2` choose a reviewer via `--provider`:
 
 - `--provider anthropic` (default) — direct Anthropic API. Requires `ANTHROPIC_API_KEY` in the environment.
 - `--provider claude-cli` — shells out to the locally installed Claude Code CLI in headless `-p` mode (`claude --print --output-format json`). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with `UMX_CLAUDE_CLI_BIN`, and the per-call timeout with `UMX_CLAUDE_CLI_TIMEOUT` (seconds, default 180).

@@ -25,6 +25,20 @@ ANTHROPIC_PROVIDER_ALIASES = frozenset({"anthropic", "anthropic-api", "api"})
 CLAUDE_CLI_PROVIDER_ALIASES = frozenset({"claude-cli", "claude-code", "cli", "oauth"})
 
 
+def normalize_l2_reviewer_provider(provider: str | None) -> str | None:
+    if provider is None:
+        return None
+    name = provider.strip().lower()
+    if not name or name in ANTHROPIC_PROVIDER_ALIASES:
+        return "anthropic"
+    if name in CLAUDE_CLI_PROVIDER_ALIASES:
+        return "claude-cli"
+    raise RuntimeError(
+        f"unknown L2 reviewer provider: {provider!r} "
+        f"(expected one of: anthropic, claude-cli)"
+    )
+
+
 def anthropic_l2_reviewer(
     pr: PRProposal,
     conventions: ConventionSet,
@@ -100,17 +114,12 @@ def select_l2_reviewer(provider: str | None):
     compatibility with code that does not opt into the new selector.
     """
 
-    if provider is None:
+    name = normalize_l2_reviewer_provider(provider)
+    if name is None or name == "anthropic":
         return anthropic_l2_reviewer
-    name = provider.strip().lower()
-    if not name or name in ANTHROPIC_PROVIDER_ALIASES:
-        return anthropic_l2_reviewer
-    if name in CLAUDE_CLI_PROVIDER_ALIASES:
+    if name == "claude-cli":
         return claude_cli_l2_reviewer
-    raise RuntimeError(
-        f"unknown L2 reviewer provider: {provider!r} "
-        f"(expected one of: anthropic, claude-cli)"
-    )
+    raise RuntimeError("unknown L2 reviewer provider")
 
 
 def _build_review_payload(

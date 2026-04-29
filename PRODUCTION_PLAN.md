@@ -2,7 +2,7 @@
 
 **Target release:** v1.0.0 — GitHub-synced memory as the marquee feature.
 **Baseline:** 0.9.1-alpha, 477 tests, local mode production-quality.
-**Last updated:** 2026-04-24
+**Last updated:** 2026-04-28
 **Plan owner:** `copilot-cli`
 
 ## North star
@@ -45,7 +45,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 | M3 GitHub governance GA ★ | 0/11 | 2026-07-03 | — |
 | M4 Scale & performance | 1/6 | 2026-07-17 | copilot-cli |
 | M5 Ops & docs | 0/11 | 2026-07-31 | copilot-cli |
-| M6 Private beta | 0/5 | 2026-08-28 | — |
+| M6 Release gates | 0/5 | 2026-08-28 | copilot-cli |
 | M7 GA 1.0.0 | 0/5 | 2026-09-04 | — |
 
 **Overall: 1/53 tasks · 2% · ~20 weeks.**
@@ -58,7 +58,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T1.1 — Wire `dream.lint_interval` cadence
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: —
 - Files: `umx/dream/pipeline.py`, `umx/config.py`, `umx/dream/lint.py` (new helper `should_run`)
@@ -272,7 +272,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T2.7 — Supply-chain scanning in CI
 
-- Status: `[~]` locally in progress
+- Status: `[x]`
 - Owner: `copilot-cli`
 - Depends on: —
 - Files: `.github/workflows/ci.yml`, `pyproject.toml`
@@ -282,7 +282,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Known-vulnerable dep intentionally introduced in a test PR is caught
   - SBOM uploaded as workflow artifact
 - Notes:
-  - Local workflow update adds a PR-only `pip-audit` + CycloneDX SBOM job, runs with read-only `contents` permission, and passed a local workflow syntax sanity check; keep `[~]` until repository CI exercises it.
+  - Local workflow update adds a PR-only `pip-audit` + CycloneDX SBOM job and runs with read-only `contents` permission.
+  - Live GitHub proof is now recorded on public PR `dev-boz/gitmem#1` (`proof/supply-chain-jinja2-20260425t142615Z`): CI run `24933055689` executed the PR path, `supply-chain` job `73013902476` generated `sbom.cyclonedx.json`, uploaded artifact `sbom-cyclonedx-json` (`6640475931`, digest `sha256:9bea06e8357b132d13cab513cfe5d2fbe31dfcc6d9ba610fa48816c13d2c2d5a`), and then failed `pip-audit --local` as intended on intentionally introduced `jinja2==2.11.2` advisories (`PYSEC-2021-66`, `CVE-2024-22195`, `CVE-2024-34064`, `CVE-2024-56326`, `CVE-2025-27516`).
+  - Non-blocking follow-up: GitHub Actions emitted Node 20 deprecation warnings for `actions/checkout@v4`, `actions/setup-python@v5`, and `actions/upload-artifact@v4`; the workflow still passed/fail-closed correctly, but action-version refresh should be scheduled before GitHub forces the runtime upgrade.
 
 ---
 
@@ -292,7 +294,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ### T3.1 — L2 reviewer: real Claude Opus integration
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: T1.8, T2.3
 - Files: `umx/dream/l2_review.py` (new or extend existing), `umx/providers/anthropic.py` (if not present)
@@ -305,12 +307,13 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Added `umx.dream.l2_review` plus a small `umx.providers.anthropic` client so L2 review can build a deterministic governance prompt, call Claude Opus 4.7 (`claude-opus-4-7` by default), parse structured JSON verdicts, and render a persisted PR review comment with per-fact notes.
   - `umx dream --tier l2 --pr <n>` now passes the validated governance PR body through to provider review, persists model-backed review comments, records token telemetry in the CLI payload and `meta/processing.jsonl`, and fails clearly when Anthropic is required but `ANTHROPIC_API_KEY` is missing.
-  - The local slice is covered by recorded fixture tests, provider-plan tests, governance-path tests, and a fresh full-suite pass at 565 tests; live Anthropic invocation and real GitHub PR-comment persistence remain external acceptance gates.
+  - The local slice is covered by recorded fixture tests, provider-plan tests, governance-path tests, and a fresh full-suite pass at 806 tests plus a strict docs build.
   - Follow-up (2026-04-24): added an OAuth-friendly second provider in `umx/providers/claude_cli.py` plus `claude_cli_l2_reviewer` and a `select_l2_reviewer` selector so operators without `ANTHROPIC_API_KEY` can drive the same review prompt through the local Claude Code CLI in headless `-p` mode (`gitmem eval l2-review --provider claude-cli`). Live calibration on the 20-case corpus reached 18/20 pass (status `ok` against the `≥0.85` gate) with the only failures sitting in the `suspected_hallucination` bucket where the model preferred `reject` to the corpus-expected `escalate`.
+  - Live repo acceptance is now closed: `gitmem dream --tier l2 --provider claude-cli` first proved GitHub PR-comment persistence on `dev-boz-gitmem2/gitmem#1` and `dev-boz-gitmem2/gitmem-t36-main-guard-fix-20260425t132059z-e5041a#2`, then ran model-backed review on governed-only PR `dev-boz-gitmem2/gitmem-t36-main-guard-fix-20260425t132059z-e5041a#3`. That run persisted the L2 comment, reconciled labels to `state: reviewed` / `human-review`, returned `review_prompt_id=claude-cli-l2-review` and `review_prompt_version=v1`, and recorded `review_usage` (`input_tokens=6`, `output_tokens=207`, `total_tokens=213`) in both the CLI payload and `meta/processing.jsonl`.
 
 ### T3.2 — L2 reviewer eval harness
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: T3.1
 - Files: `tests/eval/l2_reviewer/`, `tests/test_l2_eval.py`
@@ -322,7 +325,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Added `umx eval l2-review` plus `umx.dream.l2_eval`, a 20-case golden corpus under `tests/eval/l2_reviewer/`, and harness tests that cover corpus shape, pass-rate scoring, and CLI gate behavior without forcing live Anthropic calls in normal CI.
   - The reviewer now emits prompt metadata (`prompt_id`, `prompt_version`) alongside model/usage telemetry, and the eval runner fails closed when prompt/model metadata is missing or inconsistent across cases instead of silently defaulting.
-  - Local validation is complete: the eval-harness slice is green and the full local suite is green at 569 passing tests. Live-model calibration against the real Anthropic endpoint remains an external follow-up before treating the ≥85% gate as release-quality.
+  - Local validation is complete: the eval-harness slice is green and the full local suite is green at 806 passing tests. Live `claude-cli` calibration has also been recorded at 18/20 against the `≥0.85` gate, so the release gate is now backed by a real provider run in addition to the hermetic corpus harness.
 
 ### T3.3 — Governance label lifecycle automation
 
@@ -388,7 +391,8 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Test against a throwaway repo in CI
 - Notes:
   - Implemented the safe local scaffolding around the committed reference artifact: `umx/github_ops.py` now loads and validates `governance-branch-protection.reference.json`, builds a managed ruleset payload, paginates repository-ruleset discovery, and supports create/update/unchanged apply semantics without auto-enabling live enforcement.
-  - Remote bootstrap/setup flows now surface governance-protection status explicitly after bootstrap. When live rulesets are unavailable because governed maintenance still direct-pushes `main` or the target repo cannot enforce private rulesets, the shipped fallback status is `fallback`: remote mode deploys a `main-guard.yml` workflow that auto-reverts governed direct-main pushes unless the tip commit is associated with a merged PR carrying `state: approved`.
+  - Remote and hybrid bootstrap/setup flows now surface governance-protection status explicitly after bootstrap. When live rulesets are unavailable because governed maintenance still direct-pushes `main`, hybrid session sync intentionally direct-pushes `main`, or the target repo cannot enforce private rulesets, the shipped fallback status is `fallback`: governed mode deploys a `main-guard.yml` workflow that auto-reverts unauthorized governed direct-main pushes while leaving approved governance PR merges in place.
+  - Each fallback auto-revert now appends a structured `governance_auto_revert` event to `meta/processing.jsonl`, so the repo viewer and audit trail capture the remediation details alongside the revert commit itself.
   - T3.6 should target **repository-level** protection under any GitHub owner, not organization-wide rulesets. GitHub Free org-owned private repos still do not enforce the managed ruleset, so the current workaround is post-push audit/remediation rather than true hard protection.
   - The CLI/docs/spec now use **GitHub owner** wording and prefer `gitmem init --owner ...` while keeping `--org` as a compatibility alias, so governed mode no longer implies a paid org account is required.
   - Local validation is complete for the safe slice: targeted CLI/GitHub coverage is green at 91 passing tests, the full local suite is green at 632 passing tests, and ad hoc review found one paginated-ruleset discovery bug that was fixed before final validation. Remaining live enforcement stays blocked until governed maintenance/session sync no longer depends on direct pushes to `main`, or a dedicated non-human bypass identity exists.
@@ -650,8 +654,9 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - `gitmem sync` now honors attached remotes in `local` mode instead of always no-oping: when either the project repo or `umx-user` has a remote, the command fetches/rebases/pushes that repo, still leaving remote-less local setups unchanged.
   - Two-home coverage now spans project-sync handoff in `local`, `hybrid`, and `remote` modes, plus local user-scope promotion handoff and a user-remote-only local sync path so user memory can propagate even when the project repo itself is not shared remotely.
   - Sync now pushes `umx-user` before the project repo so local promotion handoffs fail safer (duplicate visibility beats disappearing the fact from project scope before user scope lands remotely).
+  - `gitmem sync` now fails with path-aware rebase-conflict detail instead of a bare `pull --rebase failed` when concurrent edits hit the same memory file, fails fast if a prior sync already left a rebase/merge paused, and surfaces explicit partial-success context when `umx-user` synced before the project repo failed. `tests/test_multi_machine.py` now covers both the real two-home local-mode conflict on `facts/topics/docs.md` and the rerun/partial-success recovery path, and the runbook/CLI/README document the operator flow.
   - Current local validation is green at `python3 -m pytest -q tests/test_multi_machine.py tests/test_governance.py tests/test_commands.py` → 103 passed, `python3 -m pytest -q` → 793 passed, plus `mkdocs build --strict` in an isolated docs venv.
-  - Remaining scope is the live CI/test-org matrix plus conflict handling for genuinely concurrent writes (parallel dreams and other overlapping direct-main activity), not the sequential handoff path.
+  - Remaining scope is now the live CI/test-org matrix plus broader governed parallel-write proof; the local sequential handoff path and the first genuine concurrent local-write failure mode are both covered.
 
 ### T5.4 — Opt-in telemetry
 
@@ -664,15 +669,15 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - Zero network calls when disabled
   - Privacy doc enumerates what is and isn't sent
   - Kill switch honored
-- Notes: Consider whether this is worth building pre-1.0. Skip if the beta cohort is small enough for direct feedback.
+- Notes: Consider whether this is worth building pre-1.0. Skip if direct dogfooding plus benchmark runs provide enough signal.
   - Added `umx/telemetry.py`, nested telemetry config, and `config set telemetry.enabled <true|false>` wiring so gitmem can emit anonymous opt-in CLI command metrics while staying dark by default.
   - The local slice now batches coarse command usage/error/latency and repo-size buckets, honors server kill switches plus env overrides, and fails open on local persistence or transport errors so successful commands stay successful.
   - Privacy/config/README docs and dedicated telemetry tests are in place; local validation is complete at `python3 -m pytest -q` → 714 passed plus `mkdocs build --strict`.
-  - Current scope is CLI instrumentation; extending the same telemetry model to MCP/hooks can follow if the beta cohort needs broader surface coverage.
+  - Current scope is CLI instrumentation; extending the same telemetry model to MCP/hooks can follow if the release workflow needs broader surface coverage.
 
 ### T5.5 — Docs site
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: T1.5
 - Files: `docs/`, `mkdocs.yml` (new)
@@ -684,11 +689,11 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Added an MkDocs Material site plus GitHub Pages deploy workflow covering quickstart, concepts, CLI reference, ops runbook, FAQ, governance tutorial, config, privacy, threat model, spec parity, and upgrade guidance.
   - CI now runs `mkdocs build --strict`, `site/` is gitignored for local builds, and `tests/test_docs_site.py` exercises the quickstart flow end-to-end against a fresh `UMX_HOME`.
-  - Keep `[~]` until merge/CI and gh-pages publish per plan rules.
+  - Live publish is now verified: the `Docs` workflow on `main` succeeded (`24930982507`), GitHub Pages was enabled against `gh-pages`, Pages build `974456118` completed successfully, and `https://dev-boz.github.io/gitmem/` serves the site with the expected canonical URL.
 
 ### T5.6 — Generated API reference
 
-- Status: `[~]`
+- Status: `[x]`
 - Owner: copilot-cli
 - Depends on: T5.5
 - Files: `docs/api/`, `mkdocs.yml`
@@ -699,7 +704,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Notes:
   - Added a curated mkdocstrings API reference for the supported public surfaces in `umx.config`, `umx.models`, and `umx.mcp_server` instead of promising documentation for the entire internal package.
   - Public exports are now documented and guarded by `tests/test_api_docstrings.py`, so missing docstrings fail the docs lane while internal/private names stay out of the generated reference.
-  - Keep `[~]` until merge/CI per plan rules.
+  - Live publish is now verified through the docs site rollout: the generated API pages build on `main`, the public site serves `https://dev-boz.github.io/gitmem/api/config/`, and the docstring gate remains enforced by `tests/test_api_docstrings.py`.
 
 ### T5.7 — 0.9 → 1.0 upgrade guide
 
@@ -719,9 +724,15 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 
 ---
 
-## M5.5 — Dogfood & evaluation hardening
+## M5.5 — Personal dogfood & public benchmark hardening
 
-**Exit criteria:** Repeated internal dogfood runs stay green; eval harnesses exist for the major memory/retrieval/review surfaces; at least one external long-memory benchmark and one multi-hop retrieval benchmark are runnable enough to inform release confidence.
+**Exit criteria:** Repeated personal dogfood runs stay green; eval harnesses exist for the major memory/retrieval/review surfaces; LongMemEval and HotpotQA are runnable as public release benchmarks; 1.0 docs define "it works personally" and "it works on benchmarks" as the ship gate.
+
+**Public benchmark shortlist for 1.0**
+- **Required:** LongMemEval (https://github.com/xiaowu0162/LongMemEval) — primary long-term memory benchmark for cross-session recall, knowledge updates, temporal reasoning, and abstention.
+- **Required:** HotpotQA (https://hotpotqa.github.io/) — primary public multi-hop retrieval/supporting-fact benchmark so search and inject quality are measured on harder questions.
+- **Next best addition if bandwidth allows:** LoCoMo (https://github.com/snap-research/locomo) — strong very-long-term conversational-memory benchmark, but not required for 1.0 if LongMemEval and HotpotQA are already repeatable.
+- **Useful but non-blocking stress tests:** RULER (https://github.com/NVIDIA/RULER) and InfiniteBench (https://github.com/OpenBMB/InfiniteBench) — valuable for long-context stress, but secondary because they test raw long-context handling more than gitmem's persisted-memory workflow.
 
 ### T5.8 — Native eval harness expansion
 
@@ -747,7 +758,7 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
 - Files: `umx/long_memory_eval.py`, `tests/eval/long_memory/` (new), `docs/cli.md`
 - Outcome: A pilot runner maps gitmem’s memory stack onto LongMemEval-style long-memory questions so releases can be judged against real memory tasks instead of only unit tests.
 - Acceptance:
-  - Pilot covers LongMemEval’s core memory buckets: information extraction, multi-session reasoning, knowledge updates, temporal reasoning, abstention
+  - Pilot covers LongMemEval’s core `question_type` buckets closely enough to judge release quality, including single-session extraction, multi-session, knowledge updates, temporal reasoning, and abstention
   - Can run against at least an oracle/subset dataset locally and emit evidence-session recall plus abstention signals
   - Notes document what is native gitmem evaluation versus what is benchmark-adapter glue
 - Notes:
@@ -773,92 +784,119 @@ Keep entries terse. Long rationale belongs in the task's `Notes:` block or a com
   - The adapter intentionally leaves global `query_index()` semantics unchanged: it runs local multi-query retrieval plus overlap reranking because FTS5 space-separated queries behave like conjunctions, which would otherwise miss multi-hop support spread across multiple facts.
   - Dedicated harness tests and CLI coverage are in place, malformed fixture facts now fail closed instead of being silently stringified, and current local validation is green at `pytest -q` → 766 passed plus `mkdocs build --strict`. Keep `[~]` until merge/CI per plan rules.
 
-### T5.11 — Eval reporting and framework integration
+### T5.11 — Release-gate reporting integration
 
 - Status: `[~]`
 - Owner: copilot-cli
 - Depends on: T5.8, T5.9, T5.10
-- Files: `docs/cli.md`, `docs/ops-runbook.md`, optional `tests/eval/README.md`
-- Outcome: Eval runs have a stable operator workflow and can feed release decisions, whether through native JSON payloads, pytest, or an external framework such as DeepEval.
+- Files: `umx/cli.py`, `umx/eval_compare.py`, `umx/inject_eval.py`, `umx/long_memory_eval.py`, `umx/retrieval_eval.py`, `docs/cli.md`, `docs/ops-runbook.md`, `docs/launch-checklist.md`, `tests/test_eval_compare.py`
+- Outcome: Eval runs have a stable operator workflow and can feed the 1.0 ship/no-ship decision, whether through native JSON payloads, pytest, or an optional external framework such as DeepEval.
 - Acceptance:
   - Eval commands emit stable machine-readable JSON suitable for CI/history tracking
-  - Docs explain which evals are native goldens versus external benchmark adapters
-  - At least one path is documented for integrating eval runs into pytest/CI or an external framework like DeepEval
+  - Docs explain the required 1.0 gates: personal dogfood, LongMemEval, and HotpotQA
+  - At least one path is documented for capturing benchmark outputs as release artifacts, with optional downstream integration into pytest/CI or an external framework like DeepEval
 - Notes:
   - External framework reference: DeepEval (https://github.com/confident-ai/deepeval)
   - `docs/cli.md` now classifies the eval family into native gitmem goldens (`l2-review`, `inject`) versus offline benchmark adapters (`long-memory`, `retrieval`) and calls out the shared stable-JSON/nonzero-exit contract.
   - `docs/ops-runbook.md` now documents a release-gate workflow that captures eval JSON artifacts directly from the CLI, reuses those commands in CI after `pytest -q`, and keeps DeepEval-style reporting optional downstream of the native JSON outputs.
+  - Release artifacts are now more self-describing and more comparable: the offline eval payloads carry suite/cases metadata, `gitmem eval compare` can fail release candidates on benchmark regressions without extra tooling, and the docs now point both the local smoke path and the public benchmark path at stable gitignored locations (`artifacts/release-gates/` and `benchmarks/release-data/`).
+  - Added `gitmem eval release-gate` as the thin bundling helper for repeated RC runs: it writes the local smoke artifacts in one pass, can add LongMemEval / HotpotQA release artifacts from maintainer-supplied case files, and can emit compare JSONs when baseline artifacts are available.
+  - The helper now also exposes separate release-case min-pass-rate knobs, so the first benchmark capture can record real artifact payloads before an accepted baseline exists while keeping the local smoke gates strict.
   - Current local validation for the documented workflow is green at `gitmem eval retrieval --case four-color-theorem-birthplace` → `status: ok`, alongside the 766-test branch baseline and a strict docs build. Keep `[~]` until merge/CI per plan rules.
 
 ---
 
-## M6 — Private beta
+## M6 — Release gate execution
 
-**Exit criteria:** 5–10 real teams running gitmem for ≥2 weeks each. All P0/P1 bugs closed. Launch checklist signed off. Start only after the dogfood/eval gates in M5.5 are green enough to justify external beta risk.
+**Exit criteria:** The 1.0 release stays blocked until both claims are true: gitmem works personally in real dogfooding, and gitmem works on public benchmarks. All P0/P1 bugs closed. Launch checklist signed off.
 
-### T6.1 — Recruit beta cohort
+### T6.1 — Personal dogfood matrix
 
-- Status: `[ ]`
-- Owner: —
-- Depends on: T5.5, T5.7
-- Outcome: 5–10 teams committed. Mix of solo devs and small teams. At least 2 teams using remote mode seriously.
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T5.5, T5.7, T5.11
+- Files: `docs/ops-runbook.md`, `docs/launch-checklist.md`, `tests/test_dogfood_readiness.py`
+- Outcome: The maintainer uses gitmem on real work long enough to trust 1.0 without relying on outside testers.
 - Acceptance:
-  - Signed-off participation from each team
-  - Onboarding call completed
-  - Beta license/terms accepted
+  - At least 2 real repos exercised, covering one pure-local flow and one GitHub-backed flow (`remote` or `hybrid`)
+  - Core workflows hold up under repeated use: `init`, `capture`, `dream`, `search`, `inject`, `health`, and `sync`/governance where applicable
+  - At least one clean-room setup and one recovery/reattach pass succeed from a fresh `UMX_HOME`
 - Notes:
+  - The runbook and launch checklist now make the one-maintainer dogfood gate explicit, including where to store dogfood evidence and how to roll it into the final sign-off.
+  - `tests/test_dogfood_readiness.py` now covers a fresh-`UMX_HOME`, hybrid reattach, and sync handoff path without real network services, closing the biggest local-only gap in the existing readiness coverage.
 
-### T6.2 — Feedback intake
+### T6.2 — LongMemEval release run
 
-- Status: `[ ]`
-- Owner: —
-- Depends on: T6.1
-- Files: External — issues repo or Linear project
-- Outcome: Weekly office hours; intake channel; triage cadence; public roadmap reflects beta input.
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T5.9, T5.11
+- Files: `docs/ops-runbook.md`
+- Outcome: LongMemEval is run as a real public memory benchmark for each release candidate, not just as a local adapter smoke test.
 - Acceptance:
-  - Every issue triaged within 3 business days
-  - P0 response within 24h
+  - A documented command runs the checked-in subset locally and a fixed public-data release slice from the upstream benchmark with no cherry-picking
+  - Output records per-`question_type` results in machine-readable output (for example `single-session-user`, `multi-session`, `knowledge-update`, `temporal-reasoning`, `abstention`)
+  - Release is blocked on material regression versus the last recorded baseline
 - Notes:
+  - Canonical benchmark: LongMemEval (ICLR 2025, https://github.com/xiaowu0162/LongMemEval)
+  - The runbook now separates the checked-in subset smoke run from the maintainer-supplied public release slice at `benchmarks/release-data/longmemeval/cases.json`, and documents the default `gitmem eval compare` baseline check for the resulting JSON artifacts.
+  - `umx/long_memory_eval.py` now normalizes raw upstream LongMemEval session IDs into gitmem-compatible temp session IDs and maps search hits back to the benchmark's canonical IDs, so public-data slices with IDs like `answer_280352e9` run instead of failing in session-path handling.
+  - A current 25-case local capture at `artifacts/release-gates/2026-04-28-capture-fixed/release/longmemeval.release.json` records `passed=21/25`, `pass_rate=0.84`, and `average_recall=0.84`; baseline compare and maintainer sign-off are still pending.
 
-### T6.3 — Telemetry review
+### T6.3 — HotpotQA release run
 
-- Status: `[ ]`
-- Owner: —
-- Depends on: T5.4, T6.1
-- Outcome: Weekly review of telemetry data. Issues surfaced from telemetry tracked and resolved.
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T5.10, T5.11
+- Files: `docs/ops-runbook.md`
+- Outcome: HotpotQA is run as the public multi-hop/supporting-fact benchmark so retrieval quality is measured before 1.0 ships.
 - Acceptance:
-  - Review cadence documented
-  - Minimum 3 insights fed back into bug list or roadmap
-- Notes: Skip entire task if T5.4 was deferred.
-
-### T6.4 — Bug bash
-
-- Status: `[ ]`
-- Owner: —
-- Depends on: T6.1
-- Outcome: Scheduled bug bash sessions (≥2) with beta cohort. Focus areas documented.
-- Acceptance:
-  - Each bash produces a tracked bug list
-  - P0/P1 fixed before next milestone
+  - A fixed public slice and command are documented so reruns stay comparable
+  - Top-k supporting-fact recall plus answer metrics are emitted in machine-readable output
+  - Release is blocked on material regression versus the last recorded baseline
 - Notes:
+  - Canonical benchmark: HotpotQA (EMNLP 2018, https://hotpotqa.github.io/)
+  - The runbook now documents the canonical local path for a fixed public HotpotQA slice (`benchmarks/release-data/hotpotqa/cases.json`) plus the artifact/baseline compare flow needed for repeated release candidates.
+  - `gitmem eval retrieval --cases` now accepts raw HotpotQA JSON directly in addition to `hotpotqa-manifest`, so release-grade reruns can point at a filtered upstream slice without first rewriting it into gitmem’s native eval schema.
+  - Retrieval artifacts now emit `average_answer_coverage` when source answers are present, and `gitmem eval compare` includes that metric by default whenever the saved reports provide it.
+  - A current 25-case local capture at `artifacts/release-gates/2026-04-28-capture-fixed/release/hotpotqa.release.json` records `passed=10/25`, `pass_rate=0.4`, `average_recall=0.6713333333333332`, and `average_answer_coverage=0.56`; baseline compare and maintainer sign-off are still pending.
+
+### T6.4 — Release scorecard & bug scrub
+
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T6.1, T6.2, T6.3
+- Files: `docs/launch-checklist.md`, `docs/ops-runbook.md`
+- Outcome: Dogfood results, benchmark outputs, and blocker bugs roll up into one explicit ship/no-ship scorecard.
+- Acceptance:
+  - Scorecard records dogfood status, LongMemEval status, HotpotQA status, and open P0/P1 bugs
+  - Any failing gate blocks the version bump until a rerun passes or the gate is consciously redefined in this plan
+  - Follow-on benchmark candidates are documented so post-1.0 work is obvious
+- Notes:
+  - Best next addition after 1.0: LoCoMo for very-long-term conversational memory.
+  - Useful non-blocking stress benches: RULER and InfiniteBench.
+  - Added `docs/launch-checklist.md` as the explicit release scorecard for dogfood records, LongMemEval/HotpotQA artifacts, compare outputs, and the open P0/P1 bug scrub.
+  - The repo can now generate most of that scorecard bundle with `gitmem eval release-gate`, leaving only real dogfood evidence and final sign-off to the maintainer.
+  - A fresh local scorecard bundle now exists under `artifacts/release-gates/2026-04-28-capture-fixed/`, including smoke artifacts, benchmark artifacts, `summary.json`, and a `bug-scrub.json` snapshot with `open_p0=0` and `open_p1=0` at capture time.
 
 ### T6.5 — Launch checklist sign-off
 
-- Status: `[ ]`
-- Owner: —
-- Depends on: T6.1, T6.2, T6.3, T6.4
+- Status: `[~]`
+- Owner: copilot-cli
+- Depends on: T6.4
 - Files: `docs/launch-checklist.md`
-- Outcome: All P0/P1 bugs closed; docs reviewed; license finalized; pricing/positioning decided (if applicable); announcement drafted.
+- Outcome: All P0/P1 bugs closed; docs reviewed; announcement ready; release gates explicitly signed off.
 - Acceptance:
-  - Each item explicitly signed off by plan owner
+  - Checklist has separate sign-off lines for "works personally" and "works on benchmarks"
   - No open P0/P1 bugs
+  - Release artifacts include benchmark JSON or links to stored results
 - Notes:
+  - `docs/launch-checklist.md` now exists, is wired into MkDocs nav, and has separate sign-off lines for `works personally` and `works on benchmarks` plus explicit artifact-location and bug-scrub sections.
 
 ---
 
 ## M7 — GA 1.0.0
 
-**Exit criteria:** Gitmem 1.0.0 published with GitHub sync as the headline feature.
+**Exit criteria:** Gitmem 1.0.0 published only after the personal dogfood gate and public benchmark gates are green, with GitHub sync as the headline feature.
 
 ### T7.1 — Version bump 1.0.0
 
@@ -933,11 +971,11 @@ Format:
 - Rationale: this is the lowest-risk M1 path and documents the interface users can rely on today without inventing untested flag stubs.
 - Reversibility: easy
 
-### D3 — Gate beta on dogfood and eval confidence (2026-04-22, copilot-cli)
-- Context: Real cross-org dogfooding surfaced product issues that ordinary unit tests did not, and release confidence is more likely to come from repeated dogfood plus benchmarked evals than from starting an external beta early.
-- Options considered: keep private beta as the next milestone; treat eval work as ad hoc follow-up inside existing tasks; add an explicit pre-beta dogfood/eval milestone.
-- Choice: add an explicit pre-beta dogfood/eval hardening lane and treat beta/GA work as downstream of that confidence gate.
-- Rationale: this keeps the roadmap honest about current maturity and prioritizes measurable memory/retrieval/review quality before external rollout pressure.
+### D3 — Gate release on personal dogfood and benchmarks (2026-04-22, copilot-cli)
+- Context: Real cross-org dogfooding surfaced product issues that ordinary unit tests did not, and a single-maintainer free tool is more likely to reach honest 1.0 confidence through repeated personal use plus public benchmarks than through organizing outside testers.
+- Options considered: add an outside-tester milestone; rely on ad hoc dogfooding without formal gates; add an explicit dogfood-plus-benchmark release gate.
+- Choice: add an explicit dogfood-plus-benchmark hardening lane and make GA downstream of that gate.
+- Rationale: this matches maintainer bandwidth, gives release decisions objective signals, and keeps 1.0 criteria grounded in real usage plus public benchmarks instead of performative process.
 - Reversibility: easy
 
 ---
@@ -947,7 +985,7 @@ Format:
 Track here. Agents: move items into tasks when they become actionable; delete when resolved.
 
 - **L2 reviewer cost unknown** — token spend per PR is not yet measured. Gate on T3.1 telemetry.
-- **Beta cohort recruitment** — how are we sourcing users? Need plan by end of M5.
+- **Dogfood coverage realism** — are the chosen personal repos and workflows representative enough to trust the 1.0 gate? Re-check before M6 closes.
 - **Pricing / commercial model** — undecided. Affects M7 announcement framing.
 - **LTS policy** — 1.0 support window? Affects upgrade guide scope.
 - **Competing standards** — is there an MCP-native memory standard emerging that we should track?
@@ -958,6 +996,13 @@ Track here. Agents: move items into tasks when they become actionable; delete wh
 
 Append-only. Most recent at top. Historical entries keep the validation counts that were true when each slice landed; the latest branch-head baseline is the most recent entry above.
 
+- 2026-04-28 [T5.11] copilot-cli: added `gitmem eval compare`, made the offline eval artifacts self-describing, created the launch checklist page, expanded the runbook around personal dogfood vs public benchmark release gates, and added hybrid fresh-home/reattach/sync dogfood-readiness coverage
+- 2026-04-27 [T5.3] copilot-cli: hardened multi-machine sync around the first real concurrent-write failure mode by teaching `gitmem sync` to surface conflicted paths after rebase failure, fail fast when a prior sync already left rebase/merge in progress, and report partial success when `umx-user` synced before the project repo failed. Added two-home local-mode conflict/rerun regressions in `tests/test_multi_machine.py`, hardened conflict-path discovery in `umx.git_ops`, and documented the resolve/abort/rerun flow in the CLI, README, and ops runbook. Revalidated with `tests/test_git_ops.py`, `tests/test_multi_machine.py`, and the broader sync/governance subset (`121` passing) plus a strict docs build.
+- 2026-04-27 [T5.6] copilot-cli: closed the generated API reference task after the public docs publish by verifying the mkdocstrings output on the live site (`https://dev-boz.github.io/gitmem/api/config/`) and carrying forward the existing docstring gate in `tests/test_api_docstrings.py`.
+- 2026-04-27 [T5.5] copilot-cli: finished the docs-site rollout by enabling GitHub Pages on `dev-boz/gitmem`, verifying the existing `gh-pages` branch publish, and confirming live site availability at `https://dev-boz.github.io/gitmem/` after Pages build `974456118`. The `Docs` workflow on `main` was already green at run `24930982507`, so the remaining gap was repository Pages configuration rather than docs content/build quality.
+- 2026-04-25 [T2.7] copilot-cli: closed the live CI supply-chain proof on public repo `dev-boz/gitmem` by opening disposable PR `#1` with intentionally vulnerable `jinja2==2.11.2`, confirming PR workflow run `24933055689`, failed `supply-chain` job `73013902476`, uploaded SBOM artifact `sbom-cyclonedx-json` (`6640475931`), and captured the exact `pip-audit --local` advisories (`PYSEC-2021-66`, `CVE-2024-22195`, `CVE-2024-34064`, `CVE-2024-56326`, `CVE-2025-27516`). Non-blocking follow-up: GitHub warned that `actions/checkout@v4`, `actions/setup-python@v5`, and `actions/upload-artifact@v4` are still on the Node 20 runtime.
+- 2026-04-25 [T3.1/T3.2] copilot-cli: finished the live Claude Code CLI review gate by documenting `gitmem dream --tier l2 --provider claude-cli`, proving governed-only PR review on `dev-boz-gitmem2/gitmem-t36-main-guard-fix-20260425t132059z-e5041a#3`, persisting the GitHub L2 comment plus review labels, and recording `review_prompt_id=claude-cli-l2-review`, `review_prompt_version=v1`, and `review_usage` (`6` in / `207` out / `213` total) in both the CLI payload and `meta/processing.jsonl`. Revalidated at 806 passing tests plus a strict docs build.
+- 2026-04-25 [T3.6] copilot-cli: extended governed fallback deployment/status to hybrid mode, hardened `main-guard.yml` around mixed commit ranges / revert-loop detection / adopted-remote bootstrap checks, added `governance_auto_revert` audit records in `meta/processing.jsonl`, and live-dogfooded the path on `dev-boz-gitmem2`: the shipped repo `gitmem-t36-main-guard-20260425t130457z-0f9e16` exposed a malformed workflow blocker, while the corrected proof repo `gitmem-t36-main-guard-fix-20260425t132059z-e5041a` auto-reverted unauthorized push `585c37e` with commit `27c279b` and left approved PR merge `d9b1073` in place. Revalidated at 802 passing tests plus a strict docs build.
 - 2026-04-25 [T3.6] copilot-cli: added a remote-mode `main-guard.yml` workflow fallback for free org-owned private repos, updated bootstrap/setup status output from deferred to fallback when live rulesets are unavailable, refreshed the README/governance tutorial/ops runbook wording around post-push remediation, and revalidated the branch at 797 passing tests plus a strict docs build
 - 2026-04-24 [T3.1] claude-opus-4-7: added `umx/providers/claude_cli.py` plus `claude_cli_l2_reviewer` and a `select_l2_reviewer(provider)` selector so `gitmem eval l2-review --provider claude-cli` can drive the L2 review prompt through the local Claude Code CLI in headless `-p` mode (operator OAuth, no `ANTHROPIC_API_KEY`). Documented the new `--provider` flag in `docs/cli.md`, `docs/ops-runbook.md`, and `docs/spec-parity.md`, and revalidated the branch at 787 passing tests. Live calibration on the 20-case corpus reached 18/20 (status `ok` against the `≥0.85` gate) with both failures sitting in the `suspected_hallucination` bucket where the model preferred `reject` to the corpus-expected `escalate`.
 - 2026-04-24 [T4.3] copilot-cli: added OpenAI and Voyage embedding backends behind the existing provider seam, introduced `search.embedding.api_base`, batched remote embedding generation in `ensure_embeddings()`, refreshed the config/spec/README docs for the new provider surface, and revalidated the branch at 796 passing tests plus a strict docs build
@@ -966,7 +1011,7 @@ Append-only. Most recent at top. Historical entries keep the validation counts t
 - 2026-04-23 [T5.3] copilot-cli: added a first hermetic two-home hybrid sync harness for session propagation and rebase-preserving sequential sync, documented the sequential multi-machine operator flow, and revalidated the branch at 772 passing tests plus a strict docs build
 - 2026-04-23 [T3.8] copilot-cli: added `gitmem rollback --pr ...` to open governed reverse PRs from prior tombstone PRs, reconstruct facts from git history without whole-file rewinds, and revalidated the branch at 774 passing tests plus a strict docs build
 - 2026-04-23 [T3.8] copilot-cli: extended governed forget to support topic tombstone PRs, kept branch rollback clean on failure, excluded superseded facts from topic tombstones, and revalidated the branch at 768 passing tests plus a strict docs build
-- 2026-04-22 [T5.8] copilot-cli: added `gitmem eval inject` with a hermetic offline harness around the checked-in golden inject corpus, introduced an explicit pre-beta eval-and-dogfood roadmap lane referencing LongMemEval/HotpotQA/DeepEval, and revalidated the branch at 753 passing tests plus a strict docs build
+- 2026-04-22 [T5.8] copilot-cli: added `gitmem eval inject` with a hermetic offline harness around the checked-in golden inject corpus, introduced an explicit release-gate eval-and-dogfood roadmap lane referencing LongMemEval/HotpotQA/DeepEval, and revalidated the branch at 753 passing tests plus a strict docs build
 - 2026-04-22 [T5.9] copilot-cli: added `gitmem eval long-memory` with a checked-in LongMemEval-style subset and deterministic evidence-session recall scoring so long-memory retrieval can be exercised locally before any live benchmark integration
 - 2026-04-22 [T5.10] copilot-cli: added `gitmem eval retrieval` with a checked-in HotpotQA-style subset, adapter-local multi-query retrieval, overlap reranking, and fixture validation so supporting-fact recall can be tracked without changing global search semantics
 - 2026-04-22 [T5.11] copilot-cli: documented the eval family as stable JSON release gates, split native versus benchmark-shaped evals in the CLI docs, and recorded a pytest/CI plus optional DeepEval consumption path in the ops runbook

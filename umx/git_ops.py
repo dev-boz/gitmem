@@ -275,6 +275,19 @@ def is_git_repo(repo_dir: Path) -> bool:
     return result.returncode == 0
 
 
+def _resolve_git_dir(repo_dir: Path) -> Path | None:
+    result = _run_git(repo_dir, "rev-parse", "--git-dir")
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    git_dir = Path(raw)
+    if not git_dir.is_absolute():
+        git_dir = repo_dir / git_dir
+    return git_dir.resolve()
+
+
 def git_init(repo_dir: Path) -> None:
     """Initialize a git repo at repo_dir if not already one.
 
@@ -405,20 +418,22 @@ def git_status(repo_dir: Path) -> str:
     return result.stdout
 
 
-def changed_paths(repo_dir: Path, prefix: str | None = None) -> list[Path]:
-    """Return changed paths from ``git status --porcelain``.
+_UNMERGED_STATUS_CODES = frozenset({"DD", "AU", "UD", "UA", "DU", "AA", "UU"})
 
-    When ``prefix`` is provided, only paths under that repository-relative prefix
-    are returned.
-    """
-    output = git_status(repo_dir)
-    if not output:
-        return []
 
+def _paths_from_status_output(
+    output: str,
+    repo_dir: Path,
+    *,
+    prefix: str | None = None,
+    status_codes: frozenset[str] | None = None,
+) -> list[Path]:
     seen: set[Path] = set()
     paths: list[Path] = []
     for line in output.splitlines():
         if not line.strip():
+            continue
+        if status_codes is not None and line[:2] not in status_codes:
             continue
         file_part = line[3:]
         candidates = file_part.split(" -> ") if " -> " in file_part else [file_part]
@@ -431,6 +446,50 @@ def changed_paths(repo_dir: Path, prefix: str | None = None) -> list[Path]:
             seen.add(path)
             paths.append(path)
     return paths
+
+
+def changed_paths(repo_dir: Path, prefix: str | None = None) -> list[Path]:
+    """Return changed paths from ``git status --porcelain``.
+
+    When ``prefix`` is provided, only paths under that repository-relative prefix
+    are returned.
+    """
+    output = git_status(repo_dir)
+    if not output:
+        return []
+    return _paths_from_status_output(output, repo_dir, prefix=prefix)
+
+
+def conflicted_paths(repo_dir: Path, prefix: str | None = None) -> list[Path]:
+    """Return paths currently left in an unmerged/conflicted git state."""
+    if not is_git_repo(repo_dir):
+        return []
+    result = _run_git(repo_dir, "diff", "--name-only", "--diff-filter=U", "-z")
+    if result.returncode != 0 or not result.stdout:
+        return []
+    seen: set[Path] = set()
+    paths: list[Path] = []
+    for candidate in (item for item in result.stdout.split("\0") if item):
+        if prefix is not None and not candidate.startswith(prefix):
+            continue
+        path = repo_dir / candidate
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return paths
+
+
+def git_in_progress_operation(repo_dir: Path) -> str | None:
+    """Return the git operation already paused in ``repo_dir``, if any."""
+    git_dir = _resolve_git_dir(repo_dir)
+    if git_dir is None:
+        return None
+    if (git_dir / "rebase-merge").exists() or (git_dir / "rebase-apply").exists():
+        return "rebase"
+    if (git_dir / "MERGE_HEAD").exists():
+        return "merge"
+    return None
 
 
 def uncommitted_sessions(repo_dir: Path) -> list[Path]:

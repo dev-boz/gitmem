@@ -12,6 +12,8 @@ from umx.git_ops import (
     GitCommitResult,
     GitSignedHistoryError,
     assert_signed_commit_range,
+    conflicted_paths,
+    git_in_progress_operation,
     git_add_and_commit,
     git_init,
     git_pull_rebase,
@@ -296,6 +298,43 @@ def test_git_pull_rebase_enables_rebase_signing_when_signing_is_enabled(
 
     assert git_pull_rebase(repo, config=cfg) is True
     assert calls == [("-c", "rebase.gpgSign=true", "pull", "--rebase", "origin")]
+
+
+def test_conflicted_paths_filters_unmerged_entries(
+    repo: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("rev-parse", "--git-dir"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=".git\n", stderr="")
+        assert args == ("diff", "--name-only", "--diff-filter=U", "-z")
+        return subprocess.CompletedProcess(
+            args=list(args),
+            returncode=0,
+            stdout="facts/topics/docs.md\0facts/topics/release notes.md\0",
+            stderr="",
+        )
+
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    assert conflicted_paths(repo) == [
+        repo / "facts/topics/docs.md",
+        repo / "facts/topics/release notes.md",
+    ]
+
+
+def test_git_in_progress_operation_detects_rebase(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    git_dir = repo / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "rebase-merge").mkdir()
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        assert args == ("rev-parse", "--git-dir")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=".git\n", stderr="")
+
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    assert git_in_progress_operation(repo) == "rebase"
 
 
 def test_uncommitted_sessions(repo: Path) -> None:

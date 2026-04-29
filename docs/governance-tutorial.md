@@ -17,7 +17,7 @@ gitmem init --owner your-github-user --mode hybrid
 ```
 
 Use `--mode remote` if you want the stricter remote path instead.
-On GitHub Free org-owned private repos, remote mode falls back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after the fact.
+On GitHub Free org-owned private repos, remote and hybrid modes fall back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after the fact.
 
 ## 3. Initialize project memory
 
@@ -55,7 +55,7 @@ gitmem sync --cwd /path/to/project
 ```
 
 Use `gitmem sync`, not raw `git push`, for the normal governed session flow.
-When repository rulesets are unavailable, the deployed `main-guard.yml` workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to `main` are reverted by GitHub Actions.
+When repository rulesets are unavailable, the deployed `main-guard.yml` workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to `main` are reverted by GitHub Actions. Each auto-revert also appends a `governance_auto_revert` entry to `meta/processing.jsonl` for later review.
 
 ## 6. Check governance health
 
@@ -69,6 +69,12 @@ That is the fastest summary for branch-head governance state.
 
 ```bash
 gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
+```
+
+To drive the live review through the local Claude Code CLI instead of `ANTHROPIC_API_KEY`:
+
+```bash
+gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42 --provider claude-cli
 ```
 
 If you need to pin the expected head commit:

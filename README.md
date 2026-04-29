@@ -20,6 +20,8 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 **Your AI tools share a brain, and you can see exactly what's in it.**
 
 > **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/OpenCode transcript capture, Claude Code live-hook install helpers, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, especially remote/hybrid review and provider-backed approval.
+>
+> **Benchmark note** — public-memory benchmark coverage is improving, but full end-to-end evaluation of Dream cycles is still a work in progress.
 
 Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
@@ -213,7 +215,7 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 
 Requires `gh` CLI installed and authenticated.
 
-Use a GitHub owner you control. On GitHub Free org-owned private repos, remote mode now falls back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after they land, preserving auditability even when repository rulesets are unavailable.
+Use a GitHub owner you control. On GitHub Free org-owned private repos, remote and hybrid modes now fall back to a workflow guard that auto-reverts unauthorized governed pushes to `main` after they land, preserving auditability even when repository rulesets are unavailable.
 
 ```bash
 # Bootstrap with a GitHub owner you control
@@ -231,7 +233,9 @@ gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
 gitmem sync --cwd /path/to/project
 ```
 
-On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remote` / `gitmem init --mode remote` now deploy a `main-guard.yml` workflow alongside the approval gate. It is a post-push control, not true pre-push branch protection: bad governed pushes can still land briefly, but the guard reverts them with an explicit bot-authored commit unless the tip commit is associated with a merged PR carrying `state: approved`.
+If two machines edit the same memory file concurrently, `gitmem sync` fails closed with the conflicting paths so you can resolve or abort the rebase instead of overwriting shared state.
+
+On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remote` plus `gitmem init --mode remote|hybrid` now deploy a `main-guard.yml` workflow alongside the approval gate. It is a post-push control, not true pre-push branch protection: bad governed pushes can still land briefly, but the guard reverts any unauthorized governed commit in the pushed range unless each governed commit is associated with a merged PR carrying `state: approved`. Each auto-revert also appends a structured `governance_auto_revert` record to `meta/processing.jsonl` so the remediation shows up in the repo audit trail and viewer.
 
 ### Mode comparison
 

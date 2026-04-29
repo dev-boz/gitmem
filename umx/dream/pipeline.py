@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -665,6 +666,7 @@ class DreamPipeline:
         force_merge: bool = False,
         force_reason: str | None = None,
         expected_head_sha: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, object]:
         if self.config.dream.mode not in ("remote", "hybrid"):
             raise RuntimeError("L2 review is only available in remote or hybrid mode")
@@ -865,6 +867,10 @@ class DreamPipeline:
             labels=labels,
             files_changed=files_changed,
         )
+        review_env = None
+        if provider:
+            review_env = dict(os.environ)
+            review_env["UMX_L2_REVIEW_PROVIDER"] = provider
         try:
             decision = run_l2_review_with_providers(
                 proposal,
@@ -878,6 +884,7 @@ class DreamPipeline:
                     existing_facts,
                     new_facts=new_facts,
                 ),
+                env=review_env,
             )
         except ProviderUnavailableError as exc:
             raise RuntimeError(str(exc)) from exc

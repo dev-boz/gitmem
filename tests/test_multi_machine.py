@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -395,3 +396,116 @@ def test_multi_machine_local_sync_supports_user_remote_without_project_remote(
     assert sync_b.exit_code == 0, sync_b.output
     assert sync_b.output.strip() == f"synced user memory with {user_remote}"
     assert any(item.fact_id == fact.fact_id for item in load_all_facts(user_repo_b, include_superseded=False))
+
+
+def test_multi_machine_local_sync_surfaces_conflicted_paths_for_parallel_fact_edits(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_remote = _init_bare_remote(tmp_path, "multi-machine-project-conflict")
+    user_remote = _init_bare_remote(tmp_path, "multi-machine-user-conflict")
+    project_a = tmp_path / "project-a-conflict"
+    project_b = tmp_path / "project-b-conflict"
+    for project_dir in (project_a, project_b):
+        project_dir.mkdir()
+        (project_dir / ".git").mkdir()
+
+    home_a = tmp_path / "home-a-conflict"
+    home_b = tmp_path / "home-b-conflict"
+    runner = CliRunner()
+
+    repo_a, _ = _init_machine(
+        monkeypatch,
+        runner,
+        home_a,
+        project_a,
+        project_remote=project_remote,
+        user_remote=user_remote,
+        mode="local",
+    )
+    repo_b, _ = _init_machine(
+        monkeypatch,
+        runner,
+        home_b,
+        project_b,
+        project_remote=project_remote,
+        user_remote=user_remote,
+        mode="local",
+    )
+
+    baseline = _make_fact(
+        "shared baseline text",
+        topic="docs",
+        fact_id="01TESTFACT0000000000005303",
+    )
+    _select_machine(monkeypatch, home_a)
+    topic_path_a = add_fact(repo_a, baseline)
+    sync_a_seed = runner.invoke(main, ["sync", "--cwd", str(project_a)])
+    assert sync_a_seed.exit_code == 0, sync_a_seed.output
+
+    _select_machine(monkeypatch, home_b)
+    sync_b_seed = runner.invoke(main, ["sync", "--cwd", str(project_b)])
+    assert sync_b_seed.exit_code == 0, sync_b_seed.output
+    topic_path_b = repo_b / "facts" / "topics" / "docs.md"
+    assert topic_path_b.exists()
+
+    topic_path_a.write_text(
+        topic_path_a.read_text().replace("shared baseline text", "machine A rewrite"),
+        encoding="utf-8",
+    )
+    topic_path_b.write_text(
+        topic_path_b.read_text().replace("shared baseline text", "machine B rewrite"),
+        encoding="utf-8",
+    )
+
+    _select_machine(monkeypatch, home_a)
+    sync_a = runner.invoke(main, ["sync", "--cwd", str(project_a)])
+    assert sync_a.exit_code == 0, sync_a.output
+
+    _select_machine(monkeypatch, home_b)
+    sync_b = runner.invoke(main, ["sync", "--cwd", str(project_b)])
+    assert sync_b.exit_code != 0
+    assert "pull --rebase failed with conflicts in facts/topics/docs.md" in sync_b.output
+    assert "resolve or abort the rebase, then rerun gitmem sync" in sync_b.output
+
+    sync_b_retry = runner.invoke(main, ["sync", "--cwd", str(project_b)])
+    assert sync_b_retry.exit_code != 0
+    assert "rebase already in progress; finish it with git rebase --continue" in sync_b_retry.output
+    assert "or back out with git rebase --abort before rerunning gitmem sync" in sync_b_retry.output
+
+
+def test_sync_reports_user_repo_partial_success_when_project_sync_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / ".git").mkdir()
+    home = tmp_path / "home-partial-sync"
+    _set_mode(monkeypatch, home, mode="local")
+    runner = CliRunner()
+
+    project_repo = home / "projects" / "project"
+    user_repo = home / "user"
+
+    def fake_git_remote_url(repo: Path) -> str | None:
+        if repo == project_repo:
+            return "https://example.com/project.git"
+        if repo == user_repo:
+            return "https://example.com/user.git"
+        return None
+
+    def fake_sync_memory_repo(repo: Path, **kwargs):
+        if repo == user_repo:
+            return "https://example.com/user.git"
+        raise click.ClickException("project memory repo pull --rebase failed")
+
+    monkeypatch.setattr("umx.git_ops.git_remote_url", fake_git_remote_url)
+    monkeypatch.setattr("umx.cli._sync_memory_repo", fake_sync_memory_repo)
+
+    result = runner.invoke(main, ["sync", "--cwd", str(project_dir)])
+    assert result.exit_code != 0
+    assert (
+        "user memory already synced with https://example.com/user.git; "
+        "project memory repo pull --rebase failed"
+    ) in result.output

@@ -73,6 +73,9 @@ def test_run_inject_eval_computes_pass_rate(tmp_path: Path) -> None:
 
     payload = run_inject_eval(cases_path, default_config(), min_pass_rate=0.75)
 
+    assert payload["suite"] == "inject"
+    assert Path(payload["cases_path"]).name == "cases.json"
+    assert payload["case_filter"] is None
     assert payload["status"] == "error"
     assert payload["total"] == 2
     assert payload["passed"] == 1

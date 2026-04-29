@@ -15,9 +15,11 @@ from umx.dream.l2_review import (
     REVIEW_COMMENT_MARKER,
     anthropic_l2_reviewer,
     claude_cli_l2_reviewer,
+    normalize_l2_reviewer_provider,
     select_l2_reviewer,
 )
 from umx.dream.providers import ProviderUnavailableError
+from umx.dream.pipeline import DreamPipeline
 from umx.governance import PRProposal
 from umx.models import (
     ConsolidationStatus,
@@ -329,6 +331,61 @@ def test_cli_eval_l2_review_rejects_unknown_provider() -> None:
     result = CliRunner().invoke(
         main,
         ["eval", "l2-review", "--provider", "openai", "--cases", str(FIXTURES_ROOT)],
+    )
+
+    assert result.exit_code != 0
+    assert "unknown L2 reviewer provider" in result.output
+
+
+def test_normalize_l2_reviewer_provider_aliases() -> None:
+    assert normalize_l2_reviewer_provider(None) is None
+    assert normalize_l2_reviewer_provider("anthropic") == "anthropic"
+    assert normalize_l2_reviewer_provider("oauth") == "claude-cli"
+
+
+def test_cli_dream_l2_routes_provider_override(monkeypatch, project_dir) -> None:
+    from click.testing import CliRunner
+
+    from umx.cli import main
+
+    seen: dict[str, object] = {}
+
+    def fake_review(
+        self,
+        pr_number,
+        *,
+        force_merge=False,
+        force_reason=None,
+        expected_head_sha=None,
+        provider=None,
+    ):
+        seen["pr_number"] = pr_number
+        seen["provider"] = provider
+        seen["force_merge"] = force_merge
+        seen["force_reason"] = force_reason
+        seen["expected_head_sha"] = expected_head_sha
+        return {"status": "ok"}
+
+    monkeypatch.setattr(DreamPipeline, "review_pr", fake_review)
+
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--tier", "l2", "--pr", "7", "--provider", "claude-cli"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen["pr_number"] == 7
+    assert seen["provider"] == "claude-cli"
+
+
+def test_cli_dream_l2_rejects_unknown_provider(project_dir) -> None:
+    from click.testing import CliRunner
+
+    from umx.cli import main
+
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--tier", "l2", "--pr", "7", "--provider", "openai"],
     )
 
     assert result.exit_code != 0

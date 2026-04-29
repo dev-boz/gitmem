@@ -20,6 +20,10 @@ L2_WORKFLOW_NAME = "l2-review.yml"
 APPROVAL_GATE_WORKFLOW_NAME = "approval-gate.yml"
 MAIN_GUARD_WORKFLOW_NAME = "main-guard.yml"
 MAIN_GUARD_REVERT_MARKER = "umx: revert unauthorized main push"
+MAIN_GUARD_REVERT_SOURCE_TRAILER = "UMX-Main-Guard-Source"
+MAIN_GUARD_REVERT_BASE_TRAILER = "UMX-Main-Guard-Base"
+MAIN_GUARD_AUDIT_EVENT = "governance_auto_revert"
+MAIN_GUARD_AUDIT_LOG_PATH = "meta/processing.jsonl"
 
 
 def _l2_review_condition() -> str:
@@ -230,202 +234,339 @@ APPROVAL_GATE_WORKFLOW_TEMPLATE = dedent(
 )
 
 
-MAIN_GUARD_WORKFLOW_TEMPLATE = dedent(
-    """\
-    name: Governance Main Guard
+def _main_guard_workflow_template(mode: str = "remote") -> str:
+    if mode not in {"remote", "hybrid"}:
+        raise ValueError(f"unsupported governance mode for main guard workflow: {mode}")
+    return dedent(
+        """\
+        name: Governance Main Guard
 
-    on:
-      push:
-        branches:
-          - main
+        on:
+          push:
+            branches:
+              - main
 
-    permissions:
-      contents: write
-      pull-requests: read
+        permissions:
+          contents: write
+          pull-requests: read
 
-    concurrency:
-      group: governance-main-guard-${{ github.ref }}
-      cancel-in-progress: false
+        concurrency:
+          group: governance-main-guard-${{ github.ref }}
+          cancel-in-progress: false
 
-    jobs:
-      main-guard:
-        runs-on: ubuntu-latest
-        steps:
-          - uses: __CHECKOUT_ACTION__
-            with:
-              fetch-depth: 0
-          - name: Revert unauthorized governed pushes to main
-            env:
-              GH_TOKEN: ${{ github.token }}
-              GITHUB_API_URL: ${{ github.api_url }}
-              GITHUB_REPOSITORY: ${{ github.repository }}
-              PUSH_BEFORE: ${{ github.event.before }}
-              PUSH_AFTER: ${{ github.sha }}
-              REQUIRED_APPROVAL_LABEL: '__APPROVED_LABEL__'
-              GOVERNED_FACT_FILES: '__GOVERNED_FACT_FILES__'
-              GOVERNED_FACT_PREFIXES: '__GOVERNED_FACT_PREFIXES__'
-              REVERT_MARKER: '__REVERT_MARKER__'
-            run: |
-              python - <<'PY'
-              import json
-              import os
-              import subprocess
-              import urllib.request
+        jobs:
+          main-guard:
+            runs-on: ubuntu-latest
+            steps:
+              - uses: __CHECKOUT_ACTION__
+                with:
+                  fetch-depth: 0
+              - name: Revert unauthorized governed pushes to main
+                env:
+                  GH_TOKEN: ${{ github.token }}
+                  GITHUB_API_URL: ${{ github.api_url }}
+                  GITHUB_REPOSITORY: ${{ github.repository }}
+                  PUSH_BEFORE: ${{ github.event.before }}
+                  PUSH_AFTER: ${{ github.sha }}
+                  GOVERNANCE_MODE: '__GOVERNANCE_MODE__'
+                  REQUIRED_APPROVAL_LABEL: '__APPROVED_LABEL__'
+                  GOVERNED_FACT_FILES: '__GOVERNED_FACT_FILES__'
+                  GOVERNED_FACT_PREFIXES: '__GOVERNED_FACT_PREFIXES__'
+                  PROCESSING_LOG_PATH: '__PROCESSING_LOG_PATH__'
+                  AUDIT_EVENT: '__AUDIT_EVENT__'
+                  REVERT_MARKER: '__REVERT_MARKER__'
+                  REVERT_SOURCE_TRAILER: '__REVERT_SOURCE_TRAILER__'
+                  REVERT_BASE_TRAILER: '__REVERT_BASE_TRAILER__'
+                run: |
+                  python - <<'PY'
+                  import json
+                  import os
+                  import subprocess
+                  import urllib.request
+                  from datetime import datetime, timezone
+                  from pathlib import Path
 
-              ZERO = "0" * 40
+                  ZERO = "0" * 40
 
 
-              def run_git(*args: str, check: bool = True) -> str:
-                  result = subprocess.run(
-                      ["git", *args],
-                      capture_output=True,
-                      text=True,
-                      check=False,
-                  )
-                  if check and result.returncode != 0:
-                      raise SystemExit(
-                          (result.stderr or result.stdout or f"git {' '.join(args)} failed").strip()
+                  def now_z() -> str:
+                      return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+                  def run_git(*args: str, check: bool = True) -> str:
+                      result = subprocess.run(
+                          ["git", *args],
+                          capture_output=True,
+                          text=True,
+                          check=False,
                       )
-                  return result.stdout.strip()
+                      if check and result.returncode != 0:
+                          raise SystemExit(
+                              (result.stderr or result.stdout or f"git {' '.join(args)} failed").strip()
+                          )
+                      return result.stdout.strip()
 
 
-              api_url = os.environ["GITHUB_API_URL"].rstrip("/")
-              repo = os.environ["GITHUB_REPOSITORY"]
-              token = os.environ["GH_TOKEN"]
-              before = os.environ["PUSH_BEFORE"]
-              after = os.environ["PUSH_AFTER"]
-              required_label = os.environ["REQUIRED_APPROVAL_LABEL"]
-              governed_files = set(json.loads(os.environ["GOVERNED_FACT_FILES"]))
-              governed_prefixes = tuple(json.loads(os.environ["GOVERNED_FACT_PREFIXES"]))
-              revert_marker = os.environ["REVERT_MARKER"]
+                  def git_tree(rev: str):
+                      result = subprocess.run(
+                          ["git", "rev-parse", f"{rev}^{{tree}}"],
+                          capture_output=True,
+                          text=True,
+                          check=False,
+                      )
+                      if result.returncode != 0:
+                          return None
+                      return result.stdout.strip() or None
 
-              if not after or before == ZERO:
-                  print("initial main bootstrap; main guard skipped")
-                  raise SystemExit(0)
 
-              head_message = run_git("log", "-1", "--pretty=%B", after)
-              if head_message.startswith(revert_marker):
-                  print("main guard revert commit detected; skipping")
-                  raise SystemExit(0)
+                  def commit_governed_paths(commit: str):
+                      parent_parts = run_git("rev-list", "--parents", "-n", "1", commit).split()
+                      args = ["diff-tree", "--no-commit-id", "--name-only", "-r"]
+                      if len(parent_parts) > 2:
+                          args.append("-m")
+                      args.append(commit)
+                      changed = [
+                          line.strip()
+                          for line in run_git(*args).splitlines()
+                          if line.strip()
+                      ]
+                      return [
+                          path
+                          for path in changed
+                          if path in governed_files or path.startswith(governed_prefixes)
+                      ]
 
-              changed_paths = [
-                  line.strip()
-                  for line in run_git("diff", "--name-only", f"{before}..{after}").splitlines()
-                  if line.strip()
-              ]
-              governed_paths = [
-                  path
-                  for path in changed_paths
-                  if path in governed_files or path.startswith(governed_prefixes)
-              ]
-              if not governed_paths:
-                  print("no governed paths changed on main; guard skipped")
-                  raise SystemExit(0)
 
-              request = urllib.request.Request(
-                  f"{api_url}/repos/{repo}/commits/{after}/pulls",
-                  headers={
-                      "Accept": "application/vnd.github+json",
-                      "Authorization": f"Bearer {token}",
-                  },
-              )
-              try:
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      payload = json.loads(response.read().decode("utf-8") or "[]")
-              except Exception as exc:  # noqa: BLE001
-                  raise SystemExit(f"failed to resolve commit-associated PRs: {exc}") from exc
-              if not isinstance(payload, list):
-                  raise SystemExit("unexpected commit pull request payload from GitHub API")
+                  def load_commit_pulls(commit: str):
+                      request = urllib.request.Request(
+                          f"{api_url}/repos/{repo}/commits/{commit}/pulls",
+                          headers={
+                              "Accept": "application/vnd.github+json",
+                              "Authorization": f"Bearer {token}",
+                          },
+                      )
+                      try:
+                          with urllib.request.urlopen(request, timeout=30) as response:
+                              payload = json.loads(response.read().decode("utf-8") or "[]")
+                      except Exception as exc:  # noqa: BLE001
+                          raise SystemExit(f"failed to resolve commit-associated PRs for {commit}: {exc}") from exc
+                      if not isinstance(payload, list):
+                          raise SystemExit("unexpected commit pull request payload from GitHub API")
+                      return payload
 
-              approved_pr = None
-              for item in payload:
-                  if not isinstance(item, dict):
-                      raise SystemExit("malformed commit pull request payload from GitHub API")
-                  if item.get("merged_at") is None:
-                      continue
-                  base = item.get("base")
-                  if not isinstance(base, dict) or base.get("ref") != "main":
-                      continue
-                  labels = item.get("labels")
-                  if not isinstance(labels, list):
-                      continue
-                  label_names = {
-                      label.get("name")
-                      for label in labels
-                      if isinstance(label, dict) and isinstance(label.get("name"), str)
+
+                  def find_approved_pr(payload):
+                      associated = []
+                      for item in payload:
+                          if not isinstance(item, dict):
+                              raise SystemExit("malformed commit pull request payload from GitHub API")
+                          number = item.get("number")
+                          if isinstance(number, int):
+                              associated.append(number)
+                          if item.get("merged_at") is None:
+                              continue
+                          base = item.get("base")
+                          if not isinstance(base, dict) or base.get("ref") != "main":
+                              continue
+                          labels = item.get("labels")
+                          if not isinstance(labels, list):
+                              continue
+                          label_names = {
+                              label.get("name")
+                              for label in labels
+                              if isinstance(label, dict) and isinstance(label.get("name"), str)
+                          }
+                          if required_label in label_names:
+                              return item, associated
+                      return None, associated
+
+
+                  api_url = os.environ["GITHUB_API_URL"].rstrip("/")
+                  repo = os.environ["GITHUB_REPOSITORY"]
+                  token = os.environ["GH_TOKEN"]
+                  before = os.environ["PUSH_BEFORE"]
+                  after = os.environ["PUSH_AFTER"]
+                  guard_mode = os.environ["GOVERNANCE_MODE"]
+                  required_label = os.environ["REQUIRED_APPROVAL_LABEL"]
+                  governed_files = set(json.loads(os.environ["GOVERNED_FACT_FILES"]))
+                  governed_prefixes = tuple(json.loads(os.environ["GOVERNED_FACT_PREFIXES"]))
+                  processing_log_path = Path(os.environ["PROCESSING_LOG_PATH"])
+                  audit_event = os.environ["AUDIT_EVENT"]
+                  revert_marker = os.environ["REVERT_MARKER"]
+                  revert_source_trailer = os.environ["REVERT_SOURCE_TRAILER"]
+                  revert_base_trailer = os.environ["REVERT_BASE_TRAILER"]
+
+                  if not after or before == ZERO:
+                      print("initial main bootstrap; main guard skipped")
+                      raise SystemExit(0)
+
+                  head_message = run_git("log", "-1", "--pretty=%B", after)
+                  if head_message.startswith(revert_marker):
+                      revert_source = None
+                      revert_base = None
+                      for line in head_message.splitlines():
+                          if line.startswith(f"{revert_source_trailer}:"):
+                              revert_source = line.split(":", 1)[1].strip() or None
+                              continue
+                          if line.startswith(f"{revert_base_trailer}:"):
+                              revert_base = line.split(":", 1)[1].strip() or None
+                              break
+                      restored_tree = git_tree(after)
+                      revert_base_tree = git_tree(revert_base) if revert_base else None
+                      if (
+                          revert_source == before
+                          and restored_tree is not None
+                          and restored_tree == revert_base_tree
+                      ):
+                          print("main guard revert commit detected; skipping")
+                          raise SystemExit(0)
+
+                  changed_paths = [
+                      line.strip()
+                      for line in run_git("diff", "--name-only", f"{before}..{after}").splitlines()
+                      if line.strip()
+                  ]
+                  governed_paths = [
+                      path
+                      for path in changed_paths
+                      if path in governed_files or path.startswith(governed_prefixes)
+                  ]
+                  if not governed_paths:
+                      print("no governed paths changed on main; guard skipped")
+                      raise SystemExit(0)
+
+                  commits = [
+                      line.strip()
+                      for line in run_git("rev-list", f"{before}..{after}").splitlines()
+                      if line.strip()
+                  ]
+                  if not commits:
+                      print("no commits to revert")
+                      raise SystemExit(0)
+
+                  associated_pr_numbers = []
+                  approved_pr_numbers = []
+                  unauthorized_commits = []
+                  unauthorized_governed_paths = []
+                  for commit in commits:
+                      commit_paths = commit_governed_paths(commit)
+                      if not commit_paths:
+                          continue
+                      approved_pr, commit_pr_numbers = find_approved_pr(load_commit_pulls(commit))
+                      associated_pr_numbers.extend(commit_pr_numbers)
+                      if approved_pr is not None:
+                          approved_number = approved_pr.get("number")
+                          if isinstance(approved_number, int):
+                              approved_pr_numbers.append(approved_number)
+                          continue
+                      unauthorized_commits.append(commit)
+                      unauthorized_governed_paths.extend(commit_paths)
+                  associated_pr_numbers = list(dict.fromkeys(associated_pr_numbers))
+                  approved_pr_numbers = list(dict.fromkeys(approved_pr_numbers))
+                  unauthorized_governed_paths = sorted(dict.fromkeys(unauthorized_governed_paths))
+                  if not unauthorized_commits:
+                      if approved_pr_numbers:
+                          approved_summary = ", ".join(f"#{number}" for number in approved_pr_numbers)
+                          print(f"all governed commits matched approved PRs: {approved_summary}")
+                      else:
+                          print("no unauthorized governed commits found")
+                      raise SystemExit(0)
+
+                  run_git("config", "user.name", "github-actions[bot]")
+                  run_git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
+                  for commit in unauthorized_commits:
+                      parent_parts = run_git("rev-list", "--parents", "-n", "1", commit).split()
+                      args = ["revert", "--no-edit", "--no-commit"]
+                      if len(parent_parts) > 2:
+                          args.extend(["-m", "1"])
+                      args.append(commit)
+                      try:
+                          run_git(*args)
+                      except SystemExit:
+                          run_git("revert", "--abort", check=False)
+                          raise
+
+                  processing_log_path.parent.mkdir(parents=True, exist_ok=True)
+                  audit_record = {
+                      "run_id": f"main-guard-{after[:12]}",
+                      "event": audit_event,
+                      "status": "completed",
+                      "ts": now_z(),
+                      "actor": "github-actions",
+                      "mode": guard_mode,
+                      "branch": "main",
+                      "repo": repo,
+                      "before": before,
+                      "after": after,
+                      "required_label": required_label,
+                      "associated_pr_numbers": associated_pr_numbers,
+                      "approved_pr_numbers": approved_pr_numbers,
+                      "governed_paths": unauthorized_governed_paths,
+                      "reverted_commits": unauthorized_commits,
                   }
-                  if required_label in label_names:
-                      approved_pr = item
-                      break
-              if approved_pr is not None:
-                  print(f"governed push matched approved PR #{approved_pr.get('number')}")
-                  raise SystemExit(0)
+                  github_run_id = os.environ.get("GITHUB_RUN_ID")
+                  if github_run_id:
+                      audit_record["github_run_id"] = github_run_id
+                  with processing_log_path.open("a", encoding="utf-8") as handle:
+                      handle.write(json.dumps(audit_record, sort_keys=True) + "\\n")
 
-              commits = [
-                  line.strip()
-                  for line in run_git("rev-list", f"{before}..{after}").splitlines()
-                  if line.strip()
-              ]
-              if not commits:
-                  print("no commits to revert")
-                  raise SystemExit(0)
-
-              run_git("config", "user.name", "github-actions[bot]")
-              run_git("config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com")
-              for commit in commits:
-                  parent_parts = run_git("rev-list", "--parents", "-n", "1", commit).split()
-                  args = ["revert", "--no-edit", "--no-commit"]
-                  if len(parent_parts) > 2:
-                      args.extend(["-m", "1"])
-                  args.append(commit)
-                  try:
-                      run_git(*args)
-                  except SystemExit:
-                      run_git("revert", "--abort", check=False)
-                      raise
-
-              summary = ", ".join(governed_paths[:10])
-              if len(governed_paths) > 10:
-                  summary = f"{summary}, ... (+{len(governed_paths) - 10} more)"
-              run_git(
-                  "commit",
-                  "-m",
-                  f"{revert_marker} {after[:12]}",
-                  "-m",
-                  (
-                      "Reason: governed fact state reached main without a merged approved PR.\n"
-                      f"Paths: {summary}"
-                  ),
-              )
-              run_git("push", "origin", "HEAD:main")
-              print("unauthorized governed main push reverted")
-              PY
-    """
-).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION).replace(
-    "__GOVERNED_FACT_FILES__", json.dumps(sorted(GOVERNED_FACT_FILES))
-).replace(
-    "__GOVERNED_FACT_PREFIXES__", json.dumps(list(GOVERNED_FACT_PREFIXES))
-).replace(
-    "__APPROVED_LABEL__", LABEL_STATE_APPROVED
-).replace(
-    "__REVERT_MARKER__", MAIN_GUARD_REVERT_MARKER
-)
+                  summary = ", ".join(unauthorized_governed_paths[:10])
+                  if len(unauthorized_governed_paths) > 10:
+                      summary = f"{summary}, ... (+{len(unauthorized_governed_paths) - 10} more)"
+                  run_git(
+                      "commit",
+                      "-m",
+                      f"{revert_marker} {after[:12]}",
+                      "-m",
+                      (
+                          "Reason: governed fact state reached main without a merged approved PR.\\n"
+                          f"Paths: {summary}\\n\\n"
+                          f"{revert_source_trailer}: {after}\\n"
+                          f"{revert_base_trailer}: {before}"
+                      ),
+                  )
+                  run_git("push", "origin", "HEAD:main")
+                  print("unauthorized governed main push reverted")
+                  PY
+        """
+    ).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION).replace(
+        "__GOVERNED_FACT_FILES__", json.dumps(sorted(GOVERNED_FACT_FILES))
+    ).replace(
+        "__GOVERNED_FACT_PREFIXES__", json.dumps(list(GOVERNED_FACT_PREFIXES))
+    ).replace(
+        "__GOVERNANCE_MODE__", mode
+    ).replace(
+        "__PROCESSING_LOG_PATH__", MAIN_GUARD_AUDIT_LOG_PATH
+    ).replace(
+        "__AUDIT_EVENT__", MAIN_GUARD_AUDIT_EVENT
+    ).replace(
+        "__APPROVED_LABEL__", LABEL_STATE_APPROVED
+    ).replace(
+        "__REVERT_MARKER__", MAIN_GUARD_REVERT_MARKER
+    ).replace(
+        "__REVERT_SOURCE_TRAILER__", MAIN_GUARD_REVERT_SOURCE_TRAILER
+    ).replace(
+        "__REVERT_BASE_TRAILER__", MAIN_GUARD_REVERT_BASE_TRAILER
+    )
 
 
-def workflow_templates() -> dict[str, str]:
+MAIN_GUARD_WORKFLOW_TEMPLATE = _main_guard_workflow_template()
+
+
+def workflow_templates(mode: str = "remote") -> dict[str, str]:
     return {
         L1_WORKFLOW_NAME: L1_WORKFLOW_TEMPLATE,
         L2_WORKFLOW_NAME: L2_WORKFLOW_TEMPLATE,
         APPROVAL_GATE_WORKFLOW_NAME: APPROVAL_GATE_WORKFLOW_TEMPLATE,
-        MAIN_GUARD_WORKFLOW_NAME: MAIN_GUARD_WORKFLOW_TEMPLATE,
+        MAIN_GUARD_WORKFLOW_NAME: _main_guard_workflow_template(mode),
     }
 
 
-def write_workflow_templates(repo_root: Path) -> list[Path]:
+def write_workflow_templates(repo_root: Path, *, mode: str = "remote") -> list[Path]:
     workflows_dir = repo_root / ".github" / "workflows"
     workflows_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for filename, template in workflow_templates().items():
+    for filename, template in workflow_templates(mode).items():
         path = workflows_dir / filename
         path.write_text(template)
         written.append(path)

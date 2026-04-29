@@ -536,7 +536,7 @@ class TestGovernanceProtectionPlan:
         plan = plan_governance_protection("hybrid", direct_main_writes=False)
 
         assert plan.eligible is False
-        assert "only supported in remote mode" in str(plan.deferred_reason)
+        assert "hybrid session sync still performs direct pushes to main" in str(plan.deferred_reason)
 
     def test_eligible_plan_builds_expected_ruleset_payload(self) -> None:
         plan = plan_governance_protection("remote", direct_main_writes=False)

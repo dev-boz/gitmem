@@ -26,6 +26,7 @@ from umx.governance import (
     direct_fact_write_error,
     filter_governed_fact_paths,
     filter_non_operational_sync_paths,
+    format_repo_paths,
     is_governed_mode,
     session_sync_error,
 )
@@ -215,6 +216,7 @@ def _bootstrap_remote_repo(
     *,
     project_root: Path | None = None,
     config=None,
+    prepare_repo: Callable[[Path], None] | None = None,
 ) -> None:
     from umx.git_ops import (
         GitSignedHistoryError,
@@ -240,10 +242,35 @@ def _bootstrap_remote_repo(
             ensure_umx_gitignore(repo)
             adopted_remote = True
 
+    if prepare_repo is not None:
+        prepare_repo(repo)
+
+    if adopted_remote:
+        try:
+            assert_signed_commit_range(
+                repo,
+                base_ref=None,
+                head_ref="HEAD",
+                config=config or _cfg(),
+                operation="remote bootstrap",
+            )
+        except GitSignedHistoryError as exc:
+            raise click.ClickException(str(exc)) from exc
+
     committed = _commit_repo(repo, message, allow_governed=True)
+    base_ref = "origin/main" if adopted_remote else None
+    try:
+        assert_signed_commit_range(
+            repo,
+            base_ref=base_ref,
+            head_ref="HEAD",
+            config=config or _cfg(),
+            operation="remote bootstrap",
+        )
+    except GitSignedHistoryError as exc:
+        raise click.ClickException(str(exc)) from exc
     if adopted_remote and not committed:
         return
-    base_ref = "origin/main" if adopted_remote else None
     try:
         assert_push_safe(
             repo,
@@ -254,16 +281,6 @@ def _bootstrap_remote_repo(
             include_bridge=project_root is not None,
         )
     except PushSafetyError as exc:
-        raise click.ClickException(str(exc)) from exc
-    try:
-        assert_signed_commit_range(
-            repo,
-            base_ref=base_ref,
-            head_ref="HEAD",
-            config=config or _cfg(),
-            operation="remote bootstrap",
-        )
-    except GitSignedHistoryError as exc:
         raise click.ClickException(str(exc)) from exc
     if not git_push(repo, branch="main", set_upstream=True):
         raise click.ClickException("push failed")
@@ -307,7 +324,7 @@ def _persist_prepared_capture_batch(
 
 
 def _emit_governance_protection_status(mode: str) -> None:
-    if mode != "remote":
+    if mode not in {"remote", "hybrid"}:
         return
     from umx.github_ops import plan_governance_protection
 
@@ -328,14 +345,31 @@ def _emit_governance_protection_status(mode: str) -> None:
         click.echo(f"governance-protection reason: {plan.deferred_reason}")
     if status == "fallback":
         click.echo(
-            "governance-protection fallback: main-guard workflow auto-reverts governed "
-            "main pushes unless the tip commit is associated with a merged PR carrying "
+            "governance-protection fallback: main-guard workflow auto-reverts unauthorized "
+            "governed commits in a main push unless each governed commit is associated "
+            "with a merged PR carrying "
             f"{plan.governance_merge_label}"
         )
 
 
 def _sync_error(prefix: str, message: str) -> str:
     return f"{prefix}{message}" if prefix else message
+
+
+def _sync_rebase_conflict_error(prefix: str, repo_dir: Path, paths: list[Path]) -> str:
+    return _sync_error(
+        prefix,
+        "pull --rebase failed with conflicts in "
+        f"{format_repo_paths(repo_dir, paths)}; resolve or abort the rebase, then rerun gitmem sync",
+    )
+
+
+def _sync_in_progress_operation_error(prefix: str, operation: str) -> str:
+    return _sync_error(
+        prefix,
+        f"{operation} already in progress; finish it with git {operation} --continue "
+        f"or back out with git {operation} --abort before rerunning gitmem sync",
+    )
 
 
 def _sync_memory_repo(
@@ -353,11 +387,13 @@ def _sync_memory_repo(
         GitSignedHistoryError,
         assert_signed_commit_range,
         changed_paths,
+        conflicted_paths,
         diff_committed_paths_against_ref,
         git_add_and_commit,
         git_commit_failure_message,
         git_current_branch,
         git_fetch,
+        git_in_progress_operation,
         git_pull_rebase,
         git_push,
         git_remote_url,
@@ -377,6 +413,12 @@ def _sync_memory_repo(
         )
     except GitHubRemoteIdentityError as exc:
         raise click.ClickException(str(exc)) from exc
+
+    in_progress_operation = git_in_progress_operation(repo)
+    if in_progress_operation is not None:
+        raise click.ClickException(
+            _sync_in_progress_operation_error(error_prefix, in_progress_operation)
+        )
 
     pending = changed_paths(repo)
     if is_governed_mode(mode):
@@ -416,6 +458,11 @@ def _sync_memory_repo(
         if blocked_committed:
             raise click.ClickException(session_sync_error(mode, repo, blocked_committed))
     if not git_pull_rebase(repo, config=config):
+        rebase_conflicts = conflicted_paths(repo)
+        if rebase_conflicts:
+            raise click.ClickException(
+                _sync_rebase_conflict_error(error_prefix, repo, rebase_conflicts)
+            )
         raise click.ClickException(_sync_error(error_prefix, "pull --rebase failed"))
     try:
         assert_push_safe(
@@ -502,12 +549,11 @@ def init_cmd(org: str | None, init_mode: str) -> None:
             else:
                 url = ensure_repo(org, "umx-user", private=True)
                 set_remote(home / "user", url)
-                if init_mode == "remote":
-                    deploy_workflows(home / "user")
                 _bootstrap_remote_repo(
                     home / "user",
                     "umx: bootstrap remote user memory",
                     config=config,
+                    prepare_repo=lambda repo_dir: deploy_workflows(repo_dir, mode=init_mode),
                 )
                 _emit_governance_protection_status(init_mode)
                 click.echo(f"remote: {url}")
@@ -571,13 +617,12 @@ def init_project_cmd(cwd: Path, slug: str | None, yes: bool) -> None:
                 project_slug = discover_project_slug(root)
                 url = ensure_repo(cfg.org, project_slug, private=True)
                 set_remote(repo, url)
-                if cfg.dream.mode == "remote":
-                    deploy_workflows(repo)
                 _bootstrap_remote_repo(
                     repo,
                     "umx: bootstrap remote project memory",
                     project_root=root,
                     config=cfg,
+                    prepare_repo=lambda repo_dir: deploy_workflows(repo_dir, mode=cfg.dream.mode),
                 )
                 _emit_governance_protection_status(cfg.dream.mode)
                 click.echo(f"remote: {url}")
@@ -736,6 +781,15 @@ def collect_cmd(
     "--pr", "pr_number", type=int, default=None, help="PR number for L2 review"
 )
 @click.option("--head-sha", default=None, help="Expected PR head commit SHA for L2 review")
+@click.option(
+    "--provider",
+    "review_provider",
+    default=None,
+    help=(
+        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY) "
+        "or 'claude-cli' (uses Claude Code CLI OAuth via `claude -p`)"
+    ),
+)
 def dream_cmd(
     cwd: Path,
     force: bool,
@@ -745,14 +799,25 @@ def dream_cmd(
     tier: str | None,
     pr_number: int | None,
     head_sha: str | None,
+    review_provider: str | None,
 ) -> None:
     cfg = _cfg()
     raw_force_reason = force_reason
     force_reason = force_reason.strip() if force_reason is not None else None
     if mode:
         cfg.dream.mode = mode
+    normalized_review_provider = None
+    if review_provider is not None:
+        from umx.dream.l2_review import normalize_l2_reviewer_provider
+
+        try:
+            normalized_review_provider = normalize_l2_reviewer_provider(review_provider)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
     if tier == "l2" and pr_number is None:
         raise click.UsageError("--tier l2 requires --pr <number>")
+    if normalized_review_provider is not None and tier != "l2":
+        raise click.UsageError("--provider requires --tier l2")
     if head_sha and tier != "l2":
         raise click.UsageError("--head-sha requires --tier l2")
     if raw_force_reason is not None and not force:
@@ -768,6 +833,7 @@ def dream_cmd(
             expected_head_sha=head_sha,
             force_merge=force,
             force_reason=force_reason,
+            provider=normalized_review_provider,
         )
         click.echo(json.dumps(output, sort_keys=True))
         if output.get("status") == "error":
@@ -1186,15 +1252,22 @@ def sync_cmd(cwd: Path) -> None:
         operation="user memory sync",
         error_prefix="user memory repo ",
     )
-    project_synced_remote = _sync_memory_repo(
-        project_repo,
-        config=cfg,
-        mode=mode,
-        repo_label="project memory repo",
-        operation="sync",
-        project_root=root,
-        include_bridge=True,
-    )
+    try:
+        project_synced_remote = _sync_memory_repo(
+            project_repo,
+            config=cfg,
+            mode=mode,
+            repo_label="project memory repo",
+            operation="sync",
+            project_root=root,
+            include_bridge=True,
+        )
+    except click.ClickException as exc:
+        if user_synced_remote is not None:
+            raise click.ClickException(
+                f"user memory already synced with {user_synced_remote}; {exc.format_message()}"
+            ) from exc
+        raise
 
     if project_synced_remote is not None and user_synced_remote is None:
         click.echo(f"synced with {project_synced_remote}")
@@ -1230,18 +1303,16 @@ def setup_remote_cmd(cwd: Path, new_mode: str) -> None:
         url = ensure_repo(cfg.org, slug, private=True)
         set_remote(repo, url)
 
-        if new_mode == "remote":
-            deploy_workflows(repo)
-
         cfg.dream.mode = new_mode
-        save_config(config_path(), cfg)
 
         _bootstrap_remote_repo(
             repo,
             "umx: bootstrap remote project memory",
             project_root=root,
             config=cfg,
+            prepare_repo=lambda repo_dir: deploy_workflows(repo_dir, mode=new_mode),
         )
+        save_config(config_path(), cfg)
         _emit_governance_protection_status(new_mode)
 
         click.echo(f"mode: {new_mode}")
@@ -1475,6 +1546,67 @@ def eval_long_memory_cmd(
         raise click.exceptions.Exit(1)
 
 
+@eval_group.command("longmemeval")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("benchmarks") / "release-data" / "longmemeval" / "cases.json",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=1.0)
+@click.option("--search-limit", type=int, default=5)
+@click.option(
+    "--provider",
+    default="claude-cli",
+    type=click.Choice(["claude-cli"]),
+    help="Benchmark answer provider. Uses the local Claude Code CLI OAuth session.",
+)
+@click.option("--model", default=None, help="Override the answer-generation model id/alias")
+@click.option(
+    "--judge-provider",
+    default=None,
+    type=click.Choice(["claude-cli"]),
+    help="Optional judge provider override; defaults to the answer provider.",
+)
+@click.option("--judge-model", default=None, help="Optional judge model id/alias")
+@click.option("--history-format", type=click.Choice(["json", "nl"]), default="json")
+def eval_longmemeval_cmd(
+    cases_path: Path,
+    out_dir: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    search_limit: int,
+    provider: str,
+    model: str | None,
+    judge_provider: str | None,
+    judge_model: str | None,
+    history_format: str,
+) -> None:
+    from umx.longmemeval_eval import run_longmemeval_eval
+
+    try:
+        payload = run_longmemeval_eval(
+            out_dir,
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+            search_limit=search_limit,
+            provider=provider,
+            model=model,
+            judge_provider=judge_provider,
+            judge_model=judge_model,
+            history_format=history_format,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
 @eval_group.command("retrieval")
 @click.option(
     "--cases",
@@ -1500,6 +1632,91 @@ def eval_retrieval_cmd(
             case_id=case_id,
             min_pass_rate=min_pass_rate,
             top_k=top_k,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("compare")
+@click.argument("baseline_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("candidate_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--metric", "metrics", multiple=True)
+@click.option("--tolerance", type=float, default=0.0)
+def eval_compare_cmd(
+    baseline_path: Path,
+    candidate_path: Path,
+    metrics: tuple[str, ...],
+    tolerance: float,
+) -> None:
+    from umx.eval_compare import compare_eval_reports
+
+    try:
+        payload = compare_eval_reports(
+            baseline_path,
+            candidate_path,
+            metrics=tuple(metrics),
+            tolerance=tolerance,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("release-gate")
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option(
+    "--inject-cases",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "inject",
+)
+@click.option(
+    "--long-memory-smoke-cases",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "long_memory",
+)
+@click.option(
+    "--retrieval-smoke-cases",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "retrieval",
+)
+@click.option("--long-memory-release-cases", type=click.Path(path_type=Path), default=None)
+@click.option("--retrieval-release-cases", type=click.Path(path_type=Path), default=None)
+@click.option("--long-memory-release-min-pass-rate", type=float, default=1.0)
+@click.option("--retrieval-release-min-pass-rate", type=float, default=1.0)
+@click.option("--long-memory-baseline", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None)
+@click.option("--retrieval-baseline", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None)
+def eval_release_gate_cmd(
+    out_dir: Path,
+    inject_cases: Path,
+    long_memory_smoke_cases: Path,
+    retrieval_smoke_cases: Path,
+    long_memory_release_cases: Path | None,
+    retrieval_release_cases: Path | None,
+    long_memory_release_min_pass_rate: float,
+    retrieval_release_min_pass_rate: float,
+    long_memory_baseline: Path | None,
+    retrieval_baseline: Path | None,
+) -> None:
+    from umx.release_gate_eval import run_release_gate_eval
+
+    try:
+        payload = run_release_gate_eval(
+            out_dir,
+            _cfg(),
+            inject_cases=inject_cases,
+            long_memory_smoke_cases=long_memory_smoke_cases,
+            retrieval_smoke_cases=retrieval_smoke_cases,
+            long_memory_release_cases=long_memory_release_cases,
+            retrieval_release_cases=retrieval_release_cases,
+            long_memory_release_min_pass_rate=long_memory_release_min_pass_rate,
+            retrieval_release_min_pass_rate=retrieval_release_min_pass_rate,
+            long_memory_baseline=long_memory_baseline,
+            retrieval_baseline=retrieval_baseline,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

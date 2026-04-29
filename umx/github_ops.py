@@ -631,8 +631,13 @@ def plan_governance_protection(
         else reference
     )
     deferred_reason: str | None = None
-    if mode != "remote":
-        deferred_reason = "governance protection auto-setup is only supported in remote mode"
+    if mode not in {"remote", "hybrid"}:
+        deferred_reason = "governance protection auto-setup is only supported in remote or hybrid mode"
+    elif mode == "hybrid":
+        deferred_reason = (
+            "hybrid session sync still performs direct pushes to main; "
+            "enabling require_pull_request would break umx sync"
+        )
     elif direct_main_writes:
         deferred_reason = (
             "remote sync and governed maintenance flows still perform direct pushes "
@@ -1362,7 +1367,7 @@ def close_pr(org: str, repo_name: str, pr_number: int, comment: str | None = Non
     return result.returncode == 0
 
 
-def deploy_workflows(repo_dir: Path) -> list[Path]:
+def deploy_workflows(repo_dir: Path, *, mode: str = "remote") -> list[Path]:
     """Write GitHub Actions workflow templates to the repo."""
     from umx.actions import write_workflow_templates
-    return write_workflow_templates(repo_dir)
+    return write_workflow_templates(repo_dir, mode=mode)

@@ -14,6 +14,7 @@ PROVIDER_LOCAL = "local"
 PROVIDER_STATUS_SUCCESS = "success"
 PROVIDER_STATUS_FAILED = "failed"
 PROVIDER_STATUS_UNAVAILABLE = "unavailable"
+REVIEW_PROVIDER_ENV = "UMX_L2_REVIEW_PROVIDER"
 
 PROVIDER_API_ENV_VARS = {
     "anthropic": "ANTHROPIC_API_KEY",
@@ -256,6 +257,10 @@ def run_l2_review_with_providers(
         from umx.dream.l2_review import anthropic_l2_reviewer
 
         registered["anthropic"] = anthropic_l2_reviewer
+    if "claude-cli" not in registered:
+        from umx.dream.l2_review import claude_cli_l2_reviewer
+
+        registered["claude-cli"] = claude_cli_l2_reviewer
     attempts: list[ProviderAttempt] = []
     required_provider = _required_review_provider(cfg, active_env, registered)
     for provider in _resolve_review_provider_plan(
@@ -278,7 +283,8 @@ def run_l2_review_with_providers(
             if provider == required_provider:
                 raise ProviderUnavailableError(f"{provider} reviewer is not registered")
             continue
-        if provider != PROVIDER_LOCAL and not _provider_key(provider, cfg, active_env):
+        provider_requires_key = provider != PROVIDER_LOCAL and provider in PROVIDER_API_ENV_VARS
+        if provider_requires_key and not _provider_key(provider, cfg, active_env):
             attempts.append(
                 ProviderAttempt(
                     provider=provider,
@@ -377,10 +383,11 @@ def _resolve_review_provider_plan(
     required_provider: str | None = None,
 ) -> list[str]:
     plan = resolve_provider_plan(config, env=env, extractors=reviewers)
+    if required_provider is not None:
+        return [required_provider, *(provider for provider in plan if provider != required_provider)]
     preferred_provider = _preferred_review_provider(env, reviewers)
-    for provider in (required_provider, preferred_provider):
-        if provider is not None and provider in reviewers and provider not in plan:
-            plan.insert(0, provider)
+    if preferred_provider is not None and preferred_provider in reviewers and preferred_provider not in plan:
+        plan.insert(0, preferred_provider)
     return list(dict.fromkeys(plan))
 
 
@@ -398,6 +405,15 @@ def _required_review_provider(
     env: Mapping[str, str],
     reviewers: Mapping[str, ReviewProviderReviewer],
 ) -> str | None:
+    requested = env.get(REVIEW_PROVIDER_ENV)
+    if requested:
+        name = requested.strip().lower()
+        if name not in reviewers:
+            raise ProviderUnavailableError(
+                f"unknown L2 reviewer provider: {requested!r} "
+                f"(expected one of: {', '.join(sorted(reviewers))})"
+            )
+        return name
     if "anthropic" not in reviewers:
         return None
     if env.get(PROVIDER_API_ENV_VARS["anthropic"]):
