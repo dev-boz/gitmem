@@ -147,6 +147,56 @@ def test_compare_eval_reports_uses_retrieval_answer_coverage_when_available(tmp_
     assert [entry["name"] for entry in payload["regressions"]] == ["average_answer_coverage"]
 
 
+def test_compare_eval_reports_uses_longbench_v2_defaults(tmp_path: Path) -> None:
+    baseline = _write_report(
+        tmp_path / "baseline.json",
+        {
+            "suite": "longbench-v2",
+            "status": "ok",
+            "accuracy": 0.5,
+        },
+    )
+    candidate = _write_report(
+        tmp_path / "candidate.json",
+        {
+            "suite": "longbench-v2",
+            "status": "ok",
+            "accuracy": 0.75,
+        },
+    )
+
+    payload = compare_eval_reports(baseline, candidate)
+
+    assert payload["status"] == "ok"
+    assert [entry["name"] for entry in payload["metrics"]] == ["accuracy"]
+
+
+def test_compare_eval_reports_uses_beir_defaults(tmp_path: Path) -> None:
+    baseline = _write_report(
+        tmp_path / "baseline.json",
+        {
+            "suite": "beir",
+            "status": "ok",
+            "ndcg_at_10": 0.42,
+            "recall_at_10": 0.61,
+        },
+    )
+    candidate = _write_report(
+        tmp_path / "candidate.json",
+        {
+            "suite": "beir",
+            "status": "ok",
+            "ndcg_at_10": 0.5,
+            "recall_at_10": 0.7,
+        },
+    )
+
+    payload = compare_eval_reports(baseline, candidate)
+
+    assert payload["status"] == "ok"
+    assert [entry["name"] for entry in payload["metrics"]] == ["ndcg_at_10", "recall_at_10"]
+
+
 def test_cli_eval_compare_exits_nonzero_on_regression(tmp_path: Path) -> None:
     baseline = _write_report(
         tmp_path / "baseline.json",

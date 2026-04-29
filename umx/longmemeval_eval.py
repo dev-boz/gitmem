@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from umx import benchmark_llm
 from umx.config import UMXConfig
 from umx.long_memory_eval import load_long_memory_eval_cases, retrieve_long_memory_sessions
-from umx.providers import claude_cli as claude_cli_provider
 
 LONGMEMEVAL_GENERATION_PROMPT_VERSION = "v1"
 LONGMEMEVAL_JUDGE_PROMPT_VERSION = "v1"
@@ -24,15 +24,7 @@ class LongMemEvalMessageResult:
 
 
 def normalize_longmemeval_provider(provider: str | None) -> str:
-    if provider is None:
-        return "claude-cli"
-    name = provider.strip().lower()
-    if name in {"claude-cli", "claude-code", "cli", "oauth"}:
-        return "claude-cli"
-    raise RuntimeError(
-        f"unknown LongMemEval provider: {provider!r} "
-        "(expected `claude-cli`, which uses the local Claude Code OAuth session)"
-    )
+    return benchmark_llm.normalize_benchmark_provider(provider)
 
 
 def run_longmemeval_eval(
@@ -61,8 +53,21 @@ def run_longmemeval_eval(
         raise RuntimeError("LongMemEval search_limit must be greater than 0")
     provider_name = normalize_longmemeval_provider(provider)
     judge_provider_name = normalize_longmemeval_provider(judge_provider) if judge_provider else provider_name
-    answer_model = model or config.dream.l2_model
-    judge_model_name = judge_model or answer_model
+    answer_model = benchmark_llm.resolve_benchmark_model(
+        provider_name,
+        explicit_model=model,
+        config=config,
+    )
+    if judge_model is not None:
+        judge_model_name = judge_model
+    elif judge_provider_name == provider_name:
+        judge_model_name = answer_model
+    else:
+        judge_model_name = benchmark_llm.resolve_benchmark_model(
+            judge_provider_name,
+            explicit_model=None,
+            config=config,
+        )
     if history_format not in {"json", "nl"}:
         raise RuntimeError("LongMemEval history_format must be `json` or `nl`")
 
@@ -479,12 +484,9 @@ def _send_message_with_provider(
     system: str,
     prompt: str,
 ) -> LongMemEvalMessageResult:
-    if provider != "claude-cli":
-        raise RuntimeError(
-            f"unsupported LongMemEval provider `{provider}` "
-            "(only `claude-cli` is available in this environment)"
-        )
-    response = claude_cli_provider.send_claude_cli_message(
+    response = benchmark_llm.send_benchmark_message_with_provider(
+        provider,
+        config=config,
         model=model,
         system=system,
         prompt=prompt,
@@ -512,24 +514,24 @@ def _send_message_with_retry(
             )
         except RuntimeError as exc:
             last_error = exc
-            if provider != "claude-cli" or not _is_retryable_claude_error(exc) or attempt >= CLAUDE_CLI_MAX_ATTEMPTS:
+            if not _is_retryable_cli_error(exc) or attempt >= CLAUDE_CLI_MAX_ATTEMPTS:
                 raise
             time.sleep(attempt * 2)
     assert last_error is not None
     raise last_error
 
 
-def _is_retryable_claude_error(exc: RuntimeError) -> bool:
+def _is_retryable_cli_error(exc: RuntimeError) -> bool:
     message = str(exc)
-    return message.startswith("Claude CLI ")
+    return message.startswith("Claude CLI ") or message.startswith("Codex CLI ")
 
 
 def _generation_prompt_id(provider: str) -> str:
-    return "claude-cli-longmemeval-generation"
+    return f"{provider}-longmemeval-generation"
 
 
 def _judge_prompt_id(provider: str) -> str:
-    return "claude-cli-longmemeval-judge"
+    return f"{provider}-longmemeval-judge"
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

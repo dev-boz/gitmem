@@ -154,6 +154,33 @@ gitmem eval longmemeval \
 
 That command uses the local Claude Code CLI OAuth session and writes `hypotheses.jsonl`, `judgments.jsonl`, and `summary.json` under the chosen output directory. Keep `--min-pass-rate 0` only for capture-only benchmark runs; raise it when you want the command itself to act as a gate.
 
+Optional exploratory memory benchmarks can be run the same way:
+
+```bash
+gitmem eval beir \
+  --cases benchmarks/release-data/beir/scifact/manifest.json \
+  --min-ndcg-at-10 0 \
+  > artifacts/release-gates/$stamp/release/beir-scifact.release.json
+
+gitmem eval locomo \
+  --cases benchmarks/release-data/locomo/cases.json \
+  --out-dir artifacts/release-gates/$stamp/release/locomo \
+  --min-average-f1 0
+
+gitmem eval convomem \
+  --cases benchmarks/release-data/convomem/cases.json \
+  --out-dir artifacts/release-gates/$stamp/release/convomem \
+  --min-pass-rate 0
+
+gitmem eval longbench-v2 \
+  --cases benchmarks/release-data/longbench_v2/cases.json \
+  --out-dir artifacts/release-gates/$stamp/release/longbench-v2 \
+  --provider codex-cli \
+  --min-accuracy 0
+```
+
+The BEIR path stays fully local: point `--cases` either at a raw dataset directory (`corpus.jsonl`, `queries.jsonl`, `qrels/test.tsv`) or at a `beir-manifest` that pins a query subset while still referencing those raw files. SciFact is the recommended first BEIR dataset because it is small, public, and retrieval-focused. These BEIR, LoCoMo, ConvoMem, and LongBench v2 adapters are still exploratory and should be treated as **benchmark signals**, not as full Dream-cycle benchmark coverage.
+
 ### Comparing against the last baseline
 
 Save the last accepted release artifacts, then compare them before sign-off:
@@ -172,6 +199,7 @@ gitmem eval compare \
 
 - `gitmem eval compare` exits nonzero when the candidate artifact itself is not `ok` or when the candidate regresses below the baseline on the selected metrics.
 - With no explicit `--metric`, the command uses suite defaults:
+  - `beir`: `ndcg_at_10` and `recall_at_10`
   - `long-memory`: `pass_rate`, `average_recall`, and each `type_summary.<question_type>.average_recall` present in the artifacts
   - `retrieval`: `pass_rate`, `average_recall`, and `average_answer_coverage` when that metric exists in the artifacts
   - `inject`: `pass_rate`

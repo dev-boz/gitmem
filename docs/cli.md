@@ -67,7 +67,11 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate`, `--provider` |
 | `gitmem eval inject` | Run the inject/retrieval golden eval harness | `--cases`, `--case`, `--min-pass-rate`, `--disclosure-slack-pct` |
 | `gitmem eval long-memory` | Run the LongMemEval-style evidence-retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--search-limit` |
-| `gitmem eval longmemeval` | Run the upstream-style LongMemEval QA benchmark through the local Claude Code CLI session | `--cases`, `--out-dir`, `--case`, `--min-pass-rate`, `--search-limit`, `--provider`, `--judge-provider`, `--model`, `--judge-model`, `--history-format` |
+| `gitmem eval longmemeval` | Run the upstream-style LongMemEval QA benchmark through a headless CLI provider (`claude-cli` or `codex-cli`) | `--cases`, `--out-dir`, `--case`, `--min-pass-rate`, `--search-limit`, `--provider`, `--judge-provider`, `--model`, `--judge-model`, `--history-format` |
+| `gitmem eval locomo` | Run the LoCoMo QA benchmark adapter through a headless CLI provider (`claude-cli` or `codex-cli`) | `--cases`, `--out-dir`, `--case`, `--min-average-f1`, `--search-limit`, `--provider`, `--model`, `--history-format` |
+| `gitmem eval convomem` | Run the ConvoMem QA benchmark adapter through a headless CLI provider (`claude-cli` or `codex-cli`) | `--cases`, `--out-dir`, `--case`, `--min-pass-rate`, `--search-limit`, `--provider`, `--judge-provider`, `--model`, `--judge-model`, `--history-format` |
+| `gitmem eval longbench-v2` | Run a LongBench v2 multiple-choice benchmark slice through a headless CLI provider (`claude-cli` or `codex-cli`) | `--cases`, `--out-dir`, `--case`, `--min-accuracy`, `--provider`, `--model` |
+| `gitmem eval beir` | Run a raw BEIR retrieval benchmark slice (for example SciFact) against one shared local gitmem index | `--cases`, `--query-id`, `--min-ndcg-at-10`, `--top-k` |
 | `gitmem eval retrieval` | Run the HotpotQA-style supporting-fact retrieval pilot | `--cases`, `--case`, `--min-pass-rate`, `--top-k` |
 | `gitmem eval compare` | Compare two saved eval JSON artifacts and fail on regressions | `--metric`, `--tolerance` |
 | `gitmem eval release-gate` | Write a release-gate artifact bundle | `--out-dir`, `--long-memory-release-cases`, `--retrieval-release-cases`, `--long-memory-release-min-pass-rate`, `--retrieval-release-min-pass-rate`, `--long-memory-baseline`, `--retrieval-baseline` |
@@ -76,15 +80,33 @@ In local mode, `gitmem sync` remains a no-op until at least one memory repo has 
 
 When concurrent edits touch the same memory file, `gitmem sync` fails closed and surfaces the conflicting paths from the failed rebase so you can resolve or abort the rebase before retrying. If a previous run already left a rebase or merge in progress, the command now fails fast with explicit continue/abort guidance instead of stumbling into a generic git error.
 
-`gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory` and `gitmem eval retrieval` are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos, or against a maintainer-provided public benchmark slice via `--cases`. `gitmem eval longmemeval` is the provider-backed QA path: it reuses gitmem retrieval to select memory sessions, generates answer text, and then scores those answers with the LongMemEval yes/no rubric through the operator's Claude Code CLI session.
+`gitmem eval l2-review` and `gitmem eval inject` are native gitmem evals over checked-in corpora. `gitmem eval long-memory`, `gitmem eval retrieval`, and `gitmem eval beir` are offline benchmark-shaped adapters that stay local by running against checked-in subsets or maintainer-prepared public slices in temporary repos. `gitmem eval longmemeval`, `gitmem eval locomo`, `gitmem eval convomem`, and `gitmem eval longbench-v2` are provider-backed benchmark paths: they either reuse gitmem retrieval to select memory sessions or feed the official benchmark context directly, then generate answer text through a supported headless CLI provider and score those answers with benchmark-specific metrics.
 
-All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts. `gitmem eval compare` reads two saved artifacts, compares default suite metrics for `inject`, `long-memory`, and `retrieval`, and exits nonzero when the candidate regresses past the chosen tolerance.
+All `gitmem eval ...` commands emit stable JSON to stdout and exit nonzero when the requested gate fails, so they can be used directly in CI or saved as release artifacts. `gitmem eval compare` reads two saved artifacts, compares default suite metrics for `inject`, `long-memory`, `retrieval`, `longbench-v2`, and `beir`, and exits nonzero when the candidate regresses past the chosen tolerance.
 
 `gitmem eval longmemeval` also writes benchmark artifacts under `--out-dir`:
 
 - `hypotheses.jsonl` with `question_id` / `hypothesis`
 - `judgments.jsonl` with per-case answer labels
 - `summary.json` with aggregate metrics and usage totals
+
+`gitmem eval locomo` writes:
+
+- `predictions.jsonl` with `question_id` / `prediction`
+- `summary.json` with `average_f1`, exact-match rate, and evidence-recall summaries
+
+`gitmem eval convomem` writes:
+
+- `predictions.jsonl` with `question_id` / `prediction`
+- `judgments.jsonl` with per-case `RIGHT` / `WRONG` outcomes
+- `summary.json` with aggregate accuracy and retrieval-recall summaries
+
+`gitmem eval longbench-v2` writes:
+
+- `predictions.jsonl` with `question_id` / predicted option / raw response
+- `summary.json` with aggregate `accuracy` plus domain and difficulty breakdowns
+
+`gitmem eval beir` stays fully local and emits one JSON payload with aggregate `ndcg_at_10` / `recall_at_10`, dataset metadata, and per-query ranked-doc outputs. `--cases` can point either at a raw BEIR dataset directory containing `corpus.jsonl`, `queries.jsonl`, and `qrels/test.tsv`, or at a `beir-manifest` JSON file that pins a query subset while still referencing those raw files.
 
 `gitmem eval release-gate` is the thin bundling helper for repeated RC runs: it always writes the local smoke artifacts (`inject`, `long-memory`, `retrieval`) under one `--out-dir`, can optionally add release-grade LongMemEval / HotpotQA artifacts from `--*-release-cases`, and can optionally write compare artifacts when baseline JSON paths are supplied. If you need a first benchmark capture before an accepted baseline exists, lower the release-case gates with `--long-memory-release-min-pass-rate 0` and `--retrieval-release-min-pass-rate 0`.
 
@@ -96,6 +118,8 @@ For `gitmem eval long-memory` and `gitmem eval retrieval`, `--cases` can point a
 - the checked-in offline subsets under `tests/eval/`
 
 That means a release-grade HotpotQA rerun can point straight at a filtered raw benchmark slice without pre-converting it into gitmem’s native eval schema. `gitmem eval longmemeval` is stricter: it expects upstream-style LongMemEval JSON with `answer`, `question_date`, and haystack session fields, and writes answer/judgment artifacts under `--out-dir`.
+
+`gitmem eval beir` accepts either a raw BEIR dataset directory or a `beir-manifest` file with relative paths plus pinned `query_ids`; a checked-in tiny SciFact-shaped fixture lives under `tests/eval/beir/scifact-mini/`. `gitmem eval locomo` accepts either the official raw LoCoMo dataset JSON (`locomo10.json`) or a normalized slice file. `gitmem eval convomem` accepts either a normalized slice file, a raw ConvoMem sample file, or a directory tree of raw ConvoMem sample files. `gitmem eval longbench-v2` accepts the official upstream `data.json` format or a filtered slice file with the same fields. These adapters are still **WIP benchmark surfaces**, not full end-to-end Dream-cycle evaluations.
 
 For 1.0, release stays blocked until both claims are signed off: **it works personally** and **it works on benchmarks**. Use the [operations runbook](ops-runbook.md) for the step-by-step workflow and the [launch checklist](launch-checklist.md) for the final ship/no-ship record.
 

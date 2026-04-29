@@ -1560,14 +1560,14 @@ def eval_long_memory_cmd(
 @click.option(
     "--provider",
     default="claude-cli",
-    type=click.Choice(["claude-cli"]),
-    help="Benchmark answer provider. Uses the local Claude Code CLI OAuth session.",
+    type=click.Choice(["claude-cli", "codex-cli"]),
+    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
 )
 @click.option("--model", default=None, help="Override the answer-generation model id/alias")
 @click.option(
     "--judge-provider",
     default=None,
-    type=click.Choice(["claude-cli"]),
+    type=click.Choice(["claude-cli", "codex-cli"]),
     help="Optional judge provider override; defaults to the answer provider.",
 )
 @click.option("--judge-model", default=None, help="Optional judge model id/alias")
@@ -1599,6 +1599,194 @@ def eval_longmemeval_cmd(
             judge_provider=judge_provider,
             judge_model=judge_model,
             history_format=history_format,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("locomo")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("benchmarks") / "release-data" / "locomo" / "cases.json",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-average-f1", type=float, default=0.0)
+@click.option("--search-limit", type=int, default=5)
+@click.option(
+    "--provider",
+    default="claude-cli",
+    type=click.Choice(["claude-cli", "codex-cli"]),
+    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+)
+@click.option("--model", default=None, help="Override the answer-generation model id/alias")
+@click.option("--history-format", type=click.Choice(["json", "nl"]), default="json")
+def eval_locomo_cmd(
+    cases_path: Path,
+    out_dir: Path,
+    case_id: str | None,
+    min_average_f1: float,
+    search_limit: int,
+    provider: str,
+    model: str | None,
+    history_format: str,
+) -> None:
+    from umx.locomo_eval import run_locomo_eval
+
+    try:
+        payload = run_locomo_eval(
+            out_dir,
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_average_f1=min_average_f1,
+            search_limit=search_limit,
+            provider=provider,
+            model=model,
+            history_format=history_format,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("convomem")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("benchmarks") / "release-data" / "convomem" / "cases.json",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-pass-rate", type=float, default=0.0)
+@click.option("--search-limit", type=int, default=5)
+@click.option(
+    "--provider",
+    default="claude-cli",
+    type=click.Choice(["claude-cli", "codex-cli"]),
+    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+)
+@click.option("--model", default=None, help="Override the answer-generation model id/alias")
+@click.option(
+    "--judge-provider",
+    default=None,
+    type=click.Choice(["claude-cli", "codex-cli"]),
+    help="Optional judge provider override; defaults to the answer provider.",
+)
+@click.option("--judge-model", default=None, help="Optional judge model id/alias")
+@click.option("--history-format", type=click.Choice(["json", "nl"]), default="json")
+def eval_convomem_cmd(
+    cases_path: Path,
+    out_dir: Path,
+    case_id: str | None,
+    min_pass_rate: float,
+    search_limit: int,
+    provider: str,
+    model: str | None,
+    judge_provider: str | None,
+    judge_model: str | None,
+    history_format: str,
+) -> None:
+    from umx.convomem_eval import run_convomem_eval
+
+    try:
+        payload = run_convomem_eval(
+            out_dir,
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_pass_rate=min_pass_rate,
+            search_limit=search_limit,
+            provider=provider,
+            model=model,
+            judge_provider=judge_provider,
+            judge_model=judge_model,
+            history_format=history_format,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("longbench-v2")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("benchmarks") / "release-data" / "longbench_v2" / "cases.json",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--case", "case_id", default=None)
+@click.option("--min-accuracy", type=float, default=0.0)
+@click.option(
+    "--provider",
+    default="codex-cli",
+    type=click.Choice(["claude-cli", "codex-cli"]),
+    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+)
+@click.option("--model", default=None, help="Override the answer-generation model id/alias")
+def eval_longbench_v2_cmd(
+    cases_path: Path,
+    out_dir: Path,
+    case_id: str | None,
+    min_accuracy: float,
+    provider: str,
+    model: str | None,
+) -> None:
+    from umx.longbench_v2_eval import run_longbench_v2_eval
+
+    try:
+        payload = run_longbench_v2_eval(
+            out_dir,
+            cases_path,
+            _cfg(),
+            case_id=case_id,
+            min_accuracy=min_accuracy,
+            provider=provider,
+            model=model,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("beir")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "beir" / "scifact-mini",
+)
+@click.option("--query-id", default=None)
+@click.option("--min-ndcg-at-10", type=float, default=0.0)
+@click.option("--top-k", type=int, default=10)
+def eval_beir_cmd(
+    cases_path: Path,
+    query_id: str | None,
+    min_ndcg_at_10: float,
+    top_k: int,
+) -> None:
+    from umx.beir_eval import run_beir_eval
+
+    try:
+        payload = run_beir_eval(
+            cases_path,
+            _cfg(),
+            query_id=query_id,
+            min_ndcg_at_10=min_ndcg_at_10,
+            top_k=top_k,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

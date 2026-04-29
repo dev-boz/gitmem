@@ -6,8 +6,10 @@ from typing import Any
 
 
 DEFAULT_METRICS_BY_SUITE: dict[str, tuple[str, ...]] = {
+    "beir": ("ndcg_at_10", "recall_at_10"),
     "inject": ("pass_rate",),
     "long-memory": ("pass_rate", "average_recall"),
+    "longbench-v2": ("accuracy",),
     "retrieval": ("pass_rate", "average_recall"),
 }
 

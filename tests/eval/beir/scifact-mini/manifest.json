@@ -1,0 +1,7 @@
+{
+  "format": "beir-manifest",
+  "dataset": "scifact-mini",
+  "split": "test",
+  "dataset_dir": ".",
+  "query_ids": ["q1"]
+}

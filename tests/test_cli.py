@@ -1006,6 +1006,373 @@ def test_cli_eval_longmemeval_defaults_to_real_gate(monkeypatch, tmp_path: Path)
     assert captured["min_pass_rate"] == 1.0
 
 
+def test_cli_eval_locomo_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.locomo_eval.run_locomo_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 4,
+            "completed": 4,
+            "passed": 1,
+            "pass_rate": 0.25,
+            "average_f1": 0.4,
+            "min_average_f1": 0.5,
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["eval", "locomo", "--cases", str(tmp_path), "--out-dir", str(tmp_path / "artifacts")],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_locomo_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(
+        out_dir,
+        cases_path,
+        config,
+        *,
+        case_id=None,
+        min_average_f1=0.0,
+        search_limit=5,
+        provider="claude-cli",
+        model=None,
+        history_format="json",
+    ):
+        captured["out_dir"] = out_dir
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_average_f1"] = min_average_f1
+        captured["search_limit"] = search_limit
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["history_format"] = history_format
+        return {
+            "status": "ok",
+            "total": 1,
+            "completed": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "average_f1": 1.0,
+            "min_average_f1": min_average_f1,
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.locomo_eval.run_locomo_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "locomo",
+            "--cases",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--case",
+            "locomo-case-1",
+            "--min-average-f1",
+            "0.55",
+            "--search-limit",
+            "8",
+            "--provider",
+            "claude-cli",
+            "--model",
+            "claude-opus-4-7",
+            "--history-format",
+            "nl",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "out_dir": out_dir,
+        "cases_path": tmp_path,
+        "case_id": "locomo-case-1",
+        "min_average_f1": 0.55,
+        "search_limit": 8,
+        "provider": "claude-cli",
+        "model": "claude-opus-4-7",
+        "history_format": "nl",
+    }
+
+
+def test_cli_eval_convomem_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.convomem_eval.run_convomem_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 4,
+            "completed": 4,
+            "passed": 1,
+            "pass_rate": 0.25,
+            "min_pass_rate": 0.5,
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["eval", "convomem", "--cases", str(tmp_path), "--out-dir", str(tmp_path / "artifacts")],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_convomem_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(
+        out_dir,
+        cases_path,
+        config,
+        *,
+        case_id=None,
+        min_pass_rate=0.0,
+        search_limit=5,
+        provider="claude-cli",
+        model=None,
+        judge_provider=None,
+        judge_model=None,
+        history_format="json",
+    ):
+        captured["out_dir"] = out_dir
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_pass_rate"] = min_pass_rate
+        captured["search_limit"] = search_limit
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["judge_provider"] = judge_provider
+        captured["judge_model"] = judge_model
+        captured["history_format"] = history_format
+        return {
+            "status": "ok",
+            "total": 1,
+            "completed": 1,
+            "passed": 1,
+            "pass_rate": 1.0,
+            "min_pass_rate": min_pass_rate,
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.convomem_eval.run_convomem_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "convomem",
+            "--cases",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--case",
+            "convomem-case-1",
+            "--min-pass-rate",
+            "0.6",
+            "--search-limit",
+            "7",
+            "--provider",
+            "claude-cli",
+            "--model",
+            "claude-opus-4-7",
+            "--judge-provider",
+            "claude-cli",
+            "--judge-model",
+            "claude-sonnet-4-5",
+            "--history-format",
+            "nl",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "out_dir": out_dir,
+        "cases_path": tmp_path,
+        "case_id": "convomem-case-1",
+        "min_pass_rate": 0.6,
+        "search_limit": 7,
+        "provider": "claude-cli",
+        "model": "claude-opus-4-7",
+        "judge_provider": "claude-cli",
+        "judge_model": "claude-sonnet-4-5",
+        "history_format": "nl",
+    }
+
+
+def test_cli_eval_longbench_v2_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.longbench_v2_eval.run_longbench_v2_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 6,
+            "completed": 6,
+            "passed": 2,
+            "accuracy": 0.33,
+            "min_accuracy": 0.5,
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["eval", "longbench-v2", "--cases", str(tmp_path), "--out-dir", str(tmp_path / "artifacts")],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_longbench_v2_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(
+        out_dir,
+        cases_path,
+        config,
+        *,
+        case_id=None,
+        min_accuracy=0.0,
+        provider="codex-cli",
+        model=None,
+    ):
+        captured["out_dir"] = out_dir
+        captured["cases_path"] = cases_path
+        captured["case_id"] = case_id
+        captured["min_accuracy"] = min_accuracy
+        captured["provider"] = provider
+        captured["model"] = model
+        return {
+            "status": "ok",
+            "total": 1,
+            "completed": 1,
+            "passed": 1,
+            "accuracy": 1.0,
+            "min_accuracy": min_accuracy,
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.longbench_v2_eval.run_longbench_v2_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "longbench-v2",
+            "--cases",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--case",
+            "lbv2-001",
+            "--min-accuracy",
+            "0.5",
+            "--provider",
+            "codex-cli",
+            "--model",
+            "gpt-5.2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "out_dir": out_dir,
+        "cases_path": tmp_path,
+        "case_id": "lbv2-001",
+        "min_accuracy": 0.5,
+        "provider": "codex-cli",
+        "model": "gpt-5.2",
+    }
+
+
+def test_cli_eval_beir_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.beir_eval.run_beir_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total": 2,
+            "total_queries": 2,
+            "completed_queries": 2,
+            "failed_queries": 0,
+            "top_k": 10,
+            "ndcg_at_10": 0.2,
+            "recall_at_10": 0.4,
+            "min_ndcg_at_10": 0.5,
+            "failures": [],
+            "results": [],
+        },
+    )
+
+    result = CliRunner().invoke(main, ["eval", "beir", "--cases", str(tmp_path)])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_beir_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(cases_path, config, *, query_id=None, min_ndcg_at_10=0.0, top_k=10):
+        captured["cases_path"] = cases_path
+        captured["query_id"] = query_id
+        captured["min_ndcg_at_10"] = min_ndcg_at_10
+        captured["top_k"] = top_k
+        return {
+            "status": "ok",
+            "total": 1,
+            "total_queries": 1,
+            "completed_queries": 1,
+            "failed_queries": 0,
+            "top_k": top_k,
+            "ndcg_at_10": 1.0,
+            "recall_at_10": 1.0,
+            "min_ndcg_at_10": min_ndcg_at_10,
+            "failures": [],
+            "results": [],
+        }
+
+    monkeypatch.setattr("umx.beir_eval.run_beir_eval", _run)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "beir",
+            "--cases",
+            str(tmp_path),
+            "--query-id",
+            "q-001",
+            "--min-ndcg-at-10",
+            "0.4",
+            "--top-k",
+            "12",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "cases_path": tmp_path,
+        "query_id": "q-001",
+        "min_ndcg_at_10": 0.4,
+        "top_k": 12,
+    }
+
+
 def test_cli_eval_retrieval_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "umx.retrieval_eval.run_retrieval_eval",
