@@ -504,6 +504,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../launch-checklist/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Launch checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../governance-tutorial/" class="md-nav__link">
         
   
@@ -573,10 +600,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
             
   
   
@@ -594,8 +621,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -746,10 +773,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -767,8 +794,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1175,7 +1202,7 @@
 <tr>
 <td><code>gitmem dream</code></td>
 <td>Run Dream or review a governed PR</td>
-<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier l2</code>, <code>--pr</code>, <code>--head-sha</code></td>
+<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier l2</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
 </tr>
 <tr>
 <td><code>gitmem search</code></td>
@@ -1322,17 +1349,49 @@
 <td><code>--cases</code>, <code>--case</code>, <code>--min-pass-rate</code>, <code>--search-limit</code></td>
 </tr>
 <tr>
+<td><code>gitmem eval longmemeval</code></td>
+<td>Run the upstream-style LongMemEval QA benchmark through the local Claude Code CLI session</td>
+<td><code>--cases</code>, <code>--out-dir</code>, <code>--case</code>, <code>--min-pass-rate</code>, <code>--search-limit</code>, <code>--provider</code>, <code>--judge-provider</code>, <code>--model</code>, <code>--judge-model</code>, <code>--history-format</code></td>
+</tr>
+<tr>
 <td><code>gitmem eval retrieval</code></td>
 <td>Run the HotpotQA-style supporting-fact retrieval pilot</td>
 <td><code>--cases</code>, <code>--case</code>, <code>--min-pass-rate</code>, <code>--top-k</code></td>
 </tr>
+<tr>
+<td><code>gitmem eval compare</code></td>
+<td>Compare two saved eval JSON artifacts and fail on regressions</td>
+<td><code>--metric</code>, <code>--tolerance</code></td>
+</tr>
+<tr>
+<td><code>gitmem eval release-gate</code></td>
+<td>Write a release-gate artifact bundle</td>
+<td><code>--out-dir</code>, <code>--long-memory-release-cases</code>, <code>--retrieval-release-cases</code>, <code>--long-memory-release-min-pass-rate</code>, <code>--retrieval-release-min-pass-rate</code>, <code>--long-memory-baseline</code>, <code>--retrieval-baseline</code></td>
+</tr>
 </tbody>
 </table>
-<p>In local mode, <code>gitmem sync</code> remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff.</p>
-<p><code>gitmem eval l2-review</code> and <code>gitmem eval inject</code> are native gitmem evals over checked-in corpora. <code>gitmem eval long-memory</code> and <code>gitmem eval retrieval</code> are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos.</p>
-<p>All <code>gitmem eval ...</code> commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts.</p>
+<p>In local mode, <code>gitmem sync</code> remains a no-op until at least one memory repo has a configured remote. When the paired user repo also has a remote, the same command syncs both repos in one handoff, but it does so sequentially (<code>umx-user</code> first, then the project repo) and reports partial success if the later repo fails.</p>
+<p>When concurrent edits touch the same memory file, <code>gitmem sync</code> fails closed and surfaces the conflicting paths from the failed rebase so you can resolve or abort the rebase before retrying. If a previous run already left a rebase or merge in progress, the command now fails fast with explicit continue/abort guidance instead of stumbling into a generic git error.</p>
+<p><code>gitmem eval l2-review</code> and <code>gitmem eval inject</code> are native gitmem evals over checked-in corpora. <code>gitmem eval long-memory</code> and <code>gitmem eval retrieval</code> are benchmark-shaped adapters that stay offline by running against checked-in subsets and temporary repos, or against a maintainer-provided public benchmark slice via <code>--cases</code>. <code>gitmem eval longmemeval</code> is the provider-backed QA path: it reuses gitmem retrieval to select memory sessions, generates answer text, and then scores those answers with the LongMemEval yes/no rubric through the operator's Claude Code CLI session.</p>
+<p>All <code>gitmem eval ...</code> commands emit stable JSON to stdout and exit nonzero when the requested pass-rate gate fails, so they can be used directly in CI or saved as release artifacts. <code>gitmem eval compare</code> reads two saved artifacts, compares default suite metrics for <code>inject</code>, <code>long-memory</code>, and <code>retrieval</code>, and exits nonzero when the candidate regresses past the chosen tolerance.</p>
+<p><code>gitmem eval longmemeval</code> also writes benchmark artifacts under <code>--out-dir</code>:</p>
+<ul>
+<li><code>hypotheses.jsonl</code> with <code>question_id</code> / <code>hypothesis</code></li>
+<li><code>judgments.jsonl</code> with per-case answer labels</li>
+<li><code>summary.json</code> with aggregate metrics and usage totals</li>
+</ul>
+<p><code>gitmem eval release-gate</code> is the thin bundling helper for repeated RC runs: it always writes the local smoke artifacts (<code>inject</code>, <code>long-memory</code>, <code>retrieval</code>) under one <code>--out-dir</code>, can optionally add release-grade LongMemEval / HotpotQA artifacts from <code>--*-release-cases</code>, and can optionally write compare artifacts when baseline JSON paths are supplied. If you need a first benchmark capture before an accepted baseline exists, lower the release-case gates with <code>--long-memory-release-min-pass-rate 0</code> and <code>--retrieval-release-min-pass-rate 0</code>.</p>
+<p>For <code>gitmem eval long-memory</code> and <code>gitmem eval retrieval</code>, <code>--cases</code> can point at:</p>
+<ul>
+<li>raw LongMemEval JSON</li>
+<li>raw HotpotQA JSON</li>
+<li>a <code>hotpotqa-manifest</code> file that selects pinned HotpotQA <code>_id</code> values from a larger dataset file</li>
+<li>the checked-in offline subsets under <code>tests/eval/</code></li>
+</ul>
+<p>That means a release-grade HotpotQA rerun can point straight at a filtered raw benchmark slice without pre-converting it into gitmem’s native eval schema. <code>gitmem eval longmemeval</code> is stricter: it expects upstream-style LongMemEval JSON with <code>answer</code>, <code>question_date</code>, and haystack session fields, and writes answer/judgment artifacts under <code>--out-dir</code>.</p>
+<p>For 1.0, release stays blocked until both claims are signed off: <strong>it works personally</strong> and <strong>it works on benchmarks</strong>. Use the <a href="../ops-runbook/">operations runbook</a> for the step-by-step workflow and the <a href="../launch-checklist/">launch checklist</a> for the final ship/no-ship record.</p>
 <h3 id="l2-reviewer-providers">L2 reviewer providers<a class="headerlink" href="#l2-reviewer-providers" title="Permanent link">&para;</a></h3>
-<p><code>gitmem eval l2-review</code> chooses a reviewer via <code>--provider</code>:</p>
+<p><code>gitmem eval l2-review</code> and <code>gitmem dream --tier l2</code> choose a reviewer via <code>--provider</code>:</p>
 <ul>
 <li><code>--provider anthropic</code> (default) — direct Anthropic API. Requires <code>ANTHROPIC_API_KEY</code> in the environment.</li>
 <li><code>--provider claude-cli</code> — shells out to the locally installed Claude Code CLI in headless <code>-p</code> mode (<code>claude --print --output-format json</code>). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with <code>UMX_CLAUDE_CLI_BIN</code>, and the per-call timeout with <code>UMX_CLAUDE_CLI_TIMEOUT</code> (seconds, default 180).</li>

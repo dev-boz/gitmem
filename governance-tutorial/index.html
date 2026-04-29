@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://dev-boz.github.io/gitmem/governance-tutorial/">
       
       
-        <link rel="prev" href="../ops-runbook/">
+        <link rel="prev" href="../launch-checklist/">
       
       
         <link rel="next" href="../faq/">
@@ -360,6 +360,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../launch-checklist/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Launch checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -578,10 +605,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
             
   
   
@@ -599,8 +626,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -751,10 +778,10 @@
         
           
         
-        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
-          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
             
   
   
@@ -772,8 +799,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_9">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -1088,7 +1115,7 @@
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>init<span class="w"> </span>--owner<span class="w"> </span>your-github-user<span class="w"> </span>--mode<span class="w"> </span>hybrid
 </code></pre></div>
 <p>Use <code>--mode remote</code> if you want the stricter remote path instead.
-On GitHub Free org-owned private repos, remote mode falls back to a workflow guard that auto-reverts unauthorized governed pushes to <code>main</code> after the fact.</p>
+On GitHub Free org-owned private repos, remote and hybrid modes fall back to a workflow guard that auto-reverts unauthorized governed pushes to <code>main</code> after the fact.</p>
 <h2 id="3-initialize-project-memory">3. Initialize project memory<a class="headerlink" href="#3-initialize-project-memory" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>init-project<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
@@ -1108,13 +1135,16 @@ gitmem<span class="w"> </span>collect<span class="w"> </span>--cwd<span class="w
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>sync<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project
 </code></pre></div>
 <p>Use <code>gitmem sync</code>, not raw <code>git push</code>, for the normal governed session flow.
-When repository rulesets are unavailable, the deployed <code>main-guard.yml</code> workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to <code>main</code> are reverted by GitHub Actions.</p>
+When repository rulesets are unavailable, the deployed <code>main-guard.yml</code> workflow acts as a post-push audit/remediation layer: approved PR merges stay put, while direct governed fact pushes to <code>main</code> are reverted by GitHub Actions. Each auto-revert also appends a <code>governance_auto_revert</code> entry to <code>meta/processing.jsonl</code> for later review.</p>
 <h2 id="6-check-governance-health">6. Check governance health<a class="headerlink" href="#6-check-governance-health" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>health<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--governance<span class="w"> </span>--format<span class="w"> </span>human
 </code></pre></div>
 <p>That is the fastest summary for branch-head governance state.</p>
 <h2 id="7-review-an-l2-pr-when-needed">7. Review an L2 PR when needed<a class="headerlink" href="#7-review-an-l2-pr-when-needed" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span>
+</code></pre></div>
+<p>To drive the live review through the local Claude Code CLI instead of <code>ANTHROPIC_API_KEY</code>:</p>
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--provider<span class="w"> </span>claude-cli
 </code></pre></div>
 <p>If you need to pin the expected head commit:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--head-sha<span class="w"> </span>&lt;sha&gt;
