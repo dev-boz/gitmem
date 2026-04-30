@@ -1414,7 +1414,7 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 <span class="w">  </span>--out-dir<span class="w"> </span>artifacts/release-gates/<span class="nv">$stamp</span>/release/longmemeval-qa<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--min-pass-rate<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
-<p>That command uses the local Claude Code CLI OAuth session and writes <code>hypotheses.jsonl</code>, <code>judgments.jsonl</code>, and <code>summary.json</code> under the chosen output directory. Keep <code>--min-pass-rate 0</code> only for capture-only benchmark runs; raise it when you want the command itself to act as a gate.</p>
+<p>That command writes <code>hypotheses.jsonl</code>, <code>judgments.jsonl</code>, and <code>summary.json</code> under the chosen output directory. By default it uses the local Claude Code CLI OAuth session, but <code>--provider</code> can also target <code>codex-cli</code>, <code>gemini-cli</code>, or <code>opencode-cli</code>. Keep <code>--min-pass-rate 0</code> only for capture-only benchmark runs; raise it when you want the command itself to act as a gate.</p>
 <p>Optional exploratory memory benchmarks can be run the same way:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>beir<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--cases<span class="w"> </span>benchmarks/release-data/beir/scifact/manifest.json<span class="w"> </span><span class="se">\</span>
@@ -1436,8 +1436,14 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 <span class="w">  </span>--out-dir<span class="w"> </span>artifacts/release-gates/<span class="nv">$stamp</span>/release/longbench-v2<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--provider<span class="w"> </span>codex-cli<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--min-accuracy<span class="w"> </span><span class="m">0</span>
+
+gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>ruler<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--cases<span class="w"> </span>benchmarks/release-data/ruler/extractive/manifest.json<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--out-dir<span class="w"> </span>artifacts/release-gates/<span class="nv">$stamp</span>/release/ruler<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--provider<span class="w"> </span>gemini-cli<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--min-average-score<span class="w"> </span><span class="m">0</span>
 </code></pre></div>
-<p>The BEIR path stays fully local: point <code>--cases</code> either at a raw dataset directory (<code>corpus.jsonl</code>, <code>queries.jsonl</code>, <code>qrels/test.tsv</code>) or at a <code>beir-manifest</code> that pins a query subset while still referencing those raw files. SciFact is the recommended first BEIR dataset because it is small, public, and retrieval-focused. These BEIR, LoCoMo, ConvoMem, and LongBench v2 adapters are still exploratory and should be treated as <strong>benchmark signals</strong>, not as full Dream-cycle benchmark coverage.</p>
+<p>The BEIR path stays fully local: point <code>--cases</code> either at a raw dataset directory (<code>corpus.jsonl</code>, <code>queries.jsonl</code>, <code>qrels/test.tsv</code>) or at a <code>beir-manifest</code> that pins a query subset while still referencing those raw files. SciFact is the recommended first BEIR dataset because it is small, public, and retrieval-focused. The RULER path expects either a normalized slice or a local <code>ruler-manifest</code> that references upstream-style generated JSONL task files; keep those generated files under the ignored <code>benchmarks/release-data/ruler/</code> tree. These BEIR, LoCoMo, ConvoMem, LongBench v2, and RULER adapters are still exploratory and should be treated as <strong>benchmark signals</strong>, not as full Dream-cycle benchmark coverage.</p>
 <h3 id="comparing-against-the-last-baseline">Comparing against the last baseline<a class="headerlink" href="#comparing-against-the-last-baseline" title="Permanent link">&para;</a></h3>
 <p>Save the last accepted release artifacts, then compare them before sign-off:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
@@ -1456,6 +1462,7 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 <li><code>beir</code>: <code>ndcg_at_10</code> and <code>recall_at_10</code></li>
 <li><code>long-memory</code>: <code>pass_rate</code>, <code>average_recall</code>, and each <code>type_summary.&lt;question_type&gt;.average_recall</code> present in the artifacts</li>
 <li><code>retrieval</code>: <code>pass_rate</code>, <code>average_recall</code>, and <code>average_answer_coverage</code> when that metric exists in the artifacts</li>
+<li><code>ruler</code>: <code>average_score</code> and <code>pass_rate</code></li>
 <li><code>inject</code>: <code>pass_rate</code></li>
 <li>Use <code>--metric</code> to compare a custom numeric field and <code>--tolerance</code> to allow a small absolute drop when you consciously redefine the gate.</li>
 </ul>
