@@ -38,6 +38,16 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 
 These are maintainer captures from local release slices and gitignored artifact bundles under `artifacts/release-gates/`. Other useful data points: LongBench v2 on `gpt-5.2` scored `0.333` accuracy, and LoCoMo on Codex CLI `gpt-5.4` scored `0.469` average F1.
 
+#### Memory benchmark provider coverage (2026-04-30)
+
+| Benchmark | Codex CLI (`gpt-5.2`) | Gemini CLI (`gemini-2.5-flash`) | OpenCode (`opencode/big-pickle`) |
+| --- | --- | --- | --- |
+| LongMemEval | `24/25` passed, `0.96` overall accuracy | `23/25` passed, `0.92` overall accuracy | `25/25` passed, `1.0` overall accuracy |
+| LoCoMo | `0.605` average F1, `0.28` exact match, `0.90` evidence recall | `0.656` average F1, `0.44` exact match, `0.90` evidence recall | `0.625` average F1, `0.36` exact match, `0.90` evidence recall |
+| ConvoMem | `24/24` passed, `1.0` retrieval recall | `22/24` passed, `1.0` retrieval recall | `20/24` passed, `23/24` completed, `0.958` retrieval recall |
+
+Release `2026-04-30-110527` is the current multi-provider memory coverage slice. The OpenCode ConvoMem number comes from a recovered artifact after targeted retries; one preference case remained a stable provider failure, so that run is still partial (`23/24` completed) and the recovered slice scored `20/24` passed.
+
 Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
 ## The idea
