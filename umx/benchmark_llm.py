@@ -9,6 +9,8 @@ from typing import Any, Sequence
 from umx.config import UMXConfig
 from umx.providers import claude_cli as claude_cli_provider
 from umx.providers import codex_cli as codex_cli_provider
+from umx.providers import gemini_cli as gemini_cli_provider
+from umx.providers import opencode_cli as opencode_cli_provider
 
 CLI_MAX_ATTEMPTS = 3
 
@@ -28,9 +30,13 @@ def normalize_benchmark_provider(provider: str | None) -> str:
         return "claude-cli"
     if name in {"codex", "codex-cli"}:
         return "codex-cli"
+    if name in {"gemini", "gemini-cli"}:
+        return "gemini-cli"
+    if name in {"opencode", "opencode-cli"}:
+        return "opencode-cli"
     raise RuntimeError(
         f"unknown benchmark provider: {provider!r} "
-        "(expected one of `claude-cli` or `codex-cli`)"
+        "(expected one of `claude-cli`, `codex-cli`, `gemini-cli`, or `opencode-cli`)"
     )
 
 
@@ -50,6 +56,18 @@ def send_benchmark_message_with_provider(
         )
     elif provider == "codex-cli":
         response = codex_cli_provider.send_codex_cli_message(
+            model=model,
+            system=system,
+            prompt=prompt,
+        )
+    elif provider == "gemini-cli":
+        response = gemini_cli_provider.send_gemini_cli_message(
+            model=model,
+            system=system,
+            prompt=prompt,
+        )
+    elif provider == "opencode-cli":
+        response = opencode_cli_provider.send_opencode_cli_message(
             model=model,
             system=system,
             prompt=prompt,
@@ -101,6 +119,14 @@ def resolve_benchmark_model(
         if isinstance(configured, str) and _looks_like_openai_model(configured):
             return configured
         return "gpt-5.2"
+    if provider == "gemini-cli":
+        if isinstance(configured, str) and _looks_like_gemini_model(configured):
+            return configured
+        return "gemini-2.5-flash"
+    if provider == "opencode-cli":
+        if isinstance(configured, str) and _looks_like_opencode_model(configured):
+            return configured
+        return "opencode/big-pickle"
     raise RuntimeError(f"unsupported benchmark provider `{provider}`")
 
 
@@ -150,9 +176,22 @@ def _is_retryable_cli_error(provider: str, exc: RuntimeError) -> bool:
         return message.startswith("Claude CLI ")
     if provider == "codex-cli":
         return message.startswith("Codex CLI ")
+    if provider == "gemini-cli":
+        return message.startswith("Gemini CLI ")
+    if provider == "opencode-cli":
+        return message.startswith("OpenCode CLI ")
     return False
 
 
 def _looks_like_openai_model(model: str) -> bool:
     normalized = model.strip().lower()
     return normalized.startswith(("gpt-", "o1", "o3", "o4"))
+
+
+def _looks_like_gemini_model(model: str) -> bool:
+    return model.strip().lower().startswith("gemini-")
+
+
+def _looks_like_opencode_model(model: str) -> bool:
+    normalized = model.strip().lower()
+    return "/" in normalized or normalized.startswith("opencode/")

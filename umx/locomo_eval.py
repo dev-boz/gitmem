@@ -225,7 +225,7 @@ def run_locomo_eval(
         "gate_metric": "average_f1",
         "provider": provider_name,
         "model": answer_model,
-        "generation_prompt_id": "claude-cli-locomo-generation",
+        "generation_prompt_id": f"{provider_name}-locomo-generation",
         "generation_prompt_version": LOCOMO_PROMPT_VERSION,
         "history_format": history_format,
         "total": total,
@@ -337,6 +337,7 @@ def _cases_from_raw_payload(payload: list[dict[str, Any]], *, source: Path) -> l
                     evidence_dialog_ids=evidence_dialog_ids,
                     answer_session_ids=tuple(dict.fromkeys(answer_session_ids)),
                     haystack_sessions=tuple(haystack_sessions),
+                    question_date=_optional_string(qa.get("question_date")),
                 )
             )
     _ensure_unique_ids([case.question_id for case in cases], field="question_id", source=source, context="LoCoMo raw dataset")

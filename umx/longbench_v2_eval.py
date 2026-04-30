@@ -154,8 +154,8 @@ def run_longbench_v2_eval(
     total = len(cases)
     accuracy = passed / total if total else 0.0
     threshold_passed = accuracy >= min_accuracy
-    gate_passed = (not capture_only) and threshold_passed
     errors = [result for result in results if result.get("error")]
+    gate_passed = (not capture_only) and not errors and threshold_passed
     status = "ok" if not errors and (capture_only or threshold_passed) else "error"
     summary = {
         "suite": "longbench-v2",

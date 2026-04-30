@@ -95,4 +95,5 @@ def test_run_longbench_v2_eval_marks_case_error(monkeypatch: pytest.MonkeyPatch,
     )
 
     assert payload["status"] == "error"
+    assert payload["gate_passed"] is False
     assert payload["results"][0]["error"] == "boom"

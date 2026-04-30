@@ -72,5 +72,5 @@ Bug query / notes:
 
 ## Follow-on benches after 1.0
 
-- **Next best addition:** LoCoMo
-- **Useful non-blocking stress benches:** RULER, InfiniteBench
+- **Exploratory benches already available:** LoCoMo, ConvoMem, LongBench v2, BEIR, RULER
+- **Useful next stress bench:** InfiniteBench

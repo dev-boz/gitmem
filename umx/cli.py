@@ -60,6 +60,12 @@ from umx.tombstones import forget_fact, forget_topic, load_tombstones
 from umx.status import build_status_payload
 from umx.telemetry import record_cli_invocation
 
+_BENCHMARK_PROVIDER_CHOICES = ["claude-cli", "codex-cli", "gemini-cli", "opencode-cli"]
+_BENCHMARK_PROVIDER_HELP = (
+    "Benchmark answer provider. Supports Claude Code CLI OAuth, Codex CLI, "
+    "Gemini CLI, or OpenCode CLI."
+)
+
 
 def _cfg():
     return load_config(config_path())
@@ -1560,14 +1566,14 @@ def eval_long_memory_cmd(
 @click.option(
     "--provider",
     default="claude-cli",
-    type=click.Choice(["claude-cli", "codex-cli"]),
-    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
+    help=_BENCHMARK_PROVIDER_HELP,
 )
 @click.option("--model", default=None, help="Override the answer-generation model id/alias")
 @click.option(
     "--judge-provider",
     default=None,
-    type=click.Choice(["claude-cli", "codex-cli"]),
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
     help="Optional judge provider override; defaults to the answer provider.",
 )
 @click.option("--judge-model", default=None, help="Optional judge model id/alias")
@@ -1621,8 +1627,8 @@ def eval_longmemeval_cmd(
 @click.option(
     "--provider",
     default="claude-cli",
-    type=click.Choice(["claude-cli", "codex-cli"]),
-    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
+    help=_BENCHMARK_PROVIDER_HELP,
 )
 @click.option("--model", default=None, help="Override the answer-generation model id/alias")
 @click.option("--history-format", type=click.Choice(["json", "nl"]), default="json")
@@ -1671,14 +1677,14 @@ def eval_locomo_cmd(
 @click.option(
     "--provider",
     default="claude-cli",
-    type=click.Choice(["claude-cli", "codex-cli"]),
-    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
+    help=_BENCHMARK_PROVIDER_HELP,
 )
 @click.option("--model", default=None, help="Override the answer-generation model id/alias")
 @click.option(
     "--judge-provider",
     default=None,
-    type=click.Choice(["claude-cli", "codex-cli"]),
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
     help="Optional judge provider override; defaults to the answer provider.",
 )
 @click.option("--judge-model", default=None, help="Optional judge model id/alias")
@@ -1731,8 +1737,8 @@ def eval_convomem_cmd(
 @click.option(
     "--provider",
     default="codex-cli",
-    type=click.Choice(["claude-cli", "codex-cli"]),
-    help="Benchmark answer provider. Supports Claude Code CLI OAuth or Codex CLI.",
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
+    help=_BENCHMARK_PROVIDER_HELP,
 )
 @click.option("--model", default=None, help="Override the answer-generation model id/alias")
 def eval_longbench_v2_cmd(
@@ -1754,6 +1760,56 @@ def eval_longbench_v2_cmd(
             min_accuracy=min_accuracy,
             provider=provider,
             model=model,
+        )
+    except RuntimeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(payload))
+    if payload["status"] != "ok":
+        raise click.exceptions.Exit(1)
+
+
+@eval_group.command("ruler")
+@click.option(
+    "--cases",
+    "cases_path",
+    type=click.Path(path_type=Path),
+    default=Path("tests") / "eval" / "ruler",
+)
+@click.option("--out-dir", type=click.Path(path_type=Path), required=True)
+@click.option("--case", "case_id", default=None)
+@click.option("--task", default=None, help="Optional RULER task filter, e.g. `niah_single_1`")
+@click.option("--context-length", type=int, default=None)
+@click.option("--min-average-score", type=float, default=0.0)
+@click.option(
+    "--provider",
+    default="codex-cli",
+    type=click.Choice(_BENCHMARK_PROVIDER_CHOICES),
+    help=_BENCHMARK_PROVIDER_HELP,
+)
+@click.option("--model", default=None, help="Override the answer-generation model id/alias")
+def eval_ruler_cmd(
+    cases_path: Path,
+    out_dir: Path,
+    case_id: str | None,
+    task: str | None,
+    context_length: int | None,
+    min_average_score: float,
+    provider: str,
+    model: str | None,
+) -> None:
+    from umx.ruler_eval import run_ruler_eval
+
+    try:
+        payload = run_ruler_eval(
+            cases_path=cases_path,
+            out_dir=out_dir,
+            config=_cfg(),
+            case_id=case_id,
+            task=task,
+            context_length=context_length,
+            provider=provider,
+            model=model,
+            min_average_score=min_average_score,
         )
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc

@@ -152,7 +152,7 @@ gitmem eval longmemeval \
   --min-pass-rate 0
 ```
 
-That command uses the local Claude Code CLI OAuth session and writes `hypotheses.jsonl`, `judgments.jsonl`, and `summary.json` under the chosen output directory. Keep `--min-pass-rate 0` only for capture-only benchmark runs; raise it when you want the command itself to act as a gate.
+That command writes `hypotheses.jsonl`, `judgments.jsonl`, and `summary.json` under the chosen output directory. By default it uses the local Claude Code CLI OAuth session, but `--provider` can also target `codex-cli`, `gemini-cli`, or `opencode-cli`. Keep `--min-pass-rate 0` only for capture-only benchmark runs; raise it when you want the command itself to act as a gate.
 
 Optional exploratory memory benchmarks can be run the same way:
 
@@ -177,9 +177,15 @@ gitmem eval longbench-v2 \
   --out-dir artifacts/release-gates/$stamp/release/longbench-v2 \
   --provider codex-cli \
   --min-accuracy 0
+
+gitmem eval ruler \
+  --cases benchmarks/release-data/ruler/extractive/manifest.json \
+  --out-dir artifacts/release-gates/$stamp/release/ruler \
+  --provider gemini-cli \
+  --min-average-score 0
 ```
 
-The BEIR path stays fully local: point `--cases` either at a raw dataset directory (`corpus.jsonl`, `queries.jsonl`, `qrels/test.tsv`) or at a `beir-manifest` that pins a query subset while still referencing those raw files. SciFact is the recommended first BEIR dataset because it is small, public, and retrieval-focused. These BEIR, LoCoMo, ConvoMem, and LongBench v2 adapters are still exploratory and should be treated as **benchmark signals**, not as full Dream-cycle benchmark coverage.
+The BEIR path stays fully local: point `--cases` either at a raw dataset directory (`corpus.jsonl`, `queries.jsonl`, `qrels/test.tsv`) or at a `beir-manifest` that pins a query subset while still referencing those raw files. SciFact is the recommended first BEIR dataset because it is small, public, and retrieval-focused. The RULER path expects either a normalized slice or a local `ruler-manifest` that references upstream-style generated JSONL task files; keep those generated files under the ignored `benchmarks/release-data/ruler/` tree. These BEIR, LoCoMo, ConvoMem, LongBench v2, and RULER adapters are still exploratory and should be treated as **benchmark signals**, not as full Dream-cycle benchmark coverage.
 
 ### Comparing against the last baseline
 
@@ -202,6 +208,7 @@ gitmem eval compare \
   - `beir`: `ndcg_at_10` and `recall_at_10`
   - `long-memory`: `pass_rate`, `average_recall`, and each `type_summary.<question_type>.average_recall` present in the artifacts
   - `retrieval`: `pass_rate`, `average_recall`, and `average_answer_coverage` when that metric exists in the artifacts
+  - `ruler`: `average_score` and `pass_rate`
   - `inject`: `pass_rate`
 - Use `--metric` to compare a custom numeric field and `--tolerance` to allow a small absolute drop when you consciously redefine the gate.
 

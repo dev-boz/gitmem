@@ -197,6 +197,32 @@ def test_compare_eval_reports_uses_beir_defaults(tmp_path: Path) -> None:
     assert [entry["name"] for entry in payload["metrics"]] == ["ndcg_at_10", "recall_at_10"]
 
 
+def test_compare_eval_reports_uses_ruler_defaults(tmp_path: Path) -> None:
+    baseline = _write_report(
+        tmp_path / "baseline.json",
+        {
+            "suite": "ruler",
+            "status": "ok",
+            "average_score": 0.5,
+            "pass_rate": 0.25,
+        },
+    )
+    candidate = _write_report(
+        tmp_path / "candidate.json",
+        {
+            "suite": "ruler",
+            "status": "ok",
+            "average_score": 0.75,
+            "pass_rate": 0.5,
+        },
+    )
+
+    payload = compare_eval_reports(baseline, candidate)
+
+    assert payload["status"] == "ok"
+    assert [entry["name"] for entry in payload["metrics"]] == ["average_score", "pass_rate"]
+
+
 def test_cli_eval_compare_exits_nonzero_on_regression(tmp_path: Path) -> None:
     baseline = _write_report(
         tmp_path / "baseline.json",

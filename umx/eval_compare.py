@@ -11,6 +11,7 @@ DEFAULT_METRICS_BY_SUITE: dict[str, tuple[str, ...]] = {
     "long-memory": ("pass_rate", "average_recall"),
     "longbench-v2": ("accuracy",),
     "retrieval": ("pass_rate", "average_recall"),
+    "ruler": ("average_score", "pass_rate"),
 }
 
 

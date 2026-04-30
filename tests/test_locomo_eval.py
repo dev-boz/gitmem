@@ -48,6 +48,7 @@ def test_load_locomo_eval_cases_expands_raw_dataset(tmp_path: Path) -> None:
     assert cases[0].question_id == "locomo-sample-001::0000"
     assert cases[0].answer_session_ids == ("S1",)
     assert cases[0].question_type == "temporal"
+    assert cases[0].question_date is None
 
 
 def test_run_locomo_eval_writes_artifacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

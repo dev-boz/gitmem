@@ -950,13 +950,13 @@ def test_cli_eval_longmemeval_forwards_options(monkeypatch, tmp_path: Path) -> N
             "--search-limit",
             "9",
             "--provider",
-            "claude-cli",
+            "gemini-cli",
             "--model",
-            "claude-opus-4-7",
+            "gemini-2.5-flash",
             "--judge-provider",
-            "claude-cli",
+            "opencode-cli",
             "--judge-model",
-            "claude-sonnet-4-5",
+            "opencode/big-pickle",
             "--history-format",
             "nl",
         ],
@@ -969,10 +969,10 @@ def test_cli_eval_longmemeval_forwards_options(monkeypatch, tmp_path: Path) -> N
         "case_id": "longmem-case-1",
         "min_pass_rate": 0.7,
         "search_limit": 9,
-        "provider": "claude-cli",
-        "model": "claude-opus-4-7",
-        "judge_provider": "claude-cli",
-        "judge_model": "claude-sonnet-4-5",
+        "provider": "gemini-cli",
+        "model": "gemini-2.5-flash",
+        "judge_provider": "opencode-cli",
+        "judge_model": "opencode/big-pickle",
         "history_format": "nl",
     }
 
@@ -1084,9 +1084,9 @@ def test_cli_eval_locomo_forwards_options(monkeypatch, tmp_path: Path) -> None:
             "--search-limit",
             "8",
             "--provider",
-            "claude-cli",
+            "opencode-cli",
             "--model",
-            "claude-opus-4-7",
+            "opencode/big-pickle",
             "--history-format",
             "nl",
         ],
@@ -1099,8 +1099,8 @@ def test_cli_eval_locomo_forwards_options(monkeypatch, tmp_path: Path) -> None:
         "case_id": "locomo-case-1",
         "min_average_f1": 0.55,
         "search_limit": 8,
-        "provider": "claude-cli",
-        "model": "claude-opus-4-7",
+        "provider": "opencode-cli",
+        "model": "opencode/big-pickle",
         "history_format": "nl",
     }
 
@@ -1185,13 +1185,13 @@ def test_cli_eval_convomem_forwards_options(monkeypatch, tmp_path: Path) -> None
             "--search-limit",
             "7",
             "--provider",
-            "claude-cli",
+            "opencode-cli",
             "--model",
-            "claude-opus-4-7",
+            "opencode/big-pickle",
             "--judge-provider",
-            "claude-cli",
+            "gemini-cli",
             "--judge-model",
-            "claude-sonnet-4-5",
+            "gemini-2.5-flash",
             "--history-format",
             "nl",
         ],
@@ -1204,10 +1204,10 @@ def test_cli_eval_convomem_forwards_options(monkeypatch, tmp_path: Path) -> None
         "case_id": "convomem-case-1",
         "min_pass_rate": 0.6,
         "search_limit": 7,
-        "provider": "claude-cli",
-        "model": "claude-opus-4-7",
-        "judge_provider": "claude-cli",
-        "judge_model": "claude-sonnet-4-5",
+        "provider": "opencode-cli",
+        "model": "opencode/big-pickle",
+        "judge_provider": "gemini-cli",
+        "judge_model": "gemini-2.5-flash",
         "history_format": "nl",
     }
 
@@ -1282,9 +1282,9 @@ def test_cli_eval_longbench_v2_forwards_options(monkeypatch, tmp_path: Path) -> 
             "--min-accuracy",
             "0.5",
             "--provider",
-            "codex-cli",
+            "gemini-cli",
             "--model",
-            "gpt-5.2",
+            "gemini-2.5-flash",
         ],
     )
 
@@ -1294,8 +1294,105 @@ def test_cli_eval_longbench_v2_forwards_options(monkeypatch, tmp_path: Path) -> 
         "cases_path": tmp_path,
         "case_id": "lbv2-001",
         "min_accuracy": 0.5,
-        "provider": "codex-cli",
-        "model": "gpt-5.2",
+        "provider": "gemini-cli",
+        "model": "gemini-2.5-flash",
+    }
+
+
+def test_cli_eval_ruler_exits_nonzero_on_gate_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "umx.ruler_eval.run_ruler_eval",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "total_cases": 4,
+            "completed": 4,
+            "passed": 1,
+            "average_score": 0.25,
+            "pass_rate": 0.25,
+            "min_average_score": 0.5,
+        },
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["eval", "ruler", "--cases", str(tmp_path), "--out-dir", str(tmp_path / "artifacts")],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+
+
+def test_cli_eval_ruler_forwards_options(monkeypatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    def _run(
+        *,
+        cases_path,
+        out_dir,
+        config,
+        case_id=None,
+        task=None,
+        context_length=None,
+        provider="codex-cli",
+        model=None,
+        min_average_score=0.0,
+    ):
+        captured["cases_path"] = cases_path
+        captured["out_dir"] = out_dir
+        captured["case_id"] = case_id
+        captured["task"] = task
+        captured["context_length"] = context_length
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["min_average_score"] = min_average_score
+        return {
+            "status": "ok",
+            "total_cases": 1,
+            "completed": 1,
+            "passed": 1,
+            "average_score": 1.0,
+            "pass_rate": 1.0,
+            "min_average_score": min_average_score,
+        }
+
+    monkeypatch.setattr("umx.ruler_eval.run_ruler_eval", _run)
+
+    out_dir = tmp_path / "artifacts"
+    result = CliRunner().invoke(
+        main,
+        [
+            "eval",
+            "ruler",
+            "--cases",
+            str(tmp_path),
+            "--out-dir",
+            str(out_dir),
+            "--case",
+            "ruler-case-1",
+            "--task",
+            "niah_single_1",
+            "--context-length",
+            "16384",
+            "--min-average-score",
+            "0.6",
+            "--provider",
+            "gemini-cli",
+            "--model",
+            "gemini-2.5-flash",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured == {
+        "cases_path": tmp_path,
+        "out_dir": out_dir,
+        "case_id": "ruler-case-1",
+        "task": "niah_single_1",
+        "context_length": 16384,
+        "provider": "gemini-cli",
+        "model": "gemini-2.5-flash",
+        "min_average_score": 0.6,
     }
 
 

@@ -1,0 +1,27 @@
+[
+  {
+    "question_id": "ruler-niah-001",
+    "task": "niah_single_1",
+    "base_task": "niah",
+    "category": "needle-in-a-haystack",
+    "context_length": 16384,
+    "scorer": "string_match_all",
+    "prompt": "Read the passage and answer with the special number only.\nThe hidden code for green-apple is 1234567.\nQuestion: What is the special number for green-apple?",
+    "outputs": [
+      "1234567"
+    ]
+  },
+  {
+    "question_id": "ruler-vt-001",
+    "task": "vt",
+    "base_task": "variable_tracking",
+    "category": "variable-tracking",
+    "context_length": 32768,
+    "scorer": "string_match_all",
+    "prompt": "Track the variables and answer with all surviving variable names.\nThe final active variables are alpha and bravo.\nQuestion: Which variable names remain active?",
+    "outputs": [
+      "alpha",
+      "bravo"
+    ]
+  }
+]
