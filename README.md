@@ -23,6 +23,21 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 >
 > **Benchmark note** — public-memory benchmark coverage is improving, but full end-to-end evaluation of Dream cycles is still a work in progress.
 
+### Current benchmark results
+
+| Benchmark | Surface | Backend | Latest captured result |
+| --- | --- | --- | --- |
+| LongMemEval QA | Memory QA | Claude CLI (`claude-opus-4-7`) | `24/25` passed (`0.96` pass rate) |
+| HotpotQA | Retrieval | Native gitmem retrieval | `10/25` passed, `0.671` average recall, `0.56` answer coverage |
+| BEIR SciFact | Retrieval | Native gitmem retrieval | `0.681` nDCG@10, `0.90` recall@10 |
+| LoCoMo | Memory QA | Claude CLI (`claude-opus-4-7`) | `0.755` average F1, `0.52` exact match, `0.90` evidence recall |
+| ConvoMem | Memory QA | Claude CLI (`claude-opus-4-7`) | `24/24` passed, `1.0` retrieval recall |
+| LongBench v2 | Direct-context MCQ | Codex CLI (`gpt-5.4`) | `7/12` passed (`0.583` accuracy) |
+| RULER (extractive slice) | Synthetic long-context | Gemini CLI (`gemini-2.5-flash`) | `11/12` passed, `0.983` average score |
+| RULER (extractive slice) | Synthetic long-context | OpenCode (`opencode/big-pickle`) | `12/12` passed, `1.0` average score |
+
+These are maintainer captures from local release slices and gitignored artifact bundles under `artifacts/release-gates/`. Other useful data points: LongBench v2 on `gpt-5.2` scored `0.333` accuracy, and LoCoMo on Codex CLI `gpt-5.4` scored `0.469` average F1.
+
 Want the full memory model, governance tiers, and 19 cognitive science references? Start with [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
 
 ## The idea
