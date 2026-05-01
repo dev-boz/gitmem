@@ -1371,9 +1371,9 @@
 <td>Quarantine visibility</td>
 <td><strong>R</strong></td>
 <td>operator cannot tell that blocked sessions or push-safety reports exist, so risky data sits unresolved</td>
-<td><code>umx doctor</code> summarizes <code>local/quarantine/</code>; push safety writes JSON reports there; viewer now exposes a quarantine queue with masked previews and release/discard actions</td>
-<td><code>umx status</code> still does not surface quarantine even though spec says it should</td>
-<td>add quarantine summary to <code>status</code> so CLI and viewer stay aligned</td>
+<td><code>umx doctor</code> summarizes <code>local/quarantine/</code>; push safety writes JSON reports there; <code>umx status</code> now surfaces the same summary; viewer exposes a quarantine queue with masked previews and release/discard actions for blocked session files</td>
+<td>push-safety reports still live in <code>status</code>/<code>doctor</code>, not the viewer queue; quarantine retention policy is still missing</td>
+<td>keep status/doctor/viewer semantics aligned and decide whether push-safety reports need richer UI</td>
 </tr>
 <tr>
 <td>Candidate fact extraction</td>
@@ -1511,7 +1511,7 @@
 </ol>
 <h3 id="most-important-gaps">Most important gaps<a class="headerlink" href="#most-important-gaps" title="Permanent link">&para;</a></h3>
 <ol>
-<li><strong>Quarantine visibility is still incomplete.</strong> Viewer and local decision logging now exist, but <code>status</code> still does not surface quarantine.</li>
+<li><strong>Quarantine handling is still split across surfaces.</strong> <code>status</code> and <code>doctor</code> now surface quarantine, and the viewer handles blocked session files, but push-safety reports still rely on the summary surfaces rather than a dedicated UI.</li>
 <li><strong>Push safety is not yet policy-enforced server-side.</strong> <code>gitmem sync</code> is safer than raw <code>git push</code>, but raw git still bypasses the guard.</li>
 <li><strong>Credential handling is still workstation-grade.</strong> Plaintext config fields and no secret-read audit trail are acceptable for alpha, not for production sync.</li>
 <li><strong>Signed commit enforcement is still client-side.</strong> Managed push paths now verify signed history, but raw git and server policy can still bypass it.</li>
@@ -1523,7 +1523,7 @@
 <ul>
 <li><strong>T2.2</strong> — operators can now register validated custom redaction patterns</li>
 <li><strong>T2.3</strong> — adversarial secret fixtures now cover sessions, extracted facts, entropy-only masking, and fail-closed quarantine metadata</li>
-<li><strong>T2.4</strong> — quarantine queue, release/discard workflow, and local decision logging are now present in the viewer; <code>status</code> surfacing remains outstanding</li>
+<li><strong>T2.4</strong> — quarantine queue, release/discard workflow, local decision logging, and <code>status</code>/<code>doctor</code> surfacing are now present; push-safety reports still rely on the summary surfaces rather than the viewer</li>
 <li><strong>T2.5</strong> — <code>require_signed_commits</code> now verifies outbound history across managed bootstrap/sync/governance push paths</li>
 <li><strong>T2.6</strong> — scope-isolation tests and runtime GitHub remote-identity assertions are now in place for gitmem-managed operations</li>
 <li><strong>T2.7</strong> — PR-time supply-chain scanning and SBOM generation now run in CI, with action pinning/artifact hardening still ahead</li>

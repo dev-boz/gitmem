@@ -1143,7 +1143,10 @@ When repository rulesets are unavailable, the deployed <code>main-guard.yml</cod
 <h2 id="7-review-an-l2-pr-when-needed">7. Review an L2 PR when needed<a class="headerlink" href="#7-review-an-l2-pr-when-needed" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span>
 </code></pre></div>
-<p>To drive the live review through the local Claude Code CLI instead of <code>ANTHROPIC_API_KEY</code>:</p>
+<p>To drive the live review through NVIDIA instead of the default Anthropic API:</p>
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--provider<span class="w"> </span>nvidia
+</code></pre></div>
+<p>To drive the live review through the local Claude Code CLI instead of an API key:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--provider<span class="w"> </span>claude-cli
 </code></pre></div>
 <p>If you need to pin the expected head commit:</p>

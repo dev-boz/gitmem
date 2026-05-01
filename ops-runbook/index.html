@@ -1504,13 +1504,17 @@ gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </spa
 </code></pre></div>
 <p>Use the launch checklist to roll those records up into the final <strong>works personally</strong> sign-off.</p>
 <h3 id="l2-reviewer-provider-note">L2 reviewer provider note<a class="headerlink" href="#l2-reviewer-provider-note" title="Permanent link">&para;</a></h3>
-<p><code>gitmem eval l2-review</code> defaults to the Anthropic API and requires <code>ANTHROPIC_API_KEY</code>. To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass <code>--provider claude-cli</code>:</p>
+<p><code>gitmem eval l2-review</code> defaults to the Anthropic API and requires <code>ANTHROPIC_API_KEY</code>. To run the same eval against NVIDIA's API instead, pass <code>--provider nvidia</code> and export <code>NVIDIA_API_KEY</code>:</p>
+<div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>l2-review<span class="w"> </span>--provider<span class="w"> </span>nvidia<span class="w"> </span>&gt;<span class="w"> </span>artifacts/release-gates/<span class="nv">$stamp</span>/local/l2-review.nvidia.json
+</code></pre></div>
+<p>To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass <code>--provider claude-cli</code>:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>l2-review<span class="w"> </span>--provider<span class="w"> </span>claude-cli<span class="w"> </span>&gt;<span class="w"> </span>artifacts/release-gates/<span class="nv">$stamp</span>/local/l2-review.smoke.json
 </code></pre></div>
 <p>The <code>claude-cli</code> path shells out to <code>claude --print --output-format json</code> per case, so wall-clock time and per-call cost mirror Claude Code itself; reserve it for release-gate runs rather than tight inner loops.</p>
 <p>The same provider switch now works on live PR review runs:</p>
 <div class="highlight"><pre><span></span><code>gitmem<span class="w"> </span>dream<span class="w"> </span>--cwd<span class="w"> </span>/path/to/project<span class="w"> </span>--mode<span class="w"> </span>remote<span class="w"> </span>--tier<span class="w"> </span>l2<span class="w"> </span>--pr<span class="w"> </span><span class="m">42</span><span class="w"> </span>--provider<span class="w"> </span>claude-cli
 </code></pre></div>
+<p>The shipped GitHub Actions L2 workflow template now pins the remote review lane to <code>--provider nvidia</code> and expects <code>NVIDIA_API_KEY</code> in repository secrets.</p>
 <p>Keep external frameworks optional. If you want DeepEval or another reporting layer, ingest the emitted JSON artifacts there rather than adding framework-specific runtime dependencies to the core gitmem path.</p>
 <h2 id="if-you-need-a-fresh-machine-or-isolated-test-owner">If you need a fresh machine or isolated test owner<a class="headerlink" href="#if-you-need-a-fresh-machine-or-isolated-test-owner" title="Permanent link">&para;</a></h2>
 <p>Use a dedicated <code>UMX_HOME</code> when you want to attach the same project to a separate machine, sandbox, or GitHub owner without touching your primary local state:</p>

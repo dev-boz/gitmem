@@ -873,6 +873,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#known-broader-spec-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known broader spec gaps
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -948,6 +959,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#known-broader-spec-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known broader spec gaps
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -969,12 +991,12 @@
 
 
 <h1 id="cli-spec-parity-audit">CLI spec parity audit<a class="headerlink" href="#cli-spec-parity-audit" title="Permanent link">&para;</a></h1>
-<p>This matrix records the v0.9.2 parity pass between <code>gitmem-spec-v0_9.md</code> §25 and <code>umx/cli.py</code>. Status legend:</p>
+<p>This matrix records the v0.9.2 CLI-surface parity pass between <code>gitmem-spec-v0_9.md</code> §25 and <code>umx/cli.py</code>. Status legend:</p>
 <ul>
 <li><strong>Match</strong> — spec and code agree for the shipped surface.</li>
 <li><strong>Documented</strong> — auxiliary shipped surface is referenced in the spec and enumerated here.</li>
 </ul>
-<p>There are no unresolved CLI divergences in this snapshot; draft-only flags were removed from the canonical spec surface rather than left unexplained.</p>
+<p>Within the audited CLI surface below, there are no unresolved command/flag divergences in this snapshot. This page does <strong>not</strong> claim full runtime/spec parity for broader Dream-governance behavior; those larger gaps still live in the main spec and implementation docs.</p>
 <h2 id="core-commands">Core commands<a class="headerlink" href="#core-commands" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1017,10 +1039,10 @@
 </tr>
 <tr>
 <td><code>dream</code></td>
-<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier</code>, <code>--pr</code>, <code>--head-sha</code></td>
-<td><code>umx/cli.py:379-429</code></td>
+<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
+<td><code>umx/cli.py:779-845</code></td>
 <td>Match</td>
-<td><code>--force-lint</code> added in T1.1; L2 review flags documented explicitly.</td>
+<td><code>--force-lint</code> added in T1.1; <code>--provider</code> documents the shipped L2 reviewer selection surface.</td>
 </tr>
 <tr>
 <td><code>view</code></td>
@@ -1039,14 +1061,14 @@
 <tr>
 <td><code>status</code></td>
 <td><code>--cwd</code></td>
-<td><code>umx/cli.py:481-484</code></td>
+<td><code>umx/cli.py:916-919</code></td>
 <td>Match</td>
 <td>No flag divergence.</td>
 </tr>
 <tr>
 <td><code>health</code></td>
 <td><code>--cwd</code></td>
-<td><code>umx/cli.py:487-506</code></td>
+<td><code>umx/cli.py:922-934</code></td>
 <td>Match</td>
 <td>Added to spec to reflect shipped diagnostics surface.</td>
 </tr>
@@ -1186,9 +1208,23 @@
 <tr>
 <td><code>doctor</code></td>
 <td><code>--cwd</code>, <code>--fix</code></td>
-<td><code>umx/cli.py:915-919</code></td>
+<td><code>umx/cli.py:1416-1420</code></td>
 <td>Match</td>
 <td>Spec updated to include <code>--cwd</code>.</td>
+</tr>
+<tr>
+<td><code>migrate</code></td>
+<td><code>--cwd</code></td>
+<td><code>umx/cli.py:1423-1434</code></td>
+<td>Match</td>
+<td>Added to spec to reflect the shipped fact-file migration command.</td>
+</tr>
+<tr>
+<td><code>export</code></td>
+<td><code>--cwd</code>, <code>--out</code></td>
+<td><code>umx/cli.py:2238-2249</code></td>
+<td>Match</td>
+<td>Added to spec to reflect the shipped full-backup export command.</td>
 </tr>
 <tr>
 <td><code>config</code></td>
@@ -1218,6 +1254,13 @@
 <td>Match</td>
 <td>Added to spec to reflect the shipped MCP server entrypoint.</td>
 </tr>
+<tr>
+<td><code>search</code></td>
+<td><code>--cwd</code>, <code>--raw</code> (<code>--all</code> alias)</td>
+<td><code>umx/cli.py:2852-2875</code></td>
+<td>Match</td>
+<td>Spec updated so the cold-tier search example can use the shipped raw-session alias without diverging from the canonical <code>--raw</code> wording.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="auxiliary-command-groups">Auxiliary command groups<a class="headerlink" href="#auxiliary-command-groups" title="Permanent link">&para;</a></h2>
@@ -1244,7 +1287,7 @@
 <td><code>l2-review(--cases,--case,--min-pass-rate,--provider)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code></td>
 <td><code>umx/cli.py:1273-1400</code></td>
 <td>Documented</td>
-<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. <code>l2-review --provider</code> selects between the Anthropic API and the Claude Code CLI (OAuth) reviewer.</td>
+<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. <code>l2-review --provider</code> selects between Anthropic API, NVIDIA API, and Claude Code CLI (OAuth) reviewers.</td>
 </tr>
 <tr>
 <td><code>hooks claude-code</code></td>
@@ -1272,12 +1315,19 @@
 <h2 id="resolved-draft-mismatches">Resolved draft mismatches<a class="headerlink" href="#resolved-draft-mismatches" title="Permanent link">&para;</a></h2>
 <p>The parity pass intentionally aligned the spec to the shipped CLI instead of adding placeholder implementations for draft-only flags:</p>
 <ul>
-<li><code>audit --all --model</code> → removed from the canonical spec surface; the shipped audit path is <code>--rederive</code>, <code>--session</code>, and <code>--cross-project</code> / <code>--proposal-key</code>.</li>
+<li><code>audit --all --model</code> → removed from the canonical CLI surface; the shipped audit path is <code>--rederive</code>, <code>--session</code>, and <code>--cross-project</code> / <code>--proposal-key</code>.</li>
 <li><code>sync --all</code> → removed; sync is project-scoped and selected via <code>--cwd</code>.</li>
 <li><code>rebuild-index --force</code> → removed; the shipped explicit flag is <code>--embeddings</code>.</li>
 <li><code>view --scope</code> → removed; the shipped surface is <code>--fact</code> / <code>--list</code>.</li>
 <li><code>import --tool</code> → renamed in the spec to the shipped <code>--adapter</code>.</li>
-<li><code>health</code>, <code>setup-remote</code>, <code>archive-sessions</code>, <code>init-actions</code>, <code>mcp</code>, <code>capture</code>, <code>hooks</code>, <code>bridge</code>, and <code>shim</code> were added to the documented surface because they already ship in code.</li>
+<li><code>health</code>, <code>setup-remote</code>, <code>archive-sessions</code>, <code>init-actions</code>, <code>mcp</code>, <code>search</code>, <code>capture</code>, <code>hooks</code>, <code>bridge</code>, <code>shim</code>, <code>migrate</code>, and <code>export</code> were added to the documented surface because they already ship in code.</li>
+</ul>
+<h2 id="known-broader-spec-gaps">Known broader spec gaps<a class="headerlink" href="#known-broader-spec-gaps" title="Permanent link">&para;</a></h2>
+<p>These are outside the narrow CLI flag audit above:</p>
+<ul>
+<li>Remote/hybrid Dream now opens dedicated lint PRs with <code>meta/lint-report.md</code> and <code>meta/lint-state.json</code>; those lint branches are distinct from the normal L1 fact-snapshot PR path.</li>
+<li><code>audit --rederive</code> now opens governed correction proposal branches/PRs when it finds drift, but the re-extraction itself is still the shipped native session-derive path rather than a model-selectable deep re-derivation workflow.</li>
+<li>Branch protection, approval gating, and other GitHub governance hardening remain partial/experimental outside the shipped local-first core.</li>
 </ul>
 
 

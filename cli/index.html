@@ -1206,8 +1206,8 @@
 </tr>
 <tr>
 <td><code>gitmem search</code></td>
-<td>Search facts, or raw sessions with <code>--raw</code></td>
-<td><code>--cwd</code>, <code>--raw</code></td>
+<td>Search facts, or raw sessions with <code>--raw</code> / <code>--all</code></td>
+<td><code>--cwd</code>, <code>--raw</code>, <code>--all</code></td>
 </tr>
 <tr>
 <td><code>gitmem inject</code></td>
@@ -1320,7 +1320,7 @@
 </tr>
 <tr>
 <td><code>gitmem audit</code></td>
-<td>Audit a repo or inspect cross-project promotion candidates</td>
+<td>Audit a repo, re-derive facts, or inspect cross-project promotion candidates</td>
 <td><code>--cwd</code>, <code>--rederive</code>, <code>--session</code>, <code>--cross-project</code>, <code>--proposal-key</code></td>
 </tr>
 <tr>
@@ -1437,14 +1437,16 @@
 </ul>
 <p>That means a release-grade HotpotQA rerun can point straight at a filtered raw benchmark slice without pre-converting it into gitmem’s native eval schema. <code>gitmem eval longmemeval</code> is stricter: it expects upstream-style LongMemEval JSON with <code>answer</code>, <code>question_date</code>, and haystack session fields, and writes answer/judgment artifacts under <code>--out-dir</code>.</p>
 <p><code>gitmem eval beir</code> accepts either a raw BEIR dataset directory or a <code>beir-manifest</code> file with relative paths plus pinned <code>query_ids</code>; a checked-in tiny SciFact-shaped fixture lives under <code>tests/eval/beir/scifact-mini/</code>. <code>gitmem eval locomo</code> accepts either the official raw LoCoMo dataset JSON (<code>locomo10.json</code>) or a normalized slice file. <code>gitmem eval convomem</code> accepts either a normalized slice file, a raw ConvoMem sample file, or a directory tree of raw ConvoMem sample files. <code>gitmem eval longbench-v2</code> accepts the official upstream <code>data.json</code> format or a filtered slice file with the same fields. <code>gitmem eval ruler</code> accepts either a normalized slice file or a <code>ruler-manifest</code> that stays under its local dataset root and lists task entries with <code>task</code>, <code>category</code>, <code>context_length</code>, <code>scorer</code>, and relative <code>path</code> values pointing at upstream-style JSONL task files containing <code>input</code>, <code>outputs</code>, and <code>length</code>; <code>base_task</code> and <code>weight</code> are optional. A tiny checked-in fixture lives under <code>tests/eval/ruler/</code>. These adapters are still <strong>WIP benchmark surfaces</strong>, not full end-to-end Dream-cycle evaluations.</p>
+<p><code>gitmem audit --rederive</code> still compares the accepted fact set against facts re-extracted from immutable sessions, but it now also materializes a governed correction proposal branch automatically when drift is found. The JSON payload includes a <code>correction_pr</code> object describing the proposed branch and, when available, the opened PR number.</p>
 <p>For 1.0, release stays blocked until both claims are signed off: <strong>it works personally</strong> and <strong>it works on benchmarks</strong>. Use the <a href="../ops-runbook/">operations runbook</a> for the step-by-step workflow and the <a href="../launch-checklist/">launch checklist</a> for the final ship/no-ship record.</p>
 <h3 id="l2-reviewer-providers">L2 reviewer providers<a class="headerlink" href="#l2-reviewer-providers" title="Permanent link">&para;</a></h3>
 <p><code>gitmem eval l2-review</code> and <code>gitmem dream --tier l2</code> choose a reviewer via <code>--provider</code>:</p>
 <ul>
 <li><code>--provider anthropic</code> (default) — direct Anthropic API. Requires <code>ANTHROPIC_API_KEY</code> in the environment.</li>
+<li><code>--provider nvidia</code> — direct NVIDIA API. Requires <code>NVIDIA_API_KEY</code> in the environment. When <code>dream.l2_model</code> is still at the Anthropic default, gitmem falls back to <code>meta/llama-3.3-70b-instruct</code>.</li>
 <li><code>--provider claude-cli</code> — shells out to the locally installed Claude Code CLI in headless <code>-p</code> mode (<code>claude --print --output-format json</code>). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with <code>UMX_CLAUDE_CLI_BIN</code>, and the per-call timeout with <code>UMX_CLAUDE_CLI_TIMEOUT</code> (seconds, default 180).</li>
 </ul>
-<p>Both providers emit the same JSON payload shape and the same <code>prompt_version</code>; only the <code>prompt_id</code> differs (<code>anthropic-l2-review</code> vs <code>claude-cli-l2-review</code>) so historical runs stay comparable within a provider.</p>
+<p>All three providers emit the same JSON payload shape and the same <code>prompt_version</code>; only the <code>prompt_id</code> differs (<code>anthropic-l2-review</code>, <code>nvidia-l2-review</code>, or <code>claude-cli-l2-review</code>) so historical runs stay comparable within a provider.</p>
 <h2 id="maintenance-and-recovery">Maintenance and recovery<a class="headerlink" href="#maintenance-and-recovery" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
