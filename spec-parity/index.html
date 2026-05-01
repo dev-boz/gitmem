@@ -1325,7 +1325,7 @@
 <h2 id="known-broader-spec-gaps">Known broader spec gaps<a class="headerlink" href="#known-broader-spec-gaps" title="Permanent link">&para;</a></h2>
 <p>These are outside the narrow CLI flag audit above:</p>
 <ul>
-<li>Remote/hybrid Dream now opens dedicated lint PRs with <code>meta/lint-report.md</code> and <code>meta/lint-state.json</code>; those lint branches are distinct from the normal L1 fact-snapshot PR path.</li>
+<li>Remote/hybrid Dream now opens dedicated lint PRs for <code>meta/lint-report.md</code> while syncing <code>meta/lint-state.json</code> to <code>main</code> as operational cadence state, so lint PRs stay non-blocking without reopening on every run.</li>
 <li><code>audit --rederive</code> now opens governed correction proposal branches/PRs when it finds drift, but the re-extraction itself is still the shipped native session-derive path rather than a model-selectable deep re-derivation workflow.</li>
 <li>Branch protection, approval gating, and other GitHub governance hardening remain partial/experimental outside the shipped local-first core.</li>
 </ul>
