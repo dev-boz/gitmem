@@ -15,6 +15,7 @@ from umx.dream.l2_review import (
     REVIEW_COMMENT_MARKER,
     anthropic_l2_reviewer,
     claude_cli_l2_reviewer,
+    nvidia_l2_reviewer,
     normalize_l2_reviewer_provider,
     select_l2_reviewer,
 )
@@ -218,6 +219,7 @@ def test_select_l2_reviewer_resolves_known_aliases() -> None:
     assert select_l2_reviewer("claude-cli") is claude_cli_l2_reviewer
     assert select_l2_reviewer("Claude-Code") is claude_cli_l2_reviewer
     assert select_l2_reviewer("oauth") is claude_cli_l2_reviewer
+    assert select_l2_reviewer("nvidia") is nvidia_l2_reviewer
 
 
 def test_select_l2_reviewer_rejects_unknown_provider() -> None:
@@ -341,6 +343,7 @@ def test_normalize_l2_reviewer_provider_aliases() -> None:
     assert normalize_l2_reviewer_provider(None) is None
     assert normalize_l2_reviewer_provider("anthropic") == "anthropic"
     assert normalize_l2_reviewer_provider("oauth") == "claude-cli"
+    assert normalize_l2_reviewer_provider("nvidia-api") == "nvidia"
 
 
 def test_cli_dream_l2_routes_provider_override(monkeypatch, project_dir) -> None:

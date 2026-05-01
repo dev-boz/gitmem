@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from umx.cli import main
-from umx.config import default_config
+from umx.config import default_config, save_config
 from umx.git_ops import git_add_and_commit
+from umx.governance import assert_governance_pr_body
 from umx.memory import add_fact, load_all_facts
 from umx.models import (
     ConsolidationStatus,
@@ -20,6 +22,7 @@ from umx.models import (
     Verification,
 )
 from umx.tombstones import load_tombstones
+from umx.scope import config_path
 
 
 def _make_fact(
@@ -166,6 +169,60 @@ def test_audit_compare_derived() -> None:
     assert result["matching"] == 1  # "postgres runs on 5433"
     assert result["missing_from_existing"] == 1  # "celery worker count is 4"
     assert result["missing_from_rederived"] == 1  # "redis cache is enabled"
+
+
+def test_audit_rederive_opens_correction_pr(project_dir: Path, project_repo: Path, monkeypatch) -> None:
+    from umx.dream.pipeline import DreamPipeline
+    from umx.sessions import write_session
+
+    write_session(
+        project_repo,
+        {"session_id": "2026-01-15-rederive-pr"},
+        [
+            {"role": "assistant", "content": "The API server runs on port 8080 for local development."},
+        ],
+        config=default_config(),
+    )
+    add_fact(project_repo, _make_fact("E2", "redis cache is enabled"), auto_commit=False)
+    git_add_and_commit(project_repo, message="seed audit drift baseline")
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    proposals = []
+    monkeypatch.setattr(
+        DreamPipeline,
+        "_push_and_open_pr",
+        lambda self, proposal: proposals.append(proposal) or 23,
+    )
+
+    result = CliRunner().invoke(main, ["audit", "--cwd", str(project_dir), "--rederive"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["matching"] == 0
+    assert payload["missing_from_existing"] >= 1
+    assert payload["missing_from_rederived"] == 1
+    assert payload["correction_pr"]["status"] == "opened"
+    assert payload["correction_pr"]["pr_number"] == 23
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.branch.startswith("proposal/rederive-correction-")
+    pr_payload = assert_governance_pr_body(proposal.body)
+    assert pr_payload is not None
+    assert len(pr_payload["added"]) >= 1
+    assert {entry["fact_id"] for entry in pr_payload["tombstoned"]} == {"E2"}
+
+    current_branch = subprocess.run(
+        ["git", "-C", str(project_repo), "rev-parse", "--abbrev-ref", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert current_branch.stdout.strip() == "main"
+    assert {fact.fact_id for fact in load_all_facts(project_repo, include_superseded=False)} == {"E2"}
 
 
 # ── import tests ─────────────────────────────────────────────────

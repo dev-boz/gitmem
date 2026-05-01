@@ -792,8 +792,9 @@ def collect_cmd(
     "review_provider",
     default=None,
     help=(
-        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY) "
-        "or 'claude-cli' (uses Claude Code CLI OAuth via `claude -p`)"
+        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY), "
+        "'nvidia' (requires NVIDIA_API_KEY), or 'claude-cli' "
+        "(uses Claude Code CLI OAuth via `claude -p`)"
     ),
 )
 def dream_cmd(
@@ -1135,8 +1136,15 @@ def audit_cmd(
     proposal_key: str | None,
     session_ids: tuple[str],
 ) -> None:
-    from umx.audit import audit_report, compare_derived, rederive_from_sessions
+    from umx.audit import (
+        audit_report,
+        compare_derived,
+        compare_derived_facts,
+        materialize_rederive_correction_branch,
+        rederive_from_sessions,
+    )
     from umx.cross_project import build_cross_project_promotion_report, cross_project_audit_report
+    from umx.dream.pipeline import DreamPipeline
 
     cfg = _cfg()
     if proposal_key and not cross_project:
@@ -1170,6 +1178,45 @@ def audit_cmd(
         rederived = rederive_from_sessions(repo, session_ids=ids, config=cfg)
         existing = load_all_facts(repo, include_superseded=False)
         comparison = compare_derived(existing, rederived)
+        matching, missing_from_existing_facts, missing_from_rederived_facts = compare_derived_facts(
+            existing,
+            rederived,
+        )
+        _ = matching
+        if missing_from_existing_facts or missing_from_rederived_facts:
+            proposal, error = materialize_rederive_correction_branch(
+                repo,
+                added_facts=missing_from_existing_facts,
+                tombstoned_facts=missing_from_rederived_facts,
+                session_ids=ids,
+                config=cfg,
+            )
+            if proposal is None:
+                comparison["correction_pr"] = {
+                    "status": "error" if error else "not-needed",
+                    "reason": error,
+                }
+            else:
+                pipeline = DreamPipeline(cwd, config=cfg)
+                pr_number = pipeline._push_and_open_pr(proposal)
+                payload = {
+                    "status": "opened" if pr_number is not None else "created-local-branch",
+                    "title": proposal.title,
+                    "branch": proposal.branch,
+                    "labels": proposal.labels,
+                    "files_changed": proposal.files_changed,
+                }
+                if pr_number is not None:
+                    payload["pr_number"] = pr_number
+                if pipeline._push_block_reason:
+                    payload["status"] = "error"
+                    payload["reason"] = pipeline._push_block_reason
+                comparison["correction_pr"] = payload
+        else:
+            comparison["correction_pr"] = {
+                "status": "not-needed",
+                "reason": "no re-derivation drift detected",
+            }
         click.echo(json.dumps(comparison, sort_keys=True))
     else:
         report = audit_report(repo, cfg)
@@ -1453,8 +1500,9 @@ def eval_group() -> None:
     "provider",
     default=None,
     help=(
-        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY) "
-        "or 'claude-cli' (uses Claude Code CLI OAuth via `claude -p`)"
+        "L2 reviewer provider: 'anthropic' (default, requires ANTHROPIC_API_KEY), "
+        "'nvidia' (requires NVIDIA_API_KEY), or 'claude-cli' "
+        "(uses Claude Code CLI OAuth via `claude -p`)"
     ),
 )
 def eval_l2_review_cmd(
@@ -2853,6 +2901,7 @@ def capture_amp_cmd(
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option(
     "--raw",
+    "--all",
     is_flag=True,
     default=False,
     help="Search raw session files instead of the fact index.",

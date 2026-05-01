@@ -264,7 +264,13 @@ Use the launch checklist to roll those records up into the final **works persona
 
 ### L2 reviewer provider note
 
-`gitmem eval l2-review` defaults to the Anthropic API and requires `ANTHROPIC_API_KEY`. To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass `--provider claude-cli`:
+`gitmem eval l2-review` defaults to the Anthropic API and requires `ANTHROPIC_API_KEY`. To run the same eval against NVIDIA's API instead, pass `--provider nvidia` and export `NVIDIA_API_KEY`:
+
+```bash
+gitmem eval l2-review --provider nvidia > artifacts/release-gates/$stamp/local/l2-review.nvidia.json
+```
+
+To run the same eval against the operator's existing Claude Code OAuth session instead of an API key, install the Claude Code CLI, sign in once, and pass `--provider claude-cli`:
 
 ```bash
 gitmem eval l2-review --provider claude-cli > artifacts/release-gates/$stamp/local/l2-review.smoke.json
@@ -277,6 +283,8 @@ The same provider switch now works on live PR review runs:
 ```bash
 gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42 --provider claude-cli
 ```
+
+The shipped GitHub Actions L2 workflow template now pins the remote review lane to `--provider nvidia` and expects `NVIDIA_API_KEY` in repository secrets.
 
 Keep external frameworks optional. If you want DeepEval or another reporting layer, ingest the emitted JSON artifacts there rather than adding framework-specific runtime dependencies to the core gitmem path.
 

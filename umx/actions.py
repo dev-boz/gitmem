@@ -108,11 +108,11 @@ L2_WORKFLOW_TEMPLATE = dedent(
           - name: Install gitmem
             run: __WORKFLOW_INSTALL_COMMAND__
           - name: Run L2 review
-            run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }}
+            run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }} --provider nvidia
             env:
               GH_TOKEN: ${{ github.token }}
-              ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-    """
+              NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+     """
 ).replace("__L2_REVIEW_CONDITION__", _l2_review_condition()).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION).replace(
     "__WORKFLOW_INSTALL_COMMAND__", WORKFLOW_INSTALL_COMMAND
 )

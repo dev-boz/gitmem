@@ -15,20 +15,8 @@ from umx.migrations import inspect_fact_file_schema
 from umx.metrics import compute_metrics, health_flags
 from umx.schema import detect_schema_state, repair_schema
 from umx.search_semantic import embeddings_available, inspect_embedding_cache_state
+from umx.sessions import quarantine_summary
 from umx.scope import find_orphaned_scoped_memory, find_project_root, get_umx_home, project_memory_dir
-
-
-def _quarantine_summary(repo_dir: Path) -> dict[str, object]:
-    quarantine_dir = repo_dir / "local" / "quarantine"
-    if not quarantine_dir.exists():
-        return {"count": 0, "files": []}
-    files = sorted(
-        path.relative_to(repo_dir).as_posix()
-        for path in quarantine_dir.iterdir()
-        if path.is_file() and not path.name.endswith(".meta.json")
-    )
-    return {"count": len(files), "files": files[:10]}
-
 
 def _dream_lock_summary(repo_dir: Path, *, fix: bool) -> tuple[dict[str, Any], list[str]]:
     lock = DreamLock(repo_dir)
@@ -135,7 +123,7 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         ]
         result["dream_lock"] = dream_lock
         result["processing"] = processing
-        result["quarantine"] = _quarantine_summary(repo_dir)
+        result["quarantine"] = quarantine_summary(repo_dir)
         result["embeddings"] = {
             "backend": cfg.search.backend,
             "provider": cfg.search.embedding.provider,

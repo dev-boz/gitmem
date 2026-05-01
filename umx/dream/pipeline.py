@@ -16,7 +16,14 @@ from umx.dream.consolidation import stabilize_facts
 from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
 from umx.dream.gates import DreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
-from umx.dream.lint import generate_lint_findings, mark_lint_complete, should_run as should_run_lint, write_lint_report
+from umx.dream.lint import (
+    generate_lint_findings,
+    lint_report_path,
+    lint_state_path,
+    mark_lint_complete,
+    should_run as should_run_lint,
+    write_lint_report,
+)
 from umx.dream.notice import append_notice
 from umx.dream.pr_render import GovernancePRBodyError
 from umx.dream.processing import (
@@ -65,6 +72,7 @@ from umx.governance import (
     desired_governance_labels,
     filter_non_operational_sync_paths,
     generate_l1_pr,
+    generate_lint_pr,
     generate_l2_review,
     is_governed_fact_path,
     review_audit_note,
@@ -384,7 +392,13 @@ class DreamPipeline:
             else:
                 path.unlink(missing_ok=True)
 
-    def _commit_to_branch(self, branch_name: str, message: str) -> bool:
+    def _commit_to_branch(
+        self,
+        branch_name: str,
+        message: str,
+        *,
+        paths: list[Path] | None = None,
+    ) -> bool:
         """Commit the current memory snapshot to a feature branch."""
         original_branch = git_current_branch(self.repo_dir)
         if not git_create_branch(self.repo_dir, branch_name):
@@ -393,6 +407,7 @@ class DreamPipeline:
             self._strip_operational_changes_from_branch()
             committed = git_add_and_commit(
                 self.repo_dir,
+                paths=paths,
                 message=message,
                 config=self.config,
             )
@@ -406,6 +421,67 @@ class DreamPipeline:
     def _generate_pr(self, facts: list[Fact], session_ids: list[str]) -> PRProposal:
         """Create PR proposal for governance review."""
         return generate_l1_pr(facts, session_ids, self.repo_dir)
+
+    def _generate_lint_pr(self, findings: list[dict[str, str]]) -> PRProposal:
+        return generate_lint_pr(findings, self.repo_dir)
+
+    def _lint_branch_paths(self, branch_changes: list[Path]) -> list[Path]:
+        lint_relatives = {
+            lint_report_path(self.repo_dir).relative_to(self.repo_dir).as_posix(),
+            lint_state_path(self.repo_dir).relative_to(self.repo_dir).as_posix(),
+        }
+        lint_paths = [
+            path
+            for path in branch_changes
+            if path.relative_to(self.repo_dir).as_posix() in lint_relatives
+        ]
+        for candidate in (
+            lint_report_path(self.repo_dir),
+            lint_state_path(self.repo_dir),
+        ):
+            if candidate.exists() and candidate not in lint_paths:
+                lint_paths.append(candidate)
+        return lint_paths
+
+    @staticmethod
+    def _proposal_payload(proposal: PRProposal) -> dict[str, object]:
+        return {
+            "title": proposal.title,
+            "branch": proposal.branch,
+            "labels": list(proposal.labels),
+            "files_changed": list(proposal.files_changed),
+        }
+
+    def _open_lint_pr(
+        self,
+        findings: list[dict[str, str]],
+        lint_paths: list[Path],
+        lint_status: dict[str, object],
+    ) -> tuple[dict[str, object], PRProposal | None, int | None]:
+        if not lint_paths:
+            return lint_status, None, None
+        proposal = self._generate_lint_pr(findings)
+        updated_lint = dict(lint_status)
+        updated_lint["pr_proposal"] = self._proposal_payload(proposal)
+        if not self._commit_to_branch(
+            proposal.branch,
+            message="dream(lint): update lint report",
+            paths=lint_paths,
+        ):
+            updated_lint["pr_status"] = "error"
+            updated_lint["pr_error"] = f"failed to create lint proposal branch {proposal.branch}"
+            return updated_lint, proposal, None
+        pr_number = self._push_and_open_pr(proposal)
+        if self._push_block_reason:
+            updated_lint["pr_status"] = "error"
+            updated_lint["pr_error"] = self._push_block_reason
+            self._push_block_reason = None
+        elif pr_number is None:
+            updated_lint["pr_status"] = "created-local-branch"
+        else:
+            updated_lint["pr_status"] = "opened"
+            updated_lint["pr_number"] = pr_number
+        return updated_lint, proposal, pr_number
 
     def _github_repo_ref(self):
         from umx.github_ops import resolve_repo_ref
@@ -1249,6 +1325,8 @@ class DreamPipeline:
                     provider_summary = "native-only"
 
             pr_proposal = None
+            lint_pr_proposal = None
+            lint_pr_number = None
 
             if mode == "remote":
                 # Remote: compute the full snapshot locally, then commit it on a PR branch.
@@ -1256,11 +1334,17 @@ class DreamPipeline:
                 lock.heartbeat()
                 new_facts = [f for f in final_facts if f.fact_id in self.new_fact_ids]
                 branch_changes = self._branch_changes()
+                lint_paths = self._lint_branch_paths(branch_changes) if lint_ran else []
+                branch_changes = [path for path in branch_changes if path not in lint_paths]
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
                     pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
-                    if self._commit_to_branch(pr_proposal.branch, message="dream(l1): update memory snapshot"):
+                    if self._commit_to_branch(
+                        pr_proposal.branch,
+                        message="dream(l1): update memory snapshot",
+                        paths=branch_changes,
+                    ):
                         pr_number = self._push_and_open_pr(pr_proposal)
                     if self._push_block_reason:
                         fail_processing_run(
@@ -1279,6 +1363,12 @@ class DreamPipeline:
                             pr_proposal=pr_proposal,
                             lint=lint_status,
                         )
+                if lint_ran:
+                    lint_status, lint_pr_proposal, lint_pr_number = self._open_lint_pr(
+                        findings,
+                        lint_paths,
+                        lint_status,
+                    )
                 if self._gathered_session_ids:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
@@ -1300,6 +1390,10 @@ class DreamPipeline:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
                         msg += f" (#{pr_number})"
+                if lint_pr_proposal:
+                    msg += f", lint PR: {lint_pr_proposal.title}"
+                    if lint_pr_number:
+                        msg += f" (#{lint_pr_number})"
                 result = DreamResult(
                     status="ok",
                     added=len(self.new_fact_ids),
@@ -1317,12 +1411,15 @@ class DreamPipeline:
                     added=result.added,
                     pruned=result.pruned,
                     message=result.message,
-                    pr_branch=pr_proposal.branch if pr_proposal else None,
-                    pr_number=pr_number,
+                    pr_branch=(pr_proposal or lint_pr_proposal).branch if (pr_proposal or lint_pr_proposal) else None,
+                    pr_number=pr_number or lint_pr_number,
                     dream_provider=getattr(self, "_dream_provider", None),
                     dream_partial=getattr(self, "_dream_partial", False),
                 )
-                if self.config.org and not self._sync_processing_log_to_main("umx: dream processing complete"):
+                if self.config.org and not self._push_paths_to_main(
+                    [processing_log_path(self.repo_dir)],
+                    "umx: dream processing complete",
+                ):
                     return DreamResult(
                         status="error",
                         added=result.added,
@@ -1340,11 +1437,17 @@ class DreamPipeline:
                 lock.heartbeat()
                 new_facts = [f for f in final_facts if f.fact_id in self.new_fact_ids]
                 branch_changes = self._branch_changes()
+                lint_paths = self._lint_branch_paths(branch_changes) if lint_ran else []
+                branch_changes = [path for path in branch_changes if path not in lint_paths]
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
                     pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
-                    if self._commit_to_branch(pr_proposal.branch, message="dream(l1): update memory snapshot"):
+                    if self._commit_to_branch(
+                        pr_proposal.branch,
+                        message="dream(l1): update memory snapshot",
+                        paths=branch_changes,
+                    ):
                         pr_number = self._push_and_open_pr(pr_proposal)
                     if self._push_block_reason:
                         fail_processing_run(
@@ -1363,6 +1466,12 @@ class DreamPipeline:
                             pr_proposal=pr_proposal,
                             lint=lint_status,
                         )
+                if lint_ran:
+                    lint_status, lint_pr_proposal, lint_pr_number = self._open_lint_pr(
+                        findings,
+                        lint_paths,
+                        lint_status,
+                    )
                 if self._gathered_session_ids:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
@@ -1376,6 +1485,10 @@ class DreamPipeline:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
                         msg += f" (#{pr_number})"
+                if lint_pr_proposal:
+                    msg += f", lint PR: {lint_pr_proposal.title}"
+                    if lint_pr_number:
+                        msg += f" (#{lint_pr_number})"
                 result = DreamResult(
                     status="ok",
                     added=len(self.new_fact_ids),
@@ -1393,8 +1506,8 @@ class DreamPipeline:
                     added=result.added,
                     pruned=result.pruned,
                     message=result.message,
-                    pr_branch=pr_proposal.branch if pr_proposal else None,
-                    pr_number=pr_number,
+                    pr_branch=(pr_proposal or lint_pr_proposal).branch if (pr_proposal or lint_pr_proposal) else None,
+                    pr_number=pr_number or lint_pr_number,
                     dream_provider=getattr(self, "_dream_provider", None),
                     dream_partial=getattr(self, "_dream_partial", False),
                 )

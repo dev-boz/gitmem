@@ -33,7 +33,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | Command | Purpose | Common flags |
 |---|---|---|
 | `gitmem dream` | Run Dream or review a governed PR | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier l2`, `--pr`, `--head-sha`, `--provider` |
-| `gitmem search` | Search facts, or raw sessions with `--raw` | `--cwd`, `--raw` |
+| `gitmem search` | Search facts, or raw sessions with `--raw` / `--all` | `--cwd`, `--raw`, `--all` |
 | `gitmem inject` | Build prompt-ready memory context | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--file`, `--max-tokens` |
 | `gitmem view` | List facts, inspect one fact, or launch viewer | `--cwd`, `--list`, `--fact`, `--min-strength` |
 | `gitmem tui` | Launch the local viewer | `--cwd` |
@@ -61,7 +61,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | Command | Purpose | Common flags |
 |---|---|---|
 | `gitmem sync` | Sync project and user memory repos to their configured remotes | `--cwd` |
-| `gitmem audit` | Audit a repo or inspect cross-project promotion candidates | `--cwd`, `--rederive`, `--session`, `--cross-project`, `--proposal-key` |
+| `gitmem audit` | Audit a repo, re-derive facts, or inspect cross-project promotion candidates | `--cwd`, `--rederive`, `--session`, `--cross-project`, `--proposal-key` |
 | `gitmem propose` | Materialize, push, or open cross-project promotion PRs | `--cwd`, `--cross-project`, `--proposal-key`, `--push`, `--open-pr` |
 | `gitmem init-actions` | Write workflow templates into a target directory | `--dir` |
 | `gitmem eval l2-review` | Run the L2 review eval harness | `--cases`, `--case`, `--min-pass-rate`, `--provider` |
@@ -127,6 +127,8 @@ That means a release-grade HotpotQA rerun can point straight at a filtered raw b
 
 `gitmem eval beir` accepts either a raw BEIR dataset directory or a `beir-manifest` file with relative paths plus pinned `query_ids`; a checked-in tiny SciFact-shaped fixture lives under `tests/eval/beir/scifact-mini/`. `gitmem eval locomo` accepts either the official raw LoCoMo dataset JSON (`locomo10.json`) or a normalized slice file. `gitmem eval convomem` accepts either a normalized slice file, a raw ConvoMem sample file, or a directory tree of raw ConvoMem sample files. `gitmem eval longbench-v2` accepts the official upstream `data.json` format or a filtered slice file with the same fields. `gitmem eval ruler` accepts either a normalized slice file or a `ruler-manifest` that stays under its local dataset root and lists task entries with `task`, `category`, `context_length`, `scorer`, and relative `path` values pointing at upstream-style JSONL task files containing `input`, `outputs`, and `length`; `base_task` and `weight` are optional. A tiny checked-in fixture lives under `tests/eval/ruler/`. These adapters are still **WIP benchmark surfaces**, not full end-to-end Dream-cycle evaluations.
 
+`gitmem audit --rederive` still compares the accepted fact set against facts re-extracted from immutable sessions, but it now also materializes a governed correction proposal branch automatically when drift is found. The JSON payload includes a `correction_pr` object describing the proposed branch and, when available, the opened PR number.
+
 For 1.0, release stays blocked until both claims are signed off: **it works personally** and **it works on benchmarks**. Use the [operations runbook](ops-runbook.md) for the step-by-step workflow and the [launch checklist](launch-checklist.md) for the final ship/no-ship record.
 
 ### L2 reviewer providers
@@ -134,9 +136,10 @@ For 1.0, release stays blocked until both claims are signed off: **it works pers
 `gitmem eval l2-review` and `gitmem dream --tier l2` choose a reviewer via `--provider`:
 
 - `--provider anthropic` (default) — direct Anthropic API. Requires `ANTHROPIC_API_KEY` in the environment.
+- `--provider nvidia` — direct NVIDIA API. Requires `NVIDIA_API_KEY` in the environment. When `dream.l2_model` is still at the Anthropic default, gitmem falls back to `meta/llama-3.3-70b-instruct`.
 - `--provider claude-cli` — shells out to the locally installed Claude Code CLI in headless `-p` mode (`claude --print --output-format json`). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with `UMX_CLAUDE_CLI_BIN`, and the per-call timeout with `UMX_CLAUDE_CLI_TIMEOUT` (seconds, default 180).
 
-Both providers emit the same JSON payload shape and the same `prompt_version`; only the `prompt_id` differs (`anthropic-l2-review` vs `claude-cli-l2-review`) so historical runs stay comparable within a provider.
+All three providers emit the same JSON payload shape and the same `prompt_version`; only the `prompt_id` differs (`anthropic-l2-review`, `nvidia-l2-review`, or `claude-cli-l2-review`) so historical runs stay comparable within a provider.
 
 ## Maintenance and recovery
 

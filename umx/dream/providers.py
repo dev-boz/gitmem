@@ -22,6 +22,7 @@ PROVIDER_API_ENV_VARS = {
     "glm": "GLM_API_KEY",
     "groq": "GROQ_API_KEY",
     "minimax": "MINIMAX_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
 }
 
@@ -257,6 +258,10 @@ def run_l2_review_with_providers(
         from umx.dream.l2_review import anthropic_l2_reviewer
 
         registered["anthropic"] = anthropic_l2_reviewer
+    if "nvidia" not in registered:
+        from umx.dream.l2_review import nvidia_l2_reviewer
+
+        registered["nvidia"] = nvidia_l2_reviewer
     if "claude-cli" not in registered:
         from umx.dream.l2_review import claude_cli_l2_reviewer
 
@@ -395,8 +400,10 @@ def _preferred_review_provider(
     env: Mapping[str, str],
     reviewers: Mapping[str, ReviewProviderReviewer],
 ) -> str | None:
-    if "anthropic" in reviewers and env.get(PROVIDER_API_ENV_VARS["anthropic"]):
-        return "anthropic"
+    for provider in ("nvidia", "anthropic"):
+        env_var = PROVIDER_API_ENV_VARS.get(provider)
+        if provider in reviewers and env_var and env.get(env_var):
+            return provider
     return None
 
 
@@ -414,12 +421,9 @@ def _required_review_provider(
                 f"(expected one of: {', '.join(sorted(reviewers))})"
             )
         return name
-    if "anthropic" not in reviewers:
-        return None
-    if env.get(PROVIDER_API_ENV_VARS["anthropic"]):
-        return "anthropic"
-    if config.dream.paid_provider == "anthropic":
-        return "anthropic"
+    configured_provider = (config.dream.paid_provider or "").strip().lower()
+    if configured_provider in reviewers:
+        return configured_provider
     return None
 
 

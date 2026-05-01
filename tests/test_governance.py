@@ -32,6 +32,7 @@ from umx.governance import (
     LABEL_STATE_EXTRACTION,
     LABEL_STATE_REVIEWED,
     LABEL_TYPE_DELETION,
+    LABEL_TYPE_LINT,
     LABEL_TYPE_PROMOTION,
     PRProposal,
     assert_governance_pr_body,
@@ -550,6 +551,82 @@ def test_dream_remote_branch_excludes_session_history(
         check=True,
     )
     assert status.stdout.strip() == ""
+
+
+def test_remote_dream_opens_dedicated_lint_pr_without_blocking_l1(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.inject import emit_gap_signal
+
+    remote = tmp_path / "remote-lint.git"
+    _connect_origin(project_repo, remote)
+    emit_gap_signal(
+        project_repo,
+        query="devenv postgres",
+        resolution_context="testing",
+        proposed_fact="remote branch keeps lint isolated from the L1 proposal",
+        session="2026-01-15-remote-lint-gap",
+    )
+
+    proposals: list[PRProposal] = []
+    monkeypatch.setattr(
+        DreamPipeline,
+        "_push_and_open_pr",
+        lambda self, proposal: proposals.append(proposal) or len(proposals),
+    )
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    result = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert result.status == "ok"
+    assert result.pr_proposal is not None
+    assert len(proposals) == 2
+    lint_proposal = next(proposal for proposal in proposals if LABEL_TYPE_LINT in proposal.labels)
+    l1_proposal = next(proposal for proposal in proposals if LABEL_TYPE_LINT not in proposal.labels)
+    assert result.pr_proposal.branch == l1_proposal.branch
+    assert result.lint["pr_status"] == "opened"
+    assert result.lint["pr_number"] == 2
+    assert result.lint["pr_proposal"]["branch"] == lint_proposal.branch
+    assert result.lint["pr_proposal"]["files_changed"] == ["meta/lint-report.md", "meta/lint-state.json"]
+
+    lint_diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_repo),
+            "diff",
+            "--name-only",
+            f"main...{lint_proposal.branch}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert sorted(line for line in lint_diff.stdout.splitlines() if line) == [
+        "meta/lint-report.md",
+        "meta/lint-state.json",
+    ]
+
+    l1_diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(project_repo),
+            "diff",
+            "--name-only",
+            f"main...{l1_proposal.branch}",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "meta/lint-report.md" not in l1_diff.stdout
+    assert "meta/lint-state.json" not in l1_diff.stdout
 
 
 def test_dream_l2_review_approves_but_blocks_merge_without_human_approval(

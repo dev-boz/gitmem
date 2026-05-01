@@ -324,8 +324,8 @@ def test_dream_invalid_last_lint_is_treated_as_due(project_dir: Path, project_re
 
     assert result.status == "ok"
     assert result.lint == {"ran": True, "reason": "first-run"}
-    payload = json.loads((project_repo / ".umx.json").read_text())
-    assert payload["dream"]["last_lint"].endswith("Z")
+    payload = json.loads((project_repo / "meta" / "lint-state.json").read_text())
+    assert payload["last_lint"].endswith("Z")
 
 
 def test_dream_hybrid_search_prewarms_embeddings_for_final_fact_ids(

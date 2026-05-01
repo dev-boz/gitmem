@@ -140,8 +140,8 @@ def test_cli_dream_force_lint_overrides_never_interval(
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["lint"] == {"ran": True, "reason": "forced"}
-    cache_payload = json.loads((project_repo / ".umx.json").read_text())
-    assert "last_lint" in cache_payload["dream"]
+    cache_payload = json.loads((project_repo / "meta" / "lint-state.json").read_text())
+    assert "last_lint" in cache_payload
 
 
 def test_cli_collect_stdin_writes_session(project_dir: Path, project_repo: Path) -> None:

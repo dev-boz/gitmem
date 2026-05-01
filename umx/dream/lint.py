@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from umx.dream.anchors import code_anchor_status
 from umx.dream.conflict import facts_conflict
 from umx.models import Fact, SourceType, parse_datetime
 from umx.scope import find_orphaned_scoped_memory
-from umx.search_semantic import load_semantic_cache, save_semantic_cache
+from umx.search_semantic import load_semantic_cache
 
 
 _LINT_INTERVALS = {
@@ -27,12 +28,36 @@ def _dream_cache(repo_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def lint_state_path(repo_dir: Path) -> Path:
+    return repo_dir / "meta" / "lint-state.json"
+
+
+def lint_report_path(repo_dir: Path) -> Path:
+    return repo_dir / "meta" / "lint-report.md"
+
+
 def read_last_lint(repo_dir: Path) -> datetime | None:
-    payload = _dream_cache(repo_dir)
-    dream = payload.get("dream")
-    if not isinstance(dream, dict):
+    path = lint_state_path(repo_dir)
+    value: str | None = None
+    if path.exists():
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict):
+            candidate = payload.get("last_lint")
+            if isinstance(candidate, str):
+                value = candidate
+    if value is None:
+        payload = _dream_cache(repo_dir)
+        dream = payload.get("dream")
+        if not isinstance(dream, dict):
+            return None
+        legacy = dream.get("last_lint")
+        if isinstance(legacy, str):
+            value = legacy
+    if value is None:
         return None
-    value = dream.get("last_lint")
     if not isinstance(value, str):
         return None
     try:
@@ -45,13 +70,16 @@ def read_last_lint(repo_dir: Path) -> datetime | None:
 
 
 def mark_lint_complete(repo_dir: Path, when: datetime) -> None:
-    payload = _dream_cache(repo_dir)
-    dream = payload.setdefault("dream", {})
-    if not isinstance(dream, dict):
-        dream = {}
-        payload["dream"] = dream
-    dream["last_lint"] = when.astimezone(UTC).isoformat().replace("+00:00", "Z")
-    save_semantic_cache(repo_dir, payload)
+    path = lint_state_path(repo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {"last_lint": when.astimezone(UTC).isoformat().replace("+00:00", "Z")},
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def should_run(
@@ -135,7 +163,7 @@ def generate_lint_findings(
 
 
 def write_lint_report(repo_dir: Path, findings: list[dict[str, str]]) -> Path:
-    path = repo_dir / "meta" / "lint-report.md"
+    path = lint_report_path(repo_dir)
     lines = ["# Lint Report", ""]
     if not findings:
         lines.append("No findings.")

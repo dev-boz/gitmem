@@ -387,6 +387,32 @@ def test_cli_status_counts_session_files_and_preserves_pending_counter(project_d
     assert payload["pending_session_count"] == 7
 
 
+def test_cli_status_surfaces_quarantine_summary_and_warning(project_dir, project_repo) -> None:
+    quarantine_dir = project_repo / "local" / "quarantine"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+    (quarantine_dir / "sess-1.jsonl").write_text('{"_meta":{"session_id":"sess-1"}}\n')
+    (quarantine_dir / "push-safety-20260501T000000Z.json").write_text(
+        json.dumps({"findings": []}, sort_keys=True) + "\n"
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(main, ["status", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["quarantine"] == {
+        "count": 2,
+        "files": [
+            "local/quarantine/push-safety-20260501T000000Z.json",
+            "local/quarantine/sess-1.jsonl",
+        ],
+    }
+    assert payload["ok"] is False
+    assert any("Quarantine has 2 unresolved item(s)" in flag for flag in payload["flags"])
+    quarantine_guidance = next(item for item in payload["guidance"] if item["metric"] == "quarantine")
+    assert "push-safety reports" in quarantine_guidance["why_it_matters"]
+
+
 def test_cli_status_surfaces_git_signing_config(project_dir, umx_home) -> None:
     cfg = default_config()
     cfg.git.sign_commits = True

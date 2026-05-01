@@ -71,7 +71,13 @@ That is the fastest summary for branch-head governance state.
 gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42
 ```
 
-To drive the live review through the local Claude Code CLI instead of `ANTHROPIC_API_KEY`:
+To drive the live review through NVIDIA instead of the default Anthropic API:
+
+```bash
+gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42 --provider nvidia
+```
+
+To drive the live review through the local Claude Code CLI instead of an API key:
 
 ```bash
 gitmem dream --cwd /path/to/project --mode remote --tier l2 --pr 42 --provider claude-cli

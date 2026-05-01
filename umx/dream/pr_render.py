@@ -156,6 +156,29 @@ def build_fact_delta_for_tombstones(
     return FactDeltaBlock(tombstoned=tombstoned)
 
 
+def build_fact_delta_for_correction(
+    *,
+    added_facts: list[Fact],
+    tombstoned_facts: list[Fact],
+    repo_dir: Path,
+) -> FactDeltaBlock:
+    added = tuple(
+        _entry_from_fact(fact, repo_dir)
+        for fact in sorted(
+            added_facts,
+            key=lambda item: (_relative_fact_path(item, repo_dir), item.fact_id),
+        )
+    )
+    tombstoned = tuple(
+        _entry_from_fact(fact, repo_dir)
+        for fact in sorted(
+            tombstoned_facts,
+            key=lambda item: (_relative_fact_path(item, repo_dir), item.fact_id),
+        )
+    )
+    return FactDeltaBlock(added=added, tombstoned=tombstoned)
+
+
 def render_governance_pr_body(
     *,
     heading: str,

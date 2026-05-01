@@ -1,11 +1,11 @@
 # CLI spec parity audit
 
-This matrix records the v0.9.2 parity pass between `gitmem-spec-v0_9.md` §25 and `umx/cli.py`. Status legend:
+This matrix records the v0.9.2 CLI-surface parity pass between `gitmem-spec-v0_9.md` §25 and `umx/cli.py`. Status legend:
 
 - **Match** — spec and code agree for the shipped surface.
 - **Documented** — auxiliary shipped surface is referenced in the spec and enumerated here.
 
-There are no unresolved CLI divergences in this snapshot; draft-only flags were removed from the canonical spec surface rather than left unexplained.
+Within the audited CLI surface below, there are no unresolved command/flag divergences in this snapshot. This page does **not** claim full runtime/spec parity for broader Dream-governance behavior; those larger gaps still live in the main spec and implementation docs.
 
 ## Core commands
 
@@ -15,11 +15,11 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 | `init-project` | `--cwd`, `--slug`, `--yes` | `umx/cli.py:176-230` | Match | `--slug` bypasses prompting; `--yes` auto-suffixes collisions. |
 | `inject` | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--context-window`, `--expand-fact ...`, `--file ...`, `--max-tokens` | `umx/cli.py:233-289` | Match | Spec now mirrors the actual injection surface. |
 | `collect` | `--cwd`, `--tool`, `--file`, `--format`, `--role`, `--session-id`, `--meta ...`, `--dry-run` | `umx/cli.py:292-376` | Match | Spec updated from the earlier shorthand. |
-| `dream` | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier`, `--pr`, `--head-sha` | `umx/cli.py:379-429` | Match | `--force-lint` added in T1.1; L2 review flags documented explicitly. |
+| `dream` | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier`, `--pr`, `--head-sha`, `--provider` | `umx/cli.py:779-845` | Match | `--force-lint` added in T1.1; `--provider` documents the shipped L2 reviewer selection surface. |
 | `view` | `--cwd`, `--fact`, `--list`, `--min-strength` | `umx/cli.py:432-465` | Match | Replaced stale draft `--scope` surface. |
 | `tui` | `--cwd` | `umx/cli.py:468-478` | Match | No flag divergence. |
-| `status` | `--cwd` | `umx/cli.py:481-484` | Match | No flag divergence. |
-| `health` | `--cwd` | `umx/cli.py:487-506` | Match | Added to spec to reflect shipped diagnostics surface. |
+| `status` | `--cwd` | `umx/cli.py:916-919` | Match | No flag divergence. |
+| `health` | `--cwd` | `umx/cli.py:922-934` | Match | Added to spec to reflect shipped diagnostics surface. |
 | `conflicts` | `--cwd` | `umx/cli.py:509-515` | Match | No flag divergence. |
 | `gaps` | `--cwd` | `umx/cli.py:518-520` | Match | No flag divergence. |
 | `forget` | `--cwd`, `--fact`, `--topic`, `--governed` | `umx/cli.py:802-840` | Match | Governing a forget now routes fact or topic tombstones through proposal PR branches instead of direct writes. |
@@ -39,18 +39,21 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 | `archive-sessions` | `--cwd` | `umx/cli.py:887-896` | Match | Added to spec to reflect the shipped archive operation. |
 | `init-actions` | `--dir` | `umx/cli.py:899-905` | Match | Added to spec to reflect workflow-template scaffolding. |
 | `migrate-scope` | `--cwd`, `--from`, `--to` | `umx/cli.py:908-919` | Match | No flag divergence. |
-| `doctor` | `--cwd`, `--fix` | `umx/cli.py:915-919` | Match | Spec updated to include `--cwd`. |
+| `doctor` | `--cwd`, `--fix` | `umx/cli.py:1416-1420` | Match | Spec updated to include `--cwd`. |
+| `migrate` | `--cwd` | `umx/cli.py:1423-1434` | Match | Added to spec to reflect the shipped fact-file migration command. |
+| `export` | `--cwd`, `--out` | `umx/cli.py:2238-2249` | Match | Added to spec to reflect the shipped full-backup export command. |
 | `config` | `set redaction.patterns <value>` | `umx/cli.py:951-966` | Match | Validates a regex string or JSON array of regex strings and stores them under `sessions.redaction_patterns`. |
 | `secret` | `get <key>`, `set <key> <value>` | `umx/cli.py:1138-1165` | Match | No flag divergence. |
 | `import` | `--cwd`, `--adapter`, `--dry-run` | `umx/cli.py:1168-1195` | Match | Spec updated from `--tool` to the shipped adapter terminology. |
 | `mcp` | no flags | `umx/cli.py:1198-1203` | Match | Added to spec to reflect the shipped MCP server entrypoint. |
+| `search` | `--cwd`, `--raw` (`--all` alias) | `umx/cli.py:2852-2875` | Match | Spec updated so the cold-tier search example can use the shipped raw-session alias without diverging from the canonical `--raw` wording. |
 
 ## Auxiliary command groups
 
 | Family | Shipped subcommands / flags | Code location | Status | Notes |
 |---|---|---|---|---|
 | `capture` | `codex(--cwd,--file,--source-root,--dry-run)`, `copilot(--cwd,--file,--source-root,--dry-run)`, `claude-code(--cwd,--file,--source-root,--all,--dry-run)`, `gemini(--cwd,--file,--source-root,--all,--dry-run)`, `opencode(--cwd,--db,--session-id,--all,--dry-run)`, `amp(--cwd,--file,--source-root,--thread-id,--all,--dry-run)` | `umx/cli.py:1206-1635` | Documented | Auxiliary transcript-import surfaces referenced in the spec and enumerated here. |
-| `eval` | `l2-review(--cases,--case,--min-pass-rate,--provider)`, `inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)`, `long-memory(--cases,--case,--min-pass-rate,--search-limit)`, `retrieval(--cases,--case,--min-pass-rate,--top-k)` | `umx/cli.py:1273-1400` | Documented | On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. `l2-review --provider` selects between the Anthropic API and the Claude Code CLI (OAuth) reviewer. |
+| `eval` | `l2-review(--cases,--case,--min-pass-rate,--provider)`, `inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)`, `long-memory(--cases,--case,--min-pass-rate,--search-limit)`, `retrieval(--cases,--case,--min-pass-rate,--top-k)` | `umx/cli.py:1273-1400` | Documented | On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. `l2-review --provider` selects between Anthropic API, NVIDIA API, and Claude Code CLI (OAuth) reviewers. |
 | `hooks claude-code` | `print(--command)`, `install(--cwd,--scope,--command)`, `session-start(--payload-file)`, `pre-tool-use(--payload-file)`, `pre-compact(--payload-file)`, `session-end(--payload-file)` | `umx/cli.py:937-1022` | Documented | Hook-install and hook-dispatch helpers for Claude Code. |
 | `bridge` | `sync(--cwd,--target ...)`, `remove(--cwd,--target ...)`, `import(--cwd,--target ...,--topic,--dry-run)` | `umx/cli.py:1025-1078` | Documented | Legacy compatibility surface for project-repo bridge files. |
 | `shim` | `aider(--cwd,--output,--max-tokens)`, `generic(--cwd,--tool,--output,--max-tokens)`, `amp(--cwd,--output,--max-tokens)`, `cursor(--cwd,--output,--max-tokens)`, `jules(--cwd,--output,--max-tokens)`, `qodo(--cwd,--output,--max-tokens)` | `umx/cli.py:1081-1135` | Documented | Wrapper/shim helpers for tool integration. |
@@ -59,9 +62,17 @@ There are no unresolved CLI divergences in this snapshot; draft-only flags were 
 
 The parity pass intentionally aligned the spec to the shipped CLI instead of adding placeholder implementations for draft-only flags:
 
-- `audit --all --model` → removed from the canonical spec surface; the shipped audit path is `--rederive`, `--session`, and `--cross-project` / `--proposal-key`.
+- `audit --all --model` → removed from the canonical CLI surface; the shipped audit path is `--rederive`, `--session`, and `--cross-project` / `--proposal-key`.
 - `sync --all` → removed; sync is project-scoped and selected via `--cwd`.
 - `rebuild-index --force` → removed; the shipped explicit flag is `--embeddings`.
 - `view --scope` → removed; the shipped surface is `--fact` / `--list`.
 - `import --tool` → renamed in the spec to the shipped `--adapter`.
-- `health`, `setup-remote`, `archive-sessions`, `init-actions`, `mcp`, `capture`, `hooks`, `bridge`, and `shim` were added to the documented surface because they already ship in code.
+- `health`, `setup-remote`, `archive-sessions`, `init-actions`, `mcp`, `search`, `capture`, `hooks`, `bridge`, `shim`, `migrate`, and `export` were added to the documented surface because they already ship in code.
+
+## Known broader spec gaps
+
+These are outside the narrow CLI flag audit above:
+
+- Remote/hybrid Dream now opens dedicated lint PRs with `meta/lint-report.md` and `meta/lint-state.json`; those lint branches are distinct from the normal L1 fact-snapshot PR path.
+- `audit --rederive` now opens governed correction proposal branches/PRs when it finds drift, but the re-extraction itself is still the shipped native session-derive path rather than a model-selectable deep re-derivation workflow.
+- Branch protection, approval gating, and other GitHub governance hardening remain partial/experimental outside the shipped local-first core.

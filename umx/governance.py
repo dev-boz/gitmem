@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from umx.dream.pr_render import (
     GovernancePRBodyError,
     assert_governance_pr_body as assert_rendered_governance_pr_body,
+    build_fact_delta_for_correction,
     build_fact_delta_for_promotion,
     build_fact_delta_from_facts,
     build_fact_delta_for_tombstones,
@@ -95,6 +96,8 @@ GOVERNED_FACT_PREFIXES = ("facts/", "episodic/", "principles/")
 GOVERNED_FACT_FILES = frozenset({"MEMORY.md", "meta/tombstones.jsonl"})
 SESSION_PREFIX = "sessions/"
 OPERATIONAL_SYNC_FILES = frozenset({"meta/processing.jsonl"})
+LINT_REPORT_RELATIVE_PATH = "meta/lint-report.md"
+LINT_STATE_RELATIVE_PATH = "meta/lint-state.json"
 
 
 @dataclass(slots=True)
@@ -395,6 +398,143 @@ def generate_l1_pr(
         branch=branch,
         labels=desired_governance_labels(labels, lifecycle_label=LABEL_STATE_EXTRACTION),
         files_changed=files_changed,
+    )
+
+
+def generate_lint_pr(
+    findings: list[dict[str, str]],
+    repo_dir: Path,
+) -> PRProposal:
+    timestamp = datetime.now(tz=UTC)
+    title = f"[dream/lint] Lint report {timestamp.strftime('%Y-%m-%d')}"
+    summary_lines = [
+        f"**Date:** {timestamp.strftime('%Y-%m-%d')}",
+        f"**Findings:** {len(findings)}",
+        "",
+        "### Report",
+        "",
+        f"- Report file: `{LINT_REPORT_RELATIVE_PATH}`",
+        f"- State file: `{LINT_STATE_RELATIVE_PATH}`",
+        f"- Proposed by: `gitmem dream --force-lint`",
+        "",
+        "### Findings",
+        "",
+    ]
+    if not findings:
+        summary_lines.append("- No findings.")
+    else:
+        for finding in findings[:25]:
+            summary_lines.append(f"- **{finding['kind']}** {finding['message']}")
+        remaining = len(findings) - 25
+        if remaining > 0:
+            summary_lines.append(f"- ... (+{remaining} more)")
+    branch = f"dream/lint/{timestamp.strftime('%Y%m%d-%H%M%S')}-report"
+    labels = desired_governance_labels(
+        [LABEL_CONFIDENCE_MEDIUM, LABEL_IMPACT_LOCAL, LABEL_TYPE_LINT],
+        lifecycle_label=LABEL_STATE_EXTRACTION,
+        human_review=True,
+    )
+    return PRProposal(
+        title=title,
+        body=render_governance_pr_body(
+            heading="Dream lint report",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_for_correction(
+                added_facts=[],
+                tombstoned_facts=[],
+                repo_dir=repo_dir,
+            ),
+        ),
+        branch=branch,
+        labels=labels,
+        files_changed=[LINT_REPORT_RELATIVE_PATH, LINT_STATE_RELATIVE_PATH],
+    )
+
+
+def generate_rederive_correction_pr(
+    *,
+    added_facts: list[Fact],
+    tombstoned_facts: list[Fact],
+    repo_dir: Path,
+    session_ids: list[str] | None = None,
+) -> PRProposal:
+    if not added_facts and not tombstoned_facts:
+        raise ValueError("re-derive correction proposal requires at least one fact change")
+    timestamp = datetime.now(tz=UTC)
+    title = f"[audit/rederive] Reconcile derived facts {timestamp.strftime('%Y-%m-%d')}"
+    source_sessions = ", ".join(session_ids) if session_ids else "all sessions"
+    summary_lines = [
+        f"**Date:** {timestamp.strftime('%Y-%m-%d')}",
+        f"**Source sessions:** {source_sessions}",
+        f"**Additions:** {len(added_facts)}",
+        f"**Tombstones:** {len(tombstoned_facts)}",
+        "",
+    ]
+    if added_facts:
+        summary_lines.extend([
+            "### Additions",
+            "",
+        ])
+        for fact in added_facts[:25]:
+            summary_lines.append(
+                f"- `{fact.fact_id}` [{fact.topic}] (S:{fact.encoding_strength}, "
+                f"C:{fact.confidence:.1f}) {fact.text}"
+            )
+        remaining = len(added_facts) - 25
+        if remaining > 0:
+            summary_lines.append(f"- ... (+{remaining} more)")
+        summary_lines.append("")
+    if tombstoned_facts:
+        summary_lines.extend([
+            "### Tombstones",
+            "",
+        ])
+        for fact in tombstoned_facts[:25]:
+            summary_lines.append(
+                f"- `{fact.fact_id}` [{fact.topic}] {fact.text}"
+            )
+        remaining = len(tombstoned_facts) - 25
+        if remaining > 0:
+            summary_lines.append(f"- ... (+{remaining} more)")
+        summary_lines.append("")
+    summary_lines.extend([
+        "### Provenance",
+        "",
+        "- Proposed by: `gitmem audit --rederive`",
+    ])
+    labels = set()
+    if added_facts:
+        labels.update(classify_pr_labels(added_facts))
+    if tombstoned_facts:
+        labels.update(label for label in classify_pr_labels(tombstoned_facts) if not label.startswith("type:"))
+        labels.add(LABEL_TYPE_DELETION)
+    if not labels:
+        labels.add(LABEL_TYPE_DELETION)
+    files_changed = {
+        _repo_relative_path(target_path_for_fact(repo_dir, fact), repo_dir=repo_dir)
+        for fact in added_facts
+    }
+    files_changed.update(
+        _repo_relative_path(fact.file_path or target_path_for_fact(repo_dir, fact), repo_dir=repo_dir)
+        for fact in tombstoned_facts
+    )
+    if tombstoned_facts:
+        files_changed.add("meta/tombstones.jsonl")
+    branch = f"proposal/rederive-correction-{timestamp.strftime('%Y%m%d-%H%M%S')}"
+    return PRProposal(
+        title=title,
+        body=render_governance_pr_body(
+            heading="Governed re-derive correction proposal",
+            summary_lines=summary_lines,
+            fact_delta=build_fact_delta_for_correction(
+                added_facts=added_facts,
+                tombstoned_facts=tombstoned_facts,
+                repo_dir=repo_dir,
+            ),
+        ),
+        branch=branch,
+        labels=desired_governance_labels(sorted(labels), lifecycle_label=LABEL_STATE_EXTRACTION),
+        files_changed=sorted(files_changed),
     )
 
 

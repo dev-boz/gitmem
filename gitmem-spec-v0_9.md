@@ -1207,9 +1207,9 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'type: supersession')
     steps:
       - uses: actions/checkout@v4
-      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }}
+      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --provider nvidia
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
 ```
 
 External agents like Google Jules can also be wired in as L1 workers.
@@ -1228,11 +1228,13 @@ L1 per-project dream consolidates project sessions. L2 cross-project dream (nigh
 
 ### Deep re-derivation
 
-When a better model becomes available:
+When extraction logic improves:
 ```bash
-umx audit --rederive --all --model claude-opus-5
+umx audit --rederive
+# or narrow the comparison to selected sessions
+umx audit --rederive --session <session-id>
 ```
-Re-extracts all facts from raw sessions using the new model, opens PRs proposing corrections. Always possible because raw sessions are immutable.
+Re-extracts facts from immutable raw sessions and reports divergence against the currently accepted fact set. When drift is found, gitmem now materializes a governed correction proposal branch and opens a correction PR when the repo is configured for governed GitHub flows. The re-derivation itself still uses the shipped native session-derived path rather than a model-selectable provider lane.
 
 ---
 
@@ -2121,7 +2123,7 @@ umx init             [--owner <n>] [--org <n>] [--mode local|remote|hybrid]
 umx init-project     [--cwd .] [--slug <n>] [--yes]
 umx inject           --cwd . [--tool <tool>] [--prompt <text>] [--command <text>] [--session <id>] [--context-window N] [--expand-fact <id>...] [--file <path>...] [--max-tokens N]
 umx collect          --cwd . --tool <tool> [--file <path>] [--format auto|text|jsonl] [--role assistant|tool_result|user] [--session-id <id>] [--meta key=value] [--dry-run]
-umx dream            --cwd . [--force] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>]
+umx dream            --cwd . [--force] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>] [--provider anthropic|claude-cli]
 umx view             --cwd . [--fact <id>] [--list] [--min-strength N]
 umx tui              --cwd .
 umx status           --cwd .
@@ -2150,6 +2152,7 @@ umx export           --cwd . --out <dir>
 umx secret           get <key> | set <key> <value>
 umx import           --cwd . [--adapter claude-code|copilot|aider|generic | --full <dir> [--force]] [--dry-run]
 umx mcp
+umx search           --cwd . [--raw|--all] <query>
 ```
 
 `umx export --out <dir>` writes a self-contained backup directory containing a root `backup-manifest.json` plus a `snapshot/` subtree with the raw repo contents. `umx import --full <dir>` validates the manifest and snapshot before any forced clear, then restores bytes without reserializing fact files or sessions.

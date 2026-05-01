@@ -356,6 +356,55 @@ def test_run_l2_review_prefers_anthropic_when_key_present(project_repo: Path) ->
     assert result.model_backed is True
 
 
+def test_run_l2_review_prefers_nvidia_when_key_present(project_repo: Path) -> None:
+    cfg = default_config()
+    cfg.dream.provider_rotation = ["groq"]
+    pr = PRProposal(
+        title="[dream/l2] test",
+        body="",
+        branch="dream/l1/provider-review",
+        labels=["confidence:high", "impact:local", "type: extraction"],
+        files_changed=["facts/topics/general.md"],
+    )
+    fact = _provider_fact(project_repo, "sess-review", "review this fact")
+    calls: list[str] = []
+
+    def anthropic_review(_pr, _conventions, _existing_facts, _new_facts, _cfg) -> dict[str, object]:
+        calls.append("anthropic")
+        return {
+            "action": "reject",
+            "reason": "anthropic should not run first",
+            "violations": [],
+        }
+
+    def nvidia_review(_pr, _conventions, _existing_facts, _new_facts, _cfg) -> dict[str, object]:
+        calls.append("nvidia")
+        return {
+            "action": "approve",
+            "reason": "nvidia review approved",
+            "violations": [],
+        }
+
+    result = providers.run_l2_review_with_providers(
+        pr,
+        ConventionSet(),
+        [fact],
+        [fact],
+        cfg,
+        fallback_reviewer=lambda *_args: {
+            "action": "reject",
+            "reason": "fallback should not run",
+            "violations": [],
+        },
+        env={"ANTHROPIC_API_KEY": "test", "NVIDIA_API_KEY": "test"},
+        reviewers={"anthropic": anthropic_review, "nvidia": nvidia_review},
+    )
+
+    assert calls == ["nvidia"]
+    assert result.reviewed_by == "provider:nvidia/nvidia"
+    assert result.model_backed is True
+
+
 def test_run_l2_review_respects_explicit_provider_override(project_repo: Path) -> None:
     cfg = default_config()
     cfg.dream.provider_rotation = ["groq"]
@@ -403,6 +452,41 @@ def test_run_l2_review_respects_explicit_provider_override(project_repo: Path) -
     assert calls == ["claude-cli"]
     assert result.reviewed_by == "provider:claude-cli/claude-cli"
     assert result.model_backed is True
+
+
+def test_run_l2_review_requires_nvidia_key_when_configured(project_repo: Path) -> None:
+    cfg = default_config()
+    cfg.dream.paid_provider = "nvidia"
+    pr = PRProposal(
+        title="[dream/l2] test",
+        body="",
+        branch="dream/l1/provider-review",
+        labels=["confidence:high", "impact:local", "type: extraction"],
+        files_changed=["facts/topics/general.md"],
+    )
+    fact = _provider_fact(project_repo, "sess-review", "review this fact")
+
+    with pytest.raises(providers.ProviderUnavailableError, match="NVIDIA_API_KEY"):
+        providers.run_l2_review_with_providers(
+            pr,
+            ConventionSet(),
+            [fact],
+            [fact],
+            cfg,
+            fallback_reviewer=lambda *_args: {
+                "action": "reject",
+                "reason": "fallback should not run",
+                "violations": [],
+            },
+            env={},
+            reviewers={
+                "nvidia": lambda *_args: {
+                    "action": "approve",
+                    "reason": "should not run without key",
+                    "violations": [],
+                }
+            },
+        )
 
 
 def test_run_l2_review_requires_anthropic_key_on_github_actions(project_repo: Path) -> None:

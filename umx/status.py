@@ -10,6 +10,7 @@ from umx.dream.processing import summarize_processing_log
 from umx.git_ops import git_signing_payload
 from umx.metrics import compute_metrics, health_flags
 from umx.memory import load_all_facts
+from umx.sessions import quarantine_summary
 from umx.scope import config_path, discover_project_slug, project_memory_dir
 from umx.tombstones import load_tombstones
 
@@ -22,6 +23,7 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
     metrics = compute_metrics(repo, cfg)
     flags = health_flags(metrics)
     advice = build_calibration_advice(metrics, flags)
+    quarantine = quarantine_summary(repo)
     conventions_present = (repo / "CONVENTIONS.md").exists()
     if not conventions_present:
         conventions_flag = (
@@ -52,6 +54,35 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
                 ],
             },
         ]
+    if int(quarantine["count"]) > 0:
+        quarantine_flag = (
+            f"Quarantine has {quarantine['count']} unresolved item(s): review blocked sessions or push-safety reports."
+        )
+        flags = [*flags, quarantine_flag]
+        advice = [
+            *advice,
+            {
+                "metric": "quarantine",
+                "label": "Quarantine backlog",
+                "severity": "warn",
+                "status": "warn",
+                "direction": "high",
+                "value": int(quarantine["count"]),
+                "healthy_min": 0,
+                "healthy_max": 0,
+                "signal": f"{quarantine['count']} unresolved quarantine item(s) in local/quarantine.",
+                "flag": quarantine_flag,
+                "why": f"{quarantine['count']} unresolved quarantine item(s) in local/quarantine.",
+                "why_it_matters": (
+                    "Blocked session writes and push-safety reports can hide unresolved redaction or publish-safety issues "
+                    "until an operator reviews them."
+                ),
+                "recommended_actions": [
+                    "Run `gitmem doctor --cwd <project>` to inspect the full quarantine summary, including push-safety reports.",
+                    "Open `gitmem view` to review and release/discard blocked sessions before the next sync or governed push.",
+                ],
+            },
+        ]
     hot_metric = metrics["hot_tier_utilisation"]["value"]
     sessions_dir = repo / "sessions"
     session_count = len(list(sessions_dir.glob("**/*.jsonl"))) if sessions_dir.exists() else 0
@@ -67,6 +98,7 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
         "pending_session_count": int(state.get("session_count", 0)),
         "conventions_present": conventions_present,
         "last_dream": state.get("last_dream"),
+        "quarantine": quarantine,
         "processing": summarize_processing_log(repo, refs=("origin/main",)),
         "git": git_signing_payload(cfg),
         "hot_tier_tokens": int(round(hot_metric * cfg.memory.hot_tier_max_tokens)),

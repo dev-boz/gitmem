@@ -12,17 +12,22 @@ from umx.governance import PRProposal
 from umx.models import Fact
 from umx.providers import anthropic as anthropic_provider
 from umx.providers import claude_cli as claude_cli_provider
+from umx.providers import nvidia as nvidia_provider
 
 
+DEFAULT_ANTHROPIC_L2_MODEL = "claude-opus-4-7"
+DEFAULT_NVIDIA_L2_MODEL = "meta/llama-3.3-70b-instruct"
 L2_REVIEW_PROMPT_ID = "anthropic-l2-review"
 L2_REVIEW_PROMPT_VERSION = "v1"
 L2_CLAUDE_CLI_PROMPT_ID = "claude-cli-l2-review"
+L2_NVIDIA_PROMPT_ID = "nvidia-l2-review"
 REVIEW_COMMENT_MARKER = "<!-- umx:l2-review -->"
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(?P<payload>\{.*\})\s*```", re.DOTALL)
 _VALID_ACTIONS = frozenset({"approve", "reject", "escalate"})
 
 ANTHROPIC_PROVIDER_ALIASES = frozenset({"anthropic", "anthropic-api", "api"})
 CLAUDE_CLI_PROVIDER_ALIASES = frozenset({"claude-cli", "claude-code", "cli", "oauth"})
+NVIDIA_PROVIDER_ALIASES = frozenset({"nvidia", "nvidia-api"})
 
 
 def normalize_l2_reviewer_provider(provider: str | None) -> str | None:
@@ -33,9 +38,11 @@ def normalize_l2_reviewer_provider(provider: str | None) -> str | None:
         return "anthropic"
     if name in CLAUDE_CLI_PROVIDER_ALIASES:
         return "claude-cli"
+    if name in NVIDIA_PROVIDER_ALIASES:
+        return "nvidia"
     raise RuntimeError(
         f"unknown L2 reviewer provider: {provider!r} "
-        f"(expected one of: anthropic, claude-cli)"
+        f"(expected one of: anthropic, claude-cli, nvidia)"
     )
 
 
@@ -57,7 +64,7 @@ def anthropic_l2_reviewer(
     context = build_l2_review_context(pr, conventions, existing_facts, new_facts)
     response = anthropic_provider.send_anthropic_message(
         api_key=api_key,
-        model=config.dream.l2_model,
+        model=_resolve_l2_review_model("anthropic", config),
         system=_review_system_prompt(),
         prompt=_review_user_prompt(context),
     )
@@ -68,6 +75,38 @@ def anthropic_l2_reviewer(
         existing_facts=existing_facts,
         new_facts=new_facts,
         prompt_id=L2_REVIEW_PROMPT_ID,
+    )
+
+
+def nvidia_l2_reviewer(
+    pr: PRProposal,
+    conventions: ConventionSet,
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+    config: UMXConfig,
+) -> dict[str, object]:
+    api_key = config.dream.paid_api_key if config.dream.paid_provider == "nvidia" else None
+    if not api_key:
+        import os
+
+        api_key = os.getenv("NVIDIA_API_KEY")
+    if not api_key:
+        raise ProviderUnavailableError("NVIDIA_API_KEY is required for nvidia-backed L2 review")
+
+    context = build_l2_review_context(pr, conventions, existing_facts, new_facts)
+    response = nvidia_provider.send_nvidia_message(
+        api_key=api_key,
+        model=_resolve_l2_review_model("nvidia", config),
+        system=_review_system_prompt(),
+        prompt=_review_user_prompt(context),
+    )
+    return _build_review_payload(
+        response_text=response.text,
+        response_model=response.model,
+        usage=response.usage,
+        existing_facts=existing_facts,
+        new_facts=new_facts,
+        prompt_id=L2_NVIDIA_PROMPT_ID,
     )
 
 
@@ -93,7 +132,7 @@ def claude_cli_l2_reviewer(
 
     context = build_l2_review_context(pr, conventions, existing_facts, new_facts)
     response = claude_cli_provider.send_claude_cli_message(
-        model=config.dream.l2_model,
+        model=_resolve_l2_review_model("claude-cli", config),
         system=_review_system_prompt(),
         prompt=_review_user_prompt(context),
     )
@@ -119,7 +158,18 @@ def select_l2_reviewer(provider: str | None):
         return anthropic_l2_reviewer
     if name == "claude-cli":
         return claude_cli_l2_reviewer
+    if name == "nvidia":
+        return nvidia_l2_reviewer
     raise RuntimeError("unknown L2 reviewer provider")
+
+
+def _resolve_l2_review_model(provider: str, config: UMXConfig) -> str:
+    configured = config.dream.l2_model.strip() if isinstance(config.dream.l2_model, str) else ""
+    if provider == "nvidia":
+        if configured and configured != DEFAULT_ANTHROPIC_L2_MODEL:
+            return configured
+        return DEFAULT_NVIDIA_L2_MODEL
+    return configured or DEFAULT_ANTHROPIC_L2_MODEL
 
 
 def _build_review_payload(

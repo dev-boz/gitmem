@@ -241,6 +241,20 @@ def list_quarantined_sessions(
     )
 
 
+def quarantine_summary(
+    repo_dir: Path,
+) -> dict[str, object]:
+    quarantine_dir = repo_dir / "local" / "quarantine"
+    if not quarantine_dir.exists():
+        return {"count": 0, "files": []}
+    files = sorted(
+        path.relative_to(repo_dir).as_posix()
+        for path in quarantine_dir.iterdir()
+        if path.is_file() and not path.name.endswith(".meta.json")
+    )
+    return {"count": len(files), "files": files[:10]}
+
+
 def _append_quarantine_decision(
     repo_dir: Path,
     *,

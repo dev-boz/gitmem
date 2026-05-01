@@ -261,6 +261,22 @@ def test_search_cli_raw_flag(project_repo: Path, project_dir: Path) -> None:
     assert "deploy" in result.output.lower()
 
 
+def test_search_cli_all_alias_uses_raw_session_search(project_repo: Path, project_dir: Path) -> None:
+    write_session(
+        project_repo,
+        {"session_id": "2026-02-01-raw002"},
+        [
+            {"role": "user", "content": "Deploy the worker to staging"},
+            {"role": "assistant", "content": "Deploying worker now."},
+        ],
+    )
+    runner = CliRunner()
+    result = runner.invoke(main, ["search", "--cwd", str(project_dir), "--all", "worker"])
+    assert result.exit_code == 0
+    assert "2026-02-01-raw002" in result.output
+    assert "worker" in result.output.lower()
+
+
 def test_search_cli_without_raw_flag(project_repo: Path, project_dir: Path) -> None:
     fact = _make_fact(
         "staging uses port 8080",
