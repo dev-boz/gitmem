@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from collections import defaultdict
 from pathlib import Path
 
 from umx.config import UMXConfig, default_config
@@ -45,7 +47,7 @@ def rederive_from_sessions(
 def compare_derived(existing: list[Fact], rederived: list[Fact]) -> dict:
     """Compare existing facts against rederived ones.
 
-    Uses text-based matching to find correspondences.
+    Uses a normalized semantic fingerprint so metadata-only drift is preserved.
     """
     matching, missing_from_existing, missing_from_rederived = compare_derived_facts(existing, rederived)
 
@@ -63,16 +65,20 @@ def compare_derived_facts(
     existing: list[Fact],
     rederived: list[Fact],
 ) -> tuple[int, list[Fact], list[Fact]]:
-    existing_texts = {f.text: f for f in existing}
-    rederived_texts = {f.text: f for f in rederived}
-    matching_texts = sorted(set(existing_texts) & set(rederived_texts))
-    missing_from_existing = [
-        rederived_texts[text] for text in sorted(set(rederived_texts) - set(existing_texts))
-    ]
-    missing_from_rederived = [
-        existing_texts[text] for text in sorted(set(existing_texts) - set(rederived_texts))
-    ]
-    return len(matching_texts), missing_from_existing, missing_from_rederived
+    existing_by_key = _facts_grouped_by_audit_key(existing)
+    rederived_by_key = _facts_grouped_by_audit_key(rederived)
+    matching = 0
+    missing_from_existing: list[Fact] = []
+    missing_from_rederived: list[Fact] = []
+
+    for key in sorted(set(existing_by_key) | set(rederived_by_key)):
+        current_existing = existing_by_key.get(key, [])
+        current_rederived = rederived_by_key.get(key, [])
+        shared = min(len(current_existing), len(current_rederived))
+        matching += shared
+        missing_from_existing.extend(current_rederived[shared:])
+        missing_from_rederived.extend(current_existing[shared:])
+    return matching, missing_from_existing, missing_from_rederived
 
 
 def materialize_rederive_correction_branch(
@@ -188,6 +194,64 @@ def _fact_summary(fact: Fact) -> dict[str, str]:
         "fact_id": fact.fact_id,
         "path": path,
         "source_session": fact.source_session,
+        "scope": fact.scope.value,
         "text": fact.text,
         "topic": fact.topic,
     }
+
+
+def _audit_comparison_payload(fact: Fact) -> dict[str, object]:
+    payload = fact.to_dict()
+    for key in (
+        "fact_id",
+        "created",
+        "last_retrieved",
+        "last_referenced",
+        "expires_at",
+        "repo",
+        "file_path",
+        "task_status",
+        "consolidation_status",
+        "supersedes",
+        "superseded_by",
+        "corroborated_by_facts",
+        "conflicts_with",
+    ):
+        payload.pop(key, None)
+    payload["tags"] = sorted(str(tag) for tag in payload.get("tags", []))
+    payload["corroborated_by_tools"] = sorted(
+        str(tool) for tool in payload.get("corroborated_by_tools", [])
+    )
+    provenance = payload.get("provenance")
+    if isinstance(provenance, dict):
+        cleaned_provenance = dict(provenance)
+        for key in ("approved_by", "approval_tier", "pr"):
+            cleaned_provenance.pop(key, None)
+        sessions = cleaned_provenance.get("sessions")
+        if isinstance(sessions, list):
+            cleaned_provenance["sessions"] = sorted(str(session) for session in sessions)
+        payload["provenance"] = cleaned_provenance
+    return payload
+
+
+def _audit_fact_key(fact: Fact) -> str:
+    return json.dumps(_audit_comparison_payload(fact), sort_keys=True, separators=(",", ":"))
+
+
+def _sorted_facts_for_audit(facts: list[Fact]) -> list[Fact]:
+    return sorted(
+        facts,
+        key=lambda fact: (
+            _audit_fact_key(fact),
+            fact.topic,
+            fact.text,
+            fact.fact_id,
+        ),
+    )
+
+
+def _facts_grouped_by_audit_key(facts: list[Fact]) -> dict[str, list[Fact]]:
+    grouped: dict[str, list[Fact]] = defaultdict(list)
+    for fact in _sorted_facts_for_audit(facts):
+        grouped[_audit_fact_key(fact)].append(fact)
+    return grouped

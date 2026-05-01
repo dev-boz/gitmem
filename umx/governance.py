@@ -95,9 +95,9 @@ GOVERNED_MODES = frozenset({"remote", "hybrid"})
 GOVERNED_FACT_PREFIXES = ("facts/", "episodic/", "principles/")
 GOVERNED_FACT_FILES = frozenset({"MEMORY.md", "meta/tombstones.jsonl"})
 SESSION_PREFIX = "sessions/"
-OPERATIONAL_SYNC_FILES = frozenset({"meta/processing.jsonl"})
 LINT_REPORT_RELATIVE_PATH = "meta/lint-report.md"
 LINT_STATE_RELATIVE_PATH = "meta/lint-state.json"
+OPERATIONAL_SYNC_FILES = frozenset({"meta/processing.jsonl", LINT_STATE_RELATIVE_PATH})
 
 
 @dataclass(slots=True)
@@ -414,7 +414,7 @@ def generate_lint_pr(
         "### Report",
         "",
         f"- Report file: `{LINT_REPORT_RELATIVE_PATH}`",
-        f"- State file: `{LINT_STATE_RELATIVE_PATH}`",
+        f"- Cadence state: `{LINT_STATE_RELATIVE_PATH}` (synced on `main`)",
         f"- Proposed by: `gitmem dream --force-lint`",
         "",
         "### Findings",
@@ -447,7 +447,7 @@ def generate_lint_pr(
         ),
         branch=branch,
         labels=labels,
-        files_changed=[LINT_REPORT_RELATIVE_PATH, LINT_STATE_RELATIVE_PATH],
+        files_changed=[LINT_REPORT_RELATIVE_PATH],
     )
 
 

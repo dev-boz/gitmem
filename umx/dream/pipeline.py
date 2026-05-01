@@ -428,7 +428,6 @@ class DreamPipeline:
     def _lint_branch_paths(self, branch_changes: list[Path]) -> list[Path]:
         lint_relatives = {
             lint_report_path(self.repo_dir).relative_to(self.repo_dir).as_posix(),
-            lint_state_path(self.repo_dir).relative_to(self.repo_dir).as_posix(),
         }
         lint_paths = [
             path
@@ -437,11 +436,14 @@ class DreamPipeline:
         ]
         for candidate in (
             lint_report_path(self.repo_dir),
-            lint_state_path(self.repo_dir),
         ):
             if candidate.exists() and candidate not in lint_paths:
                 lint_paths.append(candidate)
         return lint_paths
+
+    def _lint_sync_paths(self) -> list[Path]:
+        path = lint_state_path(self.repo_dir)
+        return [path] if path.exists() else []
 
     @staticmethod
     def _proposal_payload(proposal: PRProposal) -> dict[str, object]:
@@ -1417,7 +1419,7 @@ class DreamPipeline:
                     dream_partial=getattr(self, "_dream_partial", False),
                 )
                 if self.config.org and not self._push_paths_to_main(
-                    [processing_log_path(self.repo_dir)],
+                    [processing_log_path(self.repo_dir), *self._lint_sync_paths()],
                     "umx: dream processing complete",
                 ):
                     return DreamResult(
@@ -1512,7 +1514,7 @@ class DreamPipeline:
                     dream_partial=getattr(self, "_dream_partial", False),
                 )
                 if self.config.org and not self._push_sessions_to_main(
-                    extra_paths=[processing_log_path(self.repo_dir)],
+                    extra_paths=[processing_log_path(self.repo_dir), *self._lint_sync_paths()],
                     message="umx: sync sessions and processing",
                 ):
                     return DreamResult(

@@ -592,7 +592,7 @@ def test_remote_dream_opens_dedicated_lint_pr_without_blocking_l1(
     assert result.lint["pr_status"] == "opened"
     assert result.lint["pr_number"] == 2
     assert result.lint["pr_proposal"]["branch"] == lint_proposal.branch
-    assert result.lint["pr_proposal"]["files_changed"] == ["meta/lint-report.md", "meta/lint-state.json"]
+    assert result.lint["pr_proposal"]["files_changed"] == ["meta/lint-report.md"]
 
     lint_diff = subprocess.run(
         [
@@ -607,10 +607,7 @@ def test_remote_dream_opens_dedicated_lint_pr_without_blocking_l1(
         text=True,
         check=True,
     )
-    assert sorted(line for line in lint_diff.stdout.splitlines() if line) == [
-        "meta/lint-report.md",
-        "meta/lint-state.json",
-    ]
+    assert sorted(line for line in lint_diff.stdout.splitlines() if line) == ["meta/lint-report.md"]
 
     l1_diff = subprocess.run(
         [
@@ -627,6 +624,71 @@ def test_remote_dream_opens_dedicated_lint_pr_without_blocking_l1(
     )
     assert "meta/lint-report.md" not in l1_diff.stdout
     assert "meta/lint-state.json" not in l1_diff.stdout
+    lint_state = subprocess.run(
+        ["git", "-C", str(project_repo), "show", "HEAD:meta/lint-state.json"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert '"last_lint"' in lint_state.stdout
+
+
+def test_remote_dream_does_not_reopen_lint_pr_before_merge(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+    from umx.inject import emit_gap_signal
+
+    remote = tmp_path / "remote-lint-repeat.git"
+    _connect_origin(project_repo, remote)
+    git_add_and_commit(project_repo, message="seed lint repeat baseline")
+    git_push(project_repo)
+    proposals: list[PRProposal] = []
+    monkeypatch.setattr(
+        DreamPipeline,
+        "_push_and_open_pr",
+        lambda self, proposal: proposals.append(proposal) or len(proposals),
+    )
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+
+    emit_gap_signal(
+        project_repo,
+        query="lint repetition first run",
+        resolution_context="testing",
+        proposed_fact="first run opens one lint PR",
+        session="2026-01-15-remote-lint-repeat-1",
+    )
+    first = DreamPipeline(project_dir, config=cfg).run(force=True)
+    assert first.status == "ok"
+    assert first.pr_proposal is not None
+    assert len([proposal for proposal in proposals if LABEL_TYPE_LINT in proposal.labels]) == 1
+    subprocess.run(
+        ["git", "-C", str(project_repo), "branch", "-D", first.pr_proposal.branch],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    emit_gap_signal(
+        project_repo,
+        query="lint repetition second run",
+        resolution_context="testing",
+        proposed_fact="second run should not reopen the lint PR while cadence is still fresh",
+        session="2026-01-15-remote-lint-repeat-2",
+    )
+    second = DreamPipeline(project_dir, config=cfg).run(force=True)
+
+    assert second.status == "ok"
+    assert second.lint["ran"] is False
+    assert str(second.lint["reason"]).endswith("not-due")
+    assert len([proposal for proposal in proposals if LABEL_TYPE_LINT in proposal.labels]) == 1
+    assert len([proposal for proposal in proposals if LABEL_TYPE_LINT not in proposal.labels]) == 2
 
 
 def test_dream_l2_review_approves_but_blocks_merge_without_human_approval(

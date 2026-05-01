@@ -115,3 +115,14 @@ def test_workflow_templates_parse_as_yaml() -> None:
             parsed = yaml.safe_load(content)
             assert parsed["name"]
             assert "jobs" in parsed, name
+
+
+def test_packaged_l2_template_matches_generated_template() -> None:
+    packaged = (
+        Path(__file__).resolve().parent.parent
+        / "umx"
+        / "templates"
+        / "l2-review.yml"
+    ).read_text()
+
+    assert packaged == L2_WORKFLOW_TEMPLATE

@@ -171,6 +171,23 @@ def test_audit_compare_derived() -> None:
     assert result["missing_from_rederived"] == 1  # "redis cache is enabled"
 
 
+def test_audit_compare_derived_counts_duplicate_facts() -> None:
+    from umx.audit import compare_derived
+
+    existing = [
+        _make_fact("E1", "postgres runs on 5433"),
+        _make_fact("E2", "postgres runs on 5433"),
+    ]
+    rederived = [
+        _make_fact("R1", "postgres runs on 5433"),
+    ]
+
+    result = compare_derived(existing, rederived)
+    assert result["matching"] == 1
+    assert result["missing_from_existing"] == 0
+    assert result["missing_from_rederived"] == 1
+
+
 def test_audit_rederive_opens_correction_pr(project_dir: Path, project_repo: Path, monkeypatch) -> None:
     from umx.dream.pipeline import DreamPipeline
     from umx.sessions import write_session
@@ -223,6 +240,61 @@ def test_audit_rederive_opens_correction_pr(project_dir: Path, project_repo: Pat
     )
     assert current_branch.stdout.strip() == "main"
     assert {fact.fact_id for fact in load_all_facts(project_repo, include_superseded=False)} == {"E2"}
+
+
+def test_audit_rederive_opens_correction_pr_for_metadata_only_drift(
+    project_dir: Path,
+    project_repo: Path,
+    monkeypatch,
+) -> None:
+    from umx.dream.pipeline import DreamPipeline
+
+    add_fact(
+        project_repo,
+        _make_fact("E1", "postgres runs on 5433", topic="devenv", encoding_strength=3),
+        auto_commit=False,
+    )
+    git_add_and_commit(project_repo, message="seed metadata drift baseline")
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    save_config(config_path(), cfg)
+
+    monkeypatch.setattr(
+        "umx.audit.rederive_from_sessions",
+        lambda repo_dir, session_ids=None, config=None: [
+            _make_fact("R1", "postgres runs on 5433", topic="runtime", encoding_strength=5),
+        ],
+    )
+
+    proposals = []
+    monkeypatch.setattr(
+        DreamPipeline,
+        "_push_and_open_pr",
+        lambda self, proposal: proposals.append(proposal) or 29,
+    )
+
+    result = CliRunner().invoke(main, ["audit", "--cwd", str(project_dir), "--rederive"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["matching"] == 0
+    assert payload["missing_from_existing"] == 1
+    assert payload["missing_from_rederived"] == 1
+    assert payload["correction_pr"]["status"] == "opened"
+    assert payload["correction_pr"]["pr_number"] == 29
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert set(proposal.files_changed) == {
+        "facts/topics/devenv.md",
+        "facts/topics/runtime.md",
+        "meta/tombstones.jsonl",
+    }
+    pr_payload = assert_governance_pr_body(proposal.body)
+    assert pr_payload is not None
+    assert len(pr_payload["added"]) == 1
+    assert len(pr_payload["tombstoned"]) == 1
 
 
 # ── import tests ─────────────────────────────────────────────────

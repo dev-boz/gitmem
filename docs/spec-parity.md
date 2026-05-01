@@ -73,6 +73,6 @@ The parity pass intentionally aligned the spec to the shipped CLI instead of add
 
 These are outside the narrow CLI flag audit above:
 
-- Remote/hybrid Dream now opens dedicated lint PRs with `meta/lint-report.md` and `meta/lint-state.json`; those lint branches are distinct from the normal L1 fact-snapshot PR path.
+- Remote/hybrid Dream now opens dedicated lint PRs for `meta/lint-report.md` while syncing `meta/lint-state.json` to `main` as operational cadence state, so lint PRs stay non-blocking without reopening on every run.
 - `audit --rederive` now opens governed correction proposal branches/PRs when it finds drift, but the re-extraction itself is still the shipped native session-derive path rather than a model-selectable deep re-derivation workflow.
 - Branch protection, approval gating, and other GitHub governance hardening remain partial/experimental outside the shipped local-first core.
