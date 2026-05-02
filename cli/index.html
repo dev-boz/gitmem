@@ -1202,7 +1202,7 @@
 <tr>
 <td><code>gitmem dream</code></td>
 <td>Run Dream or review a governed PR</td>
-<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier l2</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
+<td><code>--cwd</code>, <code>--force</code>, <code>--force-reason</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier l2</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
 </tr>
 <tr>
 <td><code>gitmem search</code></td>
@@ -1447,6 +1447,7 @@
 <li><code>--provider claude-cli</code> — shells out to the locally installed Claude Code CLI in headless <code>-p</code> mode (<code>claude --print --output-format json</code>). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with <code>UMX_CLAUDE_CLI_BIN</code>, and the per-call timeout with <code>UMX_CLAUDE_CLI_TIMEOUT</code> (seconds, default 180).</li>
 </ul>
 <p>All three providers emit the same JSON payload shape and the same <code>prompt_version</code>; only the <code>prompt_id</code> differs (<code>anthropic-l2-review</code>, <code>nvidia-l2-review</code>, or <code>claude-cli-l2-review</code>) so historical runs stay comparable within a provider.</p>
+<p>If an operator bypasses the L2 approval gate with <code>gitmem dream --tier l2 --force</code>, they must also pass <code>--force-reason</code> so the audit note records why merge policy was overridden.</p>
 <h2 id="maintenance-and-recovery">Maintenance and recovery<a class="headerlink" href="#maintenance-and-recovery" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

@@ -1039,10 +1039,10 @@
 </tr>
 <tr>
 <td><code>dream</code></td>
-<td><code>--cwd</code>, <code>--force</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
+<td><code>--cwd</code>, <code>--force</code>, <code>--force-reason</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
 <td><code>umx/cli.py:779-845</code></td>
 <td>Match</td>
-<td><code>--force-lint</code> added in T1.1; <code>--provider</code> documents the shipped L2 reviewer selection surface.</td>
+<td><code>--force-lint</code> and <code>--force-reason</code> document the shipped governance override surface; <code>--provider</code> documents L2 reviewer selection.</td>
 </tr>
 <tr>
 <td><code>view</code></td>
@@ -1067,10 +1067,10 @@
 </tr>
 <tr>
 <td><code>health</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:922-934</code></td>
+<td><code>--cwd</code>, <code>--governance</code>, <code>--format json\|human</code></td>
+<td><code>umx/cli.py:923-949</code></td>
 <td>Match</td>
-<td>Added to spec to reflect shipped diagnostics surface.</td>
+<td>Governance health adds a richer repo-policy audit surface; <code>--format human</code> is only valid with <code>--governance</code>.</td>
 </tr>
 <tr>
 <td><code>conflicts</code></td>
@@ -1284,10 +1284,10 @@
 </tr>
 <tr>
 <td><code>eval</code></td>
-<td><code>l2-review(--cases,--case,--min-pass-rate,--provider)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code></td>
-<td><code>umx/cli.py:1273-1400</code></td>
+<td><code>l2-review(--cases,--case,--min-pass-rate,--provider)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>longmemeval(--cases,--out-dir,--provider,--model,...)</code>, <code>locomo(--cases,--out-dir,--provider,--model,...)</code>, <code>convomem(--cases,--out-dir,--provider,--model,...)</code>, <code>longbench-v2(--cases,--out-dir,--provider,--model,...)</code>, <code>ruler(--cases,--out-dir,--provider,--model,...)</code>, <code>beir(--cases,--min-ndcg-at-10,--min-recall-at-10)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code>, <code>compare(&lt;baseline&gt; &lt;candidate&gt;)</code>, <code>release-gate(...)</code></td>
+<td><code>umx/cli.py:1489-2017</code></td>
 <td>Documented</td>
-<td>On-demand eval harnesses for governance review, native inject drift, and offline benchmark-shaped adapters for long-memory and multi-hop supporting-fact retrieval. <code>l2-review --provider</code> selects between Anthropic API, NVIDIA API, and Claude Code CLI (OAuth) reviewers.</td>
+<td>On-demand eval harnesses now cover governance review, native inject drift, long-memory retrieval, benchmark-backed provider runs, offline retrieval comparison, and bundled release-gate capture flows. <code>l2-review --provider</code> selects between Anthropic API, NVIDIA API, and Claude Code CLI (OAuth) reviewers.</td>
 </tr>
 <tr>
 <td><code>hooks claude-code</code></td>
