@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Install gitmem
-        run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"
+        run: python -m pip install .
       - name: Run L1 dream
         run: umx dream --mode remote --tier l1
         env:

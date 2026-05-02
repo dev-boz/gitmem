@@ -25,12 +25,23 @@ def test_workflow_templates_cover_l1_l2_guard_and_approval_gate() -> None:
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in templates["l2-review.yml"]
     assert WORKFLOW_INSTALL_COMMAND in templates["l1-dream.yml"]
     assert WORKFLOW_INSTALL_COMMAND in templates["l2-review.yml"]
+    assert WORKFLOW_INSTALL_COMMAND == "python -m pip install ."
     assert "state: extraction" in templates["l2-review.yml"]
     assert "type: extraction" in templates["l2-review.yml"]
     assert "type: consolidation" in templates["l2-review.yml"]
     assert "type: promotion" in templates["l2-review.yml"]
+    assert "- reopened" in templates["l2-review.yml"]
+    assert "- labeled" in templates["l2-review.yml"]
     assert "fetch-depth: 0" in templates["l2-review.yml"]
     assert "github.event.pull_request.head.sha" in templates["l2-review.yml"]
+    assert "Detect governance PR" in templates["l2-review.yml"]
+    assert "steps.detect_governance.outputs.is_governance == 'true'" in templates["l2-review.yml"]
+    assert "GITHUB_API_URL" in templates["l2-review.yml"]
+    assert "GOVERNANCE_BRANCH_PREFIXES" in templates["l2-review.yml"]
+    assert "GOVERNED_FACT_PREFIXES" in templates["l2-review.yml"]
+    assert "PR_LABELS_JSON" in templates["l2-review.yml"]
+    assert "non-governance PR; L2 review skipped" in templates["l2-review.yml"]
+    assert "GITHUB_OUTPUT is required" in templates["l2-review.yml"]
     assert "Prepare PR head branch" in templates["l2-review.yml"]
     assert 'PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}' in templates["l2-review.yml"]
     assert 'PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}' in templates["l2-review.yml"]
@@ -118,11 +129,9 @@ def test_workflow_templates_parse_as_yaml() -> None:
 
 
 def test_packaged_l2_template_matches_generated_template() -> None:
-    packaged = (
-        Path(__file__).resolve().parent.parent
-        / "umx"
-        / "templates"
-        / "l2-review.yml"
-    ).read_text()
+    template_root = Path(__file__).resolve().parent.parent / "umx" / "templates"
+    packaged_l1 = (template_root / "l1-dream.yml").read_text()
+    packaged_l2 = (template_root / "l2-review.yml").read_text()
 
-    assert packaged == L2_WORKFLOW_TEMPLATE
+    assert packaged_l1 == L1_WORKFLOW_TEMPLATE
+    assert packaged_l2 == L2_WORKFLOW_TEMPLATE

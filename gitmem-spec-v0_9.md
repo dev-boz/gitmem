@@ -1182,33 +1182,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l1
+      - run: python -m pip install . && umx dream --mode remote --tier l1
         env:
           UMX_PROVIDER: groq
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 ```
 
-L2 trigger (on PR open):
+L2 trigger (on governance PR open/sync/reopen/label):
 ```yaml
 name: L2 Review
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened, labeled]
     branches: [main]
 jobs:
   review:
     runs-on: ubuntu-latest
-    if: >-
-      contains(github.event.pull_request.labels.*.name, 'type: consolidation') ||
-      contains(github.event.pull_request.labels.*.name, 'type: deletion') ||
-      contains(github.event.pull_request.labels.*.name, 'type: gap-fill') ||
-      contains(github.event.pull_request.labels.*.name, 'type: lint') ||
-      contains(github.event.pull_request.labels.*.name, 'type: principle') ||
-      contains(github.event.pull_request.labels.*.name, 'type: supersession')
     steps:
+      - name: Detect governance PR
+        id: detect_governance
+        # same branch-prefix / governance-label / governed-file test as the approval gate
       - uses: actions/checkout@v4
-      - run: python -m pip install "git+https://github.com/dev-boz/gitmem.git@main" && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --provider nvidia
+        if: steps.detect_governance.outputs.is_governance == 'true'
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - run: git checkout -B "${{ github.event.pull_request.head.ref }}" "${{ github.event.pull_request.head.sha }}"
+        if: steps.detect_governance.outputs.is_governance == 'true'
+      - run: python -m pip install . && umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }} --provider nvidia
+        if: steps.detect_governance.outputs.is_governance == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
 ```
 
@@ -2123,14 +2127,15 @@ umx init             [--owner <n>] [--org <n>] [--mode local|remote|hybrid]
 umx init-project     [--cwd .] [--slug <n>] [--yes]
 umx inject           --cwd . [--tool <tool>] [--prompt <text>] [--command <text>] [--session <id>] [--context-window N] [--expand-fact <id>...] [--file <path>...] [--max-tokens N]
 umx collect          --cwd . --tool <tool> [--file <path>] [--format auto|text|jsonl] [--role assistant|tool_result|user] [--session-id <id>] [--meta key=value] [--dry-run]
-umx dream            --cwd . [--force] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>] [--provider anthropic|claude-cli]
+umx dream            --cwd . [--force] [--force-reason <text>] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>] [--provider anthropic|nvidia|claude-cli]
 umx view             --cwd . [--fact <id>] [--list] [--min-strength N]
 umx tui              --cwd .
 umx status           --cwd .
-umx health           --cwd .
+umx health           --cwd . [--governance [--format json|human]]
 umx conflicts        --cwd .
 umx gaps             --cwd .
-umx forget           --cwd . --fact <id> | --topic <topic>
+umx forget           --cwd . (--fact <id> | --topic <topic>) [--governed]
+umx rollback         --cwd . --pr <n>
 umx promote          --cwd . --fact <id> --to user|project|principle
 umx confirm          --cwd . --fact <id>
 umx history          --cwd . --fact <id>
@@ -2149,6 +2154,7 @@ umx migrate-scope    --cwd . --from <old-path> --to <new-path>
 umx migrate          --cwd .
 umx doctor           [--cwd .] [--fix]
 umx export           --cwd . --out <dir>
+umx config           set redaction.patterns <value>
 umx secret           get <key> | set <key> <value>
 umx import           --cwd . [--adapter claude-code|copilot|aider|generic | --full <dir> [--force]] [--dry-run]
 umx mcp
@@ -2163,6 +2169,7 @@ Additional integration surfaces are part of the shipped CLI and versioned with t
 - `umx hooks claude-code <print|install|session-start|pre-tool-use|pre-compact|session-end> ...`
 - `umx bridge <sync|remove|import> ...`
 - `umx shim <aider|generic|amp|cursor|jules|qodo> ...`
+- `umx eval <l2-review|inject|long-memory|longmemeval|locomo|convomem|longbench-v2|ruler|beir|retrieval|compare|release-gate> ...`
 
 `docs/spec-parity.md` is the exhaustive command/flag matrix for the v0.9.2 parity pass.
 

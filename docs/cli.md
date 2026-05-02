@@ -32,7 +32,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 
 | Command | Purpose | Common flags |
 |---|---|---|
-| `gitmem dream` | Run Dream or review a governed PR | `--cwd`, `--force`, `--force-lint`, `--mode`, `--tier l2`, `--pr`, `--head-sha`, `--provider` |
+| `gitmem dream` | Run Dream or review a governed PR | `--cwd`, `--force`, `--force-reason`, `--force-lint`, `--mode`, `--tier l2`, `--pr`, `--head-sha`, `--provider` |
 | `gitmem search` | Search facts, or raw sessions with `--raw` / `--all` | `--cwd`, `--raw`, `--all` |
 | `gitmem inject` | Build prompt-ready memory context | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--file`, `--max-tokens` |
 | `gitmem view` | List facts, inspect one fact, or launch viewer | `--cwd`, `--list`, `--fact`, `--min-strength` |
@@ -140,6 +140,8 @@ For 1.0, release stays blocked until both claims are signed off: **it works pers
 - `--provider claude-cli` — shells out to the locally installed Claude Code CLI in headless `-p` mode (`claude --print --output-format json`). Uses the operator's existing Claude Code OAuth session, so no API key is required. The binary path can be overridden with `UMX_CLAUDE_CLI_BIN`, and the per-call timeout with `UMX_CLAUDE_CLI_TIMEOUT` (seconds, default 180).
 
 All three providers emit the same JSON payload shape and the same `prompt_version`; only the `prompt_id` differs (`anthropic-l2-review`, `nvidia-l2-review`, or `claude-cli-l2-review`) so historical runs stay comparable within a provider.
+
+If an operator bypasses the L2 approval gate with `gitmem dream --tier l2 --force`, they must also pass `--force-reason` so the audit note records why merge policy was overridden.
 
 ## Maintenance and recovery
 

@@ -8,6 +8,22 @@ from umx.config import default_config, save_config
 from umx.scope import config_path, init_local_umx, init_project_memory, project_memory_dir, user_memory_dir
 
 
+@pytest.fixture(autouse=True)
+def isolate_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for key in (
+        "ANTHROPIC_API_KEY",
+        "NVIDIA_API_KEY",
+        "GROQ_API_KEY",
+        "OPENAI_API_KEY",
+        "VOYAGE_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "UMX_PROVIDER",
+        "UMX_L2_REVIEW_PROVIDER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 @pytest.fixture
 def umx_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "umxhome"

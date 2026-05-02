@@ -14,7 +14,7 @@ from umx.governance import (
 
 
 CHECKOUT_ACTION = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"  # v4.2.2
-WORKFLOW_INSTALL_COMMAND = 'python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"'
+WORKFLOW_INSTALL_COMMAND = "python -m pip install ."
 L1_WORKFLOW_NAME = "l1-dream.yml"
 L2_WORKFLOW_NAME = "l2-review.yml"
 APPROVAL_GATE_WORKFLOW_NAME = "approval-gate.yml"
@@ -26,10 +26,111 @@ MAIN_GUARD_AUDIT_EVENT = "governance_auto_revert"
 MAIN_GUARD_AUDIT_LOG_PATH = "meta/processing.jsonl"
 
 
-def _l2_review_condition() -> str:
-    return " ||\n          ".join(
-        f"contains(github.event.pull_request.labels.*.name, '{label}')"
-        for label in GOVERNANCE_REVIEW_TRIGGER_LABELS
+def _indent_block(text: str, spaces: int) -> str:
+    prefix = " " * spaces
+    return "\n".join(f"{prefix}{line}" if line else "" for line in text.splitlines())
+
+
+def _governance_pr_detection_python(
+    *,
+    write_output: bool = False,
+    skip_message: str | None = None,
+    exit_when_false: bool = False,
+) -> str:
+    script = dedent(
+        """\
+        import json
+        import os
+        import urllib.request
+
+        labels = set(json.loads(os.environ["PR_LABELS_JSON"]))
+        trigger_labels = set(json.loads(os.environ["GOVERNANCE_TRIGGER_LABELS"]))
+        branch_prefixes = tuple(json.loads(os.environ["GOVERNANCE_BRANCH_PREFIXES"]))
+        governed_files = set(json.loads(os.environ["GOVERNED_FACT_FILES"]))
+        governed_prefixes = tuple(json.loads(os.environ["GOVERNED_FACT_PREFIXES"]))
+        head_ref = os.environ.get("PR_HEAD_REF", "")
+        api_url = os.environ["GITHUB_API_URL"].rstrip("/")
+        repo = os.environ["GITHUB_REPOSITORY"]
+        pr_number = os.environ["PR_NUMBER"]
+        token = os.environ["GH_TOKEN"]
+        changed_files = []
+        page = 1
+        while True:
+            request = urllib.request.Request(
+                f"{api_url}/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"Bearer {token}",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.loads(response.read().decode("utf-8") or "[]")
+            if not isinstance(payload, list):
+                raise SystemExit("unexpected PR files payload from GitHub API")
+            if not payload:
+                break
+            for item in payload:
+                if not isinstance(item, dict):
+                    raise SystemExit("malformed PR files payload from GitHub API")
+                filename = item.get("filename")
+                if not isinstance(filename, str) or not filename:
+                    raise SystemExit("malformed PR files payload from GitHub API")
+                changed_files.append(filename)
+                if item.get("status") == "renamed":
+                    previous = item.get("previous_filename")
+                    if not isinstance(previous, str) or not previous:
+                        raise SystemExit("malformed PR files payload from GitHub API")
+                    changed_files.append(previous)
+            if len(payload) < 100:
+                break
+            page += 1
+        governed_paths = [
+            path
+            for path in changed_files
+            if path in governed_files or path.startswith(governed_prefixes)
+        ]
+        is_governance = (
+            head_ref.startswith(branch_prefixes)
+            or bool(labels & trigger_labels)
+            or bool(governed_paths)
+        )
+        """
+    ).rstrip()
+    extras: list[str] = []
+    if write_output:
+        extras.append(
+            dedent(
+                """\
+                output_path = os.environ.get("GITHUB_OUTPUT")
+                if not output_path:
+                    raise SystemExit("GITHUB_OUTPUT is required")
+                with open(output_path, "a", encoding="utf-8") as handle:
+                    handle.write(f"is_governance={'true' if is_governance else 'false'}\\n")
+                """
+            ).rstrip()
+        )
+    if skip_message is not None:
+        lines = [
+            "if not is_governance:",
+            f"    print({skip_message!r})",
+        ]
+        if exit_when_false:
+            lines.append("    raise SystemExit(0)")
+        extras.append("\n".join(lines))
+    if extras:
+        script += "\n\n" + "\n\n".join(extras)
+    return script
+
+
+def _replace_governance_pull_request_placeholders(template: str) -> str:
+    return template.replace(
+        "__GOVERNANCE_TRIGGER_LABELS__", json.dumps(sorted(GOVERNANCE_REVIEW_TRIGGER_LABELS))
+    ).replace(
+        "__GOVERNANCE_BRANCH_PREFIXES__", json.dumps(list(GOVERNANCE_PR_BRANCH_PREFIXES))
+    ).replace(
+        "__GOVERNED_FACT_FILES__", json.dumps(sorted(GOVERNED_FACT_FILES))
+    ).replace(
+        "__GOVERNED_FACT_PREFIXES__", json.dumps(list(GOVERNED_FACT_PREFIXES))
     )
 
 
@@ -78,6 +179,8 @@ L2_WORKFLOW_TEMPLATE = dedent(
         types:
           - opened
           - synchronize
+          - reopened
+          - labeled
         branches:
           - main
 
@@ -93,29 +196,61 @@ L2_WORKFLOW_TEMPLATE = dedent(
     jobs:
       review:
         runs-on: ubuntu-latest
-        if: >-
-          __L2_REVIEW_CONDITION__
         steps:
+          - name: Detect governance PR
+            id: detect_governance
+            env:
+              GH_TOKEN: ${{ github.token }}
+              GITHUB_API_URL: ${{ github.api_url }}
+              GITHUB_REPOSITORY: ${{ github.repository }}
+              GOVERNANCE_TRIGGER_LABELS: '__GOVERNANCE_TRIGGER_LABELS__'
+              GOVERNANCE_BRANCH_PREFIXES: '__GOVERNANCE_BRANCH_PREFIXES__'
+              GOVERNED_FACT_FILES: '__GOVERNED_FACT_FILES__'
+              GOVERNED_FACT_PREFIXES: '__GOVERNED_FACT_PREFIXES__'
+              PR_LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+              PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
+              PR_NUMBER: ${{ github.event.pull_request.number }}
+            run: |
+              python - <<'PY'
+__L2_GOVERNANCE_DETECTION_PY__
+              PY
           - uses: __CHECKOUT_ACTION__
+            if: steps.detect_governance.outputs.is_governance == 'true'
             with:
               fetch-depth: 0
               ref: ${{ github.event.pull_request.head.sha }}
           - name: Prepare PR head branch
+            if: steps.detect_governance.outputs.is_governance == 'true'
             env:
               PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
               PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
             run: git checkout -B "$PR_HEAD_REF" "$PR_HEAD_SHA"
           - name: Install gitmem
+            if: steps.detect_governance.outputs.is_governance == 'true'
             run: __WORKFLOW_INSTALL_COMMAND__
           - name: Run L2 review
+            if: steps.detect_governance.outputs.is_governance == 'true'
             run: umx dream --mode remote --tier l2 --pr ${{ github.event.pull_request.number }} --head-sha ${{ github.event.pull_request.head.sha }} --provider nvidia
             env:
               GH_TOKEN: ${{ github.token }}
               NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-     """
-).replace("__L2_REVIEW_CONDITION__", _l2_review_condition()).replace("__CHECKOUT_ACTION__", CHECKOUT_ACTION).replace(
+      """
+).replace(
+    "__L2_GOVERNANCE_DETECTION_PY__",
+    _indent_block(
+        _governance_pr_detection_python(
+            write_output=True,
+            skip_message="non-governance PR; L2 review skipped",
+        ),
+        14,
+    ),
+).replace(
+    "__CHECKOUT_ACTION__", CHECKOUT_ACTION
+).replace(
     "__WORKFLOW_INSTALL_COMMAND__", WORKFLOW_INSTALL_COMMAND
 )
+L2_WORKFLOW_TEMPLATE = _replace_governance_pull_request_placeholders(L2_WORKFLOW_TEMPLATE)
+L2_WORKFLOW_TEMPLATE = dedent(L2_WORKFLOW_TEMPLATE)
 
 
 APPROVAL_GATE_WORKFLOW_TEMPLATE = dedent(
@@ -158,64 +293,7 @@ APPROVAL_GATE_WORKFLOW_TEMPLATE = dedent(
               PR_NUMBER: ${{ github.event.pull_request.number }}
             run: |
               python - <<'PY'
-              import json
-              import os
-              import urllib.request
-
-              labels = set(json.loads(os.environ["PR_LABELS_JSON"]))
-              trigger_labels = set(json.loads(os.environ["GOVERNANCE_TRIGGER_LABELS"]))
-              branch_prefixes = tuple(json.loads(os.environ["GOVERNANCE_BRANCH_PREFIXES"]))
-              governed_files = set(json.loads(os.environ["GOVERNED_FACT_FILES"]))
-              governed_prefixes = tuple(json.loads(os.environ["GOVERNED_FACT_PREFIXES"]))
-              head_ref = os.environ.get("PR_HEAD_REF", "")
-              api_url = os.environ["GITHUB_API_URL"].rstrip("/")
-              repo = os.environ["GITHUB_REPOSITORY"]
-              pr_number = os.environ["PR_NUMBER"]
-              token = os.environ["GH_TOKEN"]
-              changed_files = []
-              page = 1
-              while True:
-                  request = urllib.request.Request(
-                      f"{api_url}/repos/{repo}/pulls/{pr_number}/files?per_page=100&page={page}",
-                      headers={
-                          "Accept": "application/vnd.github+json",
-                          "Authorization": f"Bearer {token}",
-                      },
-                  )
-                  with urllib.request.urlopen(request, timeout=30) as response:
-                      payload = json.loads(response.read().decode("utf-8") or "[]")
-                  if not isinstance(payload, list):
-                      raise SystemExit("unexpected PR files payload from GitHub API")
-                  if not payload:
-                      break
-                  for item in payload:
-                      if not isinstance(item, dict):
-                          raise SystemExit("malformed PR files payload from GitHub API")
-                      filename = item.get("filename")
-                      if not isinstance(filename, str) or not filename:
-                          raise SystemExit("malformed PR files payload from GitHub API")
-                      changed_files.append(filename)
-                      if item.get("status") == "renamed":
-                          previous = item.get("previous_filename")
-                          if not isinstance(previous, str) or not previous:
-                              raise SystemExit("malformed PR files payload from GitHub API")
-                          changed_files.append(previous)
-                  if len(payload) < 100:
-                      break
-                  page += 1
-              governed_paths = [
-                  path
-                  for path in changed_files
-                  if path in governed_files or path.startswith(governed_prefixes)
-              ]
-              is_governance = (
-                  head_ref.startswith(branch_prefixes)
-                  or bool(labels & trigger_labels)
-                  or bool(governed_paths)
-              )
-              if not is_governance:
-                  print("non-governance PR; approval gate skipped")
-                  raise SystemExit(0)
+__GOVERNANCE_DETECTION_PY__
               required = "__APPROVED_LABEL__"
               if required not in labels:
                   print(f"governance PR missing required label: {required}")
@@ -223,15 +301,20 @@ APPROVAL_GATE_WORKFLOW_TEMPLATE = dedent(
               print("governance approval gate satisfied")
               PY
     """
-).replace("__GOVERNANCE_TRIGGER_LABELS__", json.dumps(sorted(GOVERNANCE_REVIEW_TRIGGER_LABELS))).replace(
-    "__GOVERNANCE_BRANCH_PREFIXES__", json.dumps(list(GOVERNANCE_PR_BRANCH_PREFIXES))
 ).replace(
-    "__GOVERNED_FACT_FILES__", json.dumps(sorted(GOVERNED_FACT_FILES))
-).replace(
-    "__GOVERNED_FACT_PREFIXES__", json.dumps(list(GOVERNED_FACT_PREFIXES))
+    "__GOVERNANCE_DETECTION_PY__",
+    _indent_block(
+        _governance_pr_detection_python(
+            skip_message="non-governance PR; approval gate skipped",
+            exit_when_false=True,
+        ),
+        14,
+    ),
 ).replace(
     "__APPROVED_LABEL__", LABEL_STATE_APPROVED
 )
+APPROVAL_GATE_WORKFLOW_TEMPLATE = _replace_governance_pull_request_placeholders(APPROVAL_GATE_WORKFLOW_TEMPLATE)
+APPROVAL_GATE_WORKFLOW_TEMPLATE = dedent(APPROVAL_GATE_WORKFLOW_TEMPLATE)
 
 
 def _main_guard_workflow_template(mode: str = "remote") -> str:

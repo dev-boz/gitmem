@@ -234,7 +234,7 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 - `remote` / `hybrid` mode bootstraps GitHub-backed memory automatically; in `local` mode the repos stay on your filesystem unless you attach your own remotes and run `gitmem sync`.
 - Hybrid search can optionally use local `sentence-transformers` embeddings or remote OpenAI/Voyage embedding APIs when you configure `search.embedding.provider` plus the matching environment variable.
 - Anonymous telemetry is available as an **opt-in** config path. It is off by default and does not send prompts, facts, transcripts, repo paths, or raw remote URLs.
-- The local alpha does not require model API keys. The repo includes draft GitHub Actions templates that reference `GROQ_API_KEY` and `ANTHROPIC_API_KEY` for future provider-backed review; that path is still experimental.
+- The local alpha does not require model API keys. The repo includes experimental GitHub Actions templates for governed remote flows: L1 extraction uses `GROQ_API_KEY`, and the shipped L2 review path uses `NVIDIA_API_KEY`.
 
 ## Remote mode (experimental)
 
@@ -313,21 +313,22 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - Remote cross-project proposal branch push via `gitmem propose --cross-project --proposal-key ... --push` (pushes only the `proposal/...` branch after confirming local `main` exactly matches `origin/main`)
 - Explicit cross-project PR open via `gitmem propose --cross-project --proposal-key ... --open-pr` (opens a PR only for an already-pushed proposal branch)
 - Native memory import adapters for Claude Code, Copilot instructions, and Aider
+- Eval/benchmark harnesses for `l2-review`, `inject`, `long-memory`, `longmemeval`, `locomo`, `convomem`, `longbench-v2`, `ruler`, `beir`, `retrieval`, `compare`, and `release-gate`
 - FTS5 search, budget-aware injection, richer viewer surfaces, shims, bridge files, MCP server, and `aip-mem`
-- Remote/hybrid bootstrap, PR scaffolding, L2 review wiring, and session sync (experimental)
+- Remote/hybrid bootstrap, PR scaffolding, provider-backed L2 review wiring, workflow templates, and session sync (experimental)
 
 ### Next
 - **Claude Code live hooks** — broaden coverage beyond the current install helpers (more Claude events, richer relay/telemetry)
 - **Read adapters** — generic CLI and hybrid gather across tools
-- **Extraction quality** — better prompts, golden-test harness, benchmark framework
-- **Provider-backed review** — turn the current remote/L1/L2 scaffolding into a provider-backed path with stronger provenance and merge policy
+- **Extraction quality** — better prompts, stronger golden-test coverage, and deeper end-to-end Dream-cycle benchmarks beyond the current benchmark/eval surfaces
+- **Provider-backed review** — harden the shipped remote/L1/L2 provider path with stronger provenance, timeouts, and merge policy
 
 ### Then: GitHub governance hardening
 - **gitmem backend** — GitHub owner bootstrap, push queue, PR pipeline
 - **L1/L2/L3 governance** — cheap models propose (L1), SotA models review (L2), humans confirm (L3)
 - **CONVENTIONS.md enforcement** — human-authored project schema drives extraction taxonomy
 - **Audit trail** — session-to-fact traceability, deep therapy re-derivation
-- **GitHub Actions** — workflow templates for automated dream cycles and lint PRs
+- **GitHub Actions** — harden and pin the shipped workflow templates for automated dream cycles, L2 review, and lint PRs
 
 ### Later
 - Web viewer with strength/scope/conflict filters, supersession timelines, and edit/confirm/promote actions
