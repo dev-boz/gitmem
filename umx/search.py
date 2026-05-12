@@ -106,6 +106,53 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
 
+def _ensure_skill_tables(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "skill_loads")
+    if columns and "load_id" not in columns:
+        conn.executescript(
+            """
+            ALTER TABLE skill_loads RENAME TO skill_loads_legacy;
+            CREATE TABLE skill_loads (
+              load_id INTEGER PRIMARY KEY AUTOINCREMENT,
+              skill_id TEXT NOT NULL,
+              skill_name TEXT NOT NULL,
+              version TEXT NOT NULL,
+              session_id TEXT NOT NULL,
+              load_trigger TEXT NOT NULL,
+              directives_resolved INTEGER DEFAULT 0,
+              facts_retrieved INTEGER DEFAULT 0,
+              tokens_used INTEGER DEFAULT 0,
+              loaded_at TEXT NOT NULL
+            );
+            INSERT INTO skill_loads (
+              skill_id, skill_name, version, session_id, load_trigger,
+              directives_resolved, facts_retrieved, tokens_used, loaded_at
+            )
+            SELECT
+              skill_id, skill_name, version, session_id, load_trigger,
+              directives_resolved, facts_retrieved, tokens_used, loaded_at
+            FROM skill_loads_legacy;
+            DROP TABLE skill_loads_legacy;
+            """
+        )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS skill_retrievals (
+          load_id INTEGER NOT NULL,
+          fact_id TEXT NOT NULL,
+          directive_kind TEXT NOT NULL,
+          directive_value TEXT NOT NULL,
+          selected_for_injection INTEGER DEFAULT 0,
+          used_in_output INTEGER DEFAULT 0
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_loads_session ON skill_loads(session_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_loads_skill ON skill_loads(skill_id, loaded_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_retrievals_load ON skill_retrievals(load_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_skill_retrievals_fact ON skill_retrievals(fact_id, load_id)")
+
+
 def index_path(repo_dir: Path) -> Path:
     return repo_dir / "meta" / INDEX_NAME
 
@@ -282,6 +329,29 @@ def ensure_usage_db(repo_dir: Path) -> None:
           PRIMARY KEY (session_id, fact_id)
         );
         CREATE INDEX IF NOT EXISTS idx_session_fact_state_session ON session_fact_state(session_id, last_referenced_turn, last_referenced_at);
+
+        CREATE TABLE IF NOT EXISTS skill_loads (
+          load_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill_id TEXT NOT NULL,
+          skill_name TEXT NOT NULL,
+          version TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          load_trigger TEXT NOT NULL,
+          directives_resolved INTEGER DEFAULT 0,
+          facts_retrieved INTEGER DEFAULT 0,
+          tokens_used INTEGER DEFAULT 0,
+          loaded_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_loads_session ON skill_loads(session_id);
+        CREATE INDEX IF NOT EXISTS idx_skill_loads_skill ON skill_loads(skill_id, loaded_at);
+        CREATE TABLE IF NOT EXISTS skill_retrievals (
+          load_id INTEGER NOT NULL,
+          fact_id TEXT NOT NULL,
+          directive_kind TEXT NOT NULL,
+          directive_value TEXT NOT NULL,
+          selected_for_injection INTEGER DEFAULT 0,
+          used_in_output INTEGER DEFAULT 0
+        );
         """
     )
     _ensure_columns(
@@ -310,6 +380,7 @@ def ensure_usage_db(repo_dir: Path) -> None:
             "created_at": "TEXT",
         },
     )
+    _ensure_skill_tables(conn)
     conn.commit()
     conn.close()
     _ENSURED_USAGE_PATHS.add(path)
@@ -1095,6 +1166,18 @@ def record_reference(
             ),
         )
         _mark_latest_injection_used(conn, session_id, fact_id)
+        conn.execute(
+            """
+            UPDATE skill_retrievals
+            SET used_in_output = 1
+            WHERE fact_id = ?
+              AND selected_for_injection = 1
+              AND load_id IN (
+                SELECT load_id FROM skill_loads WHERE session_id = ?
+              )
+            """,
+            (fact_id, session_id),
+        )
     conn.commit()
     event_id = int(cursor.lastrowid) if cursor.lastrowid is not None else None
     conn.close()
@@ -1438,3 +1521,92 @@ def injected_without_reference_sessions(repo_dir: Path, min_sessions: int = 5) -
         {"fact_id": row["fact_id"], "silent_sessions": row["silent_sessions"]}
         for row in rows
     ]
+
+
+def record_skill_load(
+    repo_dir: Path,
+    skill_id: str,
+    skill_name: str,
+    version: str,
+    session_id: str,
+    load_trigger: str,
+    directives_resolved: int = 0,
+    facts_retrieved: int = 0,
+    tokens_used: int = 0,
+) -> int:
+    ensure_usage_db(repo_dir)
+    conn = _connect(usage_path(repo_dir))
+    cursor = conn.execute(
+        """
+        INSERT INTO skill_loads (
+          skill_id, skill_name, version, session_id, load_trigger,
+          directives_resolved, facts_retrieved, tokens_used, loaded_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            skill_id,
+            skill_name,
+            version,
+            session_id,
+            load_trigger,
+            directives_resolved,
+            facts_retrieved,
+            tokens_used,
+            _utcnow_iso(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return int(cursor.lastrowid or 0)
+
+
+def record_skill_retrievals(
+    repo_dir: Path,
+    load_id: int,
+    retrievals: list[Any],
+    *,
+    selected_fact_ids: set[str] | None = None,
+) -> None:
+    if load_id <= 0 or not retrievals:
+        return
+    ensure_usage_db(repo_dir)
+    selected = selected_fact_ids or set()
+    rows = {
+        (
+            load_id,
+            str(item.fact_id),
+            str(item.directive_kind),
+            str(item.directive_value),
+            1 if str(item.fact_id) in selected else 0,
+            0,
+        )
+        for item in retrievals
+    }
+    conn = _connect(usage_path(repo_dir))
+    conn.executemany(
+        """
+        INSERT INTO skill_retrievals (
+          load_id, fact_id, directive_kind, directive_value,
+          selected_for_injection, used_in_output
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        sorted(rows),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_skill_usage_stats(repo_dir: Path, skill_id: str | None = None) -> list[dict]:
+    ensure_usage_db(repo_dir)
+    conn = _connect(usage_path(repo_dir))
+    if skill_id:
+        rows = conn.execute(
+            "SELECT * FROM skill_loads WHERE skill_id = ? ORDER BY loaded_at DESC",
+            (skill_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM skill_loads ORDER BY loaded_at DESC LIMIT 100"
+        ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]

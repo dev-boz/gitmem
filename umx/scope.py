@@ -192,6 +192,7 @@ def ensure_repo_structure(repo_dir: Path, *, ensure_schema: bool = True) -> None
         "facts/topics",
         "principles/topics",
         "procedures",
+        "skills",
         "meta",
         "local/private",
         "local/secret",

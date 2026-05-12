@@ -30,7 +30,8 @@ Facts are governed through pull requests so memory is auditable, correctable, an
 7. [Scope Hierarchy](#7-scope-hierarchy)
 8. [Local Path Convention](#8-local-path-convention)
 9. [Memory File Format](#9-memory-file-format)
-9a. [Proceedure File Format](#9a-proceedure-file-format)
+9a. [Procedure File Format](#9a-procedure-file-format)
+9b. [Skill File Format](#9b-skill-file-format)
 10. [Read Strategy](#10-read-strategy)
 11. [Dream Pipeline](#11-dream-pipeline)
 12. [GitHub Dream Governance (gitmem)](#12-github-dream-governance-gitmem)
@@ -125,6 +126,7 @@ Why:
 │    facts/       consolidated stable facts (reviewed/merged)      │
 │    principles/  cross-session patterns (SotA/human gate)         │
 │    procedures/  reusable playbooks and action rules              │
+│    skills/      retrieval routing cues and memory pointers        │
 │    meta/        index, manifest, dream log, schema version       │
 │    local/       gitignored — private/ and secret/ split          │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -233,6 +235,7 @@ For product design, gitmem uses a slightly simpler working vocabulary:
 | **Episode** | A session-bound observation tied to when/where something was learned | Episodic memory [1] |
 | **Fact** | Durable project knowledge expected to survive beyond one session | Semantic memory [1] |
 | **Procedure** | A reusable action pattern, checklist, or workflow trigger | Procedural/non-declarative skill framing [2] |
+| **Skill** | A trigger-activated retrieval cue that routes agents to relevant memories | Associative retrieval cueing [3] |
 | **Coverage signal** | Metadata about uncertainty, gaps, conflicts, or known areas | Metacognition [12] |
 
 This vocabulary is intentional. The system does **not** use competitor-branded terminology, and it avoids treating "implicit memory" as a primary user-facing bucket. Inference remains important, but in gitmem it is framed as **derived evidence** rather than a first-class memory species.
@@ -896,6 +899,117 @@ they are OR'd, not AND'd.
 - One procedure per file. Filename matches the procedure slug:
   `procedures/deploy-staging.md`.
 
+## 9b  Skill File Format
+
+Skills live in `skills/` alongside `facts/`, `principles/`, and `procedures/`. They encode
+retrieval routing, not action instructions: a skill activates from context and points the
+injection layer at existing memory files or lightweight guidance. Procedures tell an agent
+what to do; skills tell the retrieval system where to look.
+
+Skills MUST NOT render resolved facts directly into their own output block. A skill produces
+candidate fact IDs and optional non-factual hints. Routed facts then pass through the normal
+fact pipeline: tombstone suppression, supersession filtering, secret exclusion, relevance
+scoring, context-budget packing, progressive disclosure, rendering, and usage telemetry.
+
+### Format
+
+```markdown
+# Database Debugging
+name: database-debug
+version: 1
+skill_status: active
+
+## Description
+Routes database-debugging prompts to database and local development facts.
+
+## Triggers
+- command: `psql|pg_dump|pg_restore|pgcli`
+- pattern: `database|postgres|connection.*refused`
+- file: `src/db/**|migrations/**|docker-compose*.yml`
+
+## Retrieval
+- load: `facts/topics/database.md`
+- load: `facts/topics/devenv.md`
+- load: `folders/src---db.md`
+- hint: Check database port facts before assuming the default PostgreSQL port.
+
+<!-- umx:{"id":"01JQXYZ...","v":"1","ss":"active"} -->
+```
+
+Top-level `name`, `version`, and `skill_status` fields are the preferred authoring form.
+Inline metadata may provide the same values for generated or migrated skills. Supported
+statuses are:
+
+| Status | Meaning |
+|--------|---------|
+| `draft` | Parsed but not activated by triggers or explicit invocation |
+| `active` | Eligible for trigger and explicit activation |
+| `competing` | Eligible for activation; reserved for future version-evaluation workflows |
+| `retired` | Excluded from activation |
+
+### Trigger types
+
+Skill triggers use the same syntax and semantics as procedure triggers:
+
+| Type | Syntax | Matches against |
+|------|--------|-----------------|
+| `command:` | Regex | Tool invocation string |
+| `file:` | Glob | File path being read, written, or passed as argument |
+| `pattern:` | Regex | User prompt text |
+
+A skill fires when any trigger matches. Agents and users MAY also request a skill explicitly
+with `@skill:<name>` in prompt text. The name match is exact and applies only to `active` or
+`competing` skills.
+
+### Retrieval directives
+
+| Directive | Status | Effect |
+|-----------|--------|--------|
+| `load:` | Required MVP directive | Load facts from a memory markdown file and route their IDs into normal packing |
+| `search:` | Deprecated alias | Treated as `load:` for compatibility; new skills SHOULD use `load:` |
+| `hint:` | Required MVP directive | Inject lightweight non-factual guidance under `## Skill Hints` if budget permits |
+| `query:` | Reserved | Parsed but not executed in v0.9.2; authoring tools SHOULD report it as unsupported |
+| `link:` | Reserved | Parsed but not executed in v0.9.2; authoring tools SHOULD report it as unsupported |
+
+`load:` targets MUST be relative paths inside the memory repo. Implementations MUST reject
+absolute paths, Windows drive paths, `..` traversal, and any `local/secret/**` target. Valid
+load targets are limited to committed or injectable memory scopes:
+
+- `facts/topics/**`
+- `episodic/topics/**`
+- `principles/topics/**`
+- `local/private/**`
+- `tools/**`
+- `machines/**`
+- `folders/**`
+- `files/**`
+
+`hint:` is for process guidance and retrieval cues, not durable factual claims. Durable claims
+SHOULD be stored as facts and reached through `load:`. Example: "Check database port facts before
+assuming 5432" is a valid hint; "Postgres runs on 5433" belongs in `facts/`.
+
+### Injection behaviour
+
+Activated skills contribute:
+
+1. routed fact IDs, which receive a route bonus in the normal relevance score, and
+2. optional hints, which are packed into a bounded `## Skill Hints` section.
+
+Triggered skills SHOULD receive a smaller route bonus than explicitly invoked skills. Explicit
+skills MAY still lose individual facts during budget packing; explicit invocation is a strong
+retrieval cue, not an unconditional bypass of the context budget.
+
+Skills are disabled globally when `skills.enabled: false`. `skills.max_concurrent_skills` caps
+the number of activated skills per injection. `skills.max_directives_per_skill` caps directive
+resolution for a single skill.
+
+### Governance
+
+Skills affect what context an agent sees. In `remote` and `hybrid` modes, skill creation and
+modification SHOULD follow the same review path as facts and procedures. Trigger-only edits are
+not low-risk: broadening a trigger can materially increase injection volume and change agent
+behaviour.
+
 ## 10  Read Strategy
 
 umx uses a **hybrid read** approach. Two tracks:
@@ -1330,9 +1444,9 @@ Eligible when:
 
 | Injection point | Trigger | Layers injected |
 |-----------------|---------|-----------------|
-| **Session start** | Tool launch | User-global, tool, machine, project, open tasks (Ovsiankina) |
-| **Each prompt** | User message | Folder, keyword-matched |
-| **Pre-tool hook** | Tool/command about to execute (Tier 1 only) | Tool-matched facts + matching procedures |
+| **Session start** | Tool launch | User-global, tool, machine, project, open tasks (Ovsiankina), matching skills |
+| **Each prompt** | User message | Folder, keyword-matched facts, explicit `@skill:<name>` requests, matching skills |
+| **Pre-tool hook** | Tool/command about to execute (Tier 1 only) | Tool-matched facts + matching procedures + matching skills |
 | **Attention refresh** | Attention window elapsed for already-used items | Previously used facts whose last injection has drifted far enough from the current cursor |
 | **Post-tool hook** | File/command touched | File layer, folder layer |
 | **File read append** | File read intercept | File layer |
@@ -1341,6 +1455,11 @@ Eligible when:
 | **Wrapper shim** | Tool startup (no hooks) | Project + tool |
 
 Facts are ordered by `relevance_score` descending, but already-used items MAY receive an **attention refresh** bonus when the session telemetry says they are likely to have drifted too far from the active cursor [19]. Injection stops at budget. Refreshed items compete with new candidates in the same packing pass; they are not additive.
+
+Skill-routed facts also compete in the same packing pass. A skill activation adds a route bonus
+to the facts it points at; it does not directly inject those facts outside the normal budget,
+disclosure, tombstone, and secret-filtering pipeline. Skill hints are the only skill-authored
+text injected directly, and they are bounded separately under `## Skill Hints`.
 
 The addendum called this behaviour "re-injection" / "redisclosure". The canonical gitmem term is **attention refresh**. Config names SHOULD therefore be phrased around refresh/reattendance rather than competitor-specific wording.
 
@@ -1354,6 +1473,7 @@ Pre-tool matching uses:
 - command/argument signature
 - touched file paths
 - any matched `procedures/` triggers
+- any matched `skills/` triggers
 
 ### Attention refresh
 
@@ -1768,11 +1888,44 @@ CREATE TABLE usage (
   injected_count INTEGER DEFAULT 0,  -- times included in context
   cited_count INTEGER DEFAULT 0,     -- times referenced in output
   last_session TEXT,                  -- session ID of last reference
+  item_kind TEXT DEFAULT 'fact',
   PRIMARY KEY (fact_id)
 );
 ```
 
 This separation ensures `last_referenced` updates (which happen on every citation) never create merge conflicts in committed markdown files.
+
+Skill activation telemetry is also local-only. It measures routing precision without making
+skill usage part of committed memory truth:
+
+```sql
+CREATE TABLE skill_loads (
+  load_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  skill_id TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  load_trigger TEXT NOT NULL,       -- explicit | trigger
+  directives_resolved INTEGER DEFAULT 0,
+  facts_retrieved INTEGER DEFAULT 0,
+  tokens_used INTEGER DEFAULT 0,
+  loaded_at TEXT NOT NULL
+);
+
+CREATE TABLE skill_retrievals (
+  load_id INTEGER NOT NULL,
+  fact_id TEXT NOT NULL,
+  directive_kind TEXT NOT NULL,
+  directive_value TEXT NOT NULL,
+  selected_for_injection INTEGER DEFAULT 0,
+  used_in_output INTEGER DEFAULT 0
+);
+```
+
+`skill_retrievals.selected_for_injection` records whether a routed fact survived the normal
+packing pass. `used_in_output` is set when that selected fact is later detected in assistant
+output for the same session. Skill effectiveness is therefore computed from routed facts that
+actually shaped output, not merely from activations.
 
 Default ranking function: `bm25()`.
 
@@ -2074,6 +2227,7 @@ umx/
 ├── inject.py               # injection + relevance scoring + gap signal emission
 ├── budget.py               # context budget inference + enforcement
 ├── sessions.py             # session log write + JSONL + _meta schema
+├── skills.py               # skills/ parsing + retrieval routing directives
 ├── redaction.py            # pre-commit secret scanning + pattern matching
 ├── search.py               # SQLite FTS: build, incremental rebuild, query
 ├── search_semantic.py      # optional: embedding generation, provider-aware cache validation, cosine re-rank
@@ -2126,6 +2280,7 @@ umx/
 umx init             [--owner <n>] [--org <n>] [--mode local|remote|hybrid]
 umx init-project     [--cwd .] [--slug <n>] [--yes]
 umx inject           --cwd . [--tool <tool>] [--prompt <text>] [--command <text>] [--session <id>] [--context-window N] [--expand-fact <id>...] [--file <path>...] [--max-tokens N]
+umx skill test       --cwd . --name <skill-name>
 umx collect          --cwd . --tool <tool> [--file <path>] [--format auto|text|jsonl] [--role assistant|tool_result|user] [--session-id <id>] [--meta key=value] [--dry-run]
 umx dream            --cwd . [--force] [--force-reason <text>] [--force-lint] [--mode local|remote|hybrid] [--tier l1|l2] [--pr <n>] [--head-sha <sha>] [--provider anthropic|nvidia|claude-cli]
 umx view             --cwd . [--fact <id>] [--list] [--min-strength N]
@@ -2285,6 +2440,16 @@ sessions:
     active_days: 90                   # days before archival
     compression: gzip                 # gzip | none
 
+# Skills
+skills:
+  enabled: true                       # enable skills/ retrieval routing
+  max_chain_depth: 2                  # reserved for future link: support
+  max_directives_per_skill: 20        # cap load:/hint: resolution per skill
+  max_concurrent_skills: 5            # cap activated skills per injection
+  semantic_match_threshold: 0.1       # reserved for future semantic skill activation
+  version_promotion_threshold: 2.0    # reserved for future competing skill versions
+  prune_inactive_days: 30             # reserved for future skill maintenance
+
 # Injection
 inject:
   min_facts: 3                        # warn if greedy packing produces fewer facts than this within budget (§17)
@@ -2359,12 +2524,12 @@ Dependency order matters, but **gitmem remains the primary differentiator**. Onc
 | **1** | Core library | `scope.py` + `memory.py` + `strength.py` + `identity.py` · trust/relevance/retention scoring · AIP hook integration · session log write + redaction (fail-closed, regex + Shannon entropy) · project discovery + slug collision · quarantine system · `umx doctor` · greedy packing algorithm + `token_count` in SQLite + always-inject floor · **test harness: known sessions → expected facts at expected strengths** · **benchmark framework: extraction accuracy, recall quality** |
 | **2** | Dream pipeline | Orient (reads CONVENTIONS.md — missing=skip+notice, checks `ground_truth_code` anchors) → Gather (source_type tagging, gap emission with tool-driven triggers) → Consolidate (supersession chains, `applies_to` conflict resolution) → Lint (weekly: orphans, tag drift, convention violations, anchor re-verification prompts) → Prune (min_age_days, abandon_days, MEMORY.md generation algorithm, manifest rebuild) · 3-gate + gap trigger · provider rotation · `.gitignore` safety + fact-level redaction · tombstones · consolidation_status lifecycle · schema_conflict flagging · `pre_compact` hook |
 | **3** | Read adapters | Claude Code · Aider · generic · hybrid gather · provider-native low-cost extractor fallback for opaque session formats · corroboration bonus (independence rules, split `cort`/`corf`) · SQLite FTS (WAL mode, incremental rebuild, source_type indexed) · `meta/usage.sqlite` telemetry · **bulk import: `umx import --tool claude-code`** |
-| **4** | Injection layer | Tier 1–4 hooks/shims/MCP · budget enforcement · hot-tier token cap · relevance scoring (encoding context) · task salience injection · `[fragile]` marker · gap signal emission · **pre-tool hook** · **attention refresh** · **progressive disclosure (L0/L1/L2)** · **procedures/ schema + trigger matching** · **subagent relay** · session-aware `meta/usage.sqlite` telemetry · legacy bridge · startup sweep for orphaned sessions |
+| **4** | Injection layer | Tier 1–4 hooks/shims/MCP · budget enforcement · hot-tier token cap · relevance scoring (encoding context) · task salience injection · `[fragile]` marker · gap signal emission · **pre-tool hook** · **attention refresh** · **progressive disclosure (L0/L1/L2)** · **procedures/ schema + trigger matching** · **skills/ retrieval routing (`load:`, `hint:`, `@skill:<name>`, `umx skill test`)** · **subagent relay** · session-aware `meta/usage.sqlite` telemetry · legacy bridge · startup sweep for orphaned sessions |
 | **5** | gitmem backend | `umx init` bootstrap · GitHub org layout · push queue · PR pipeline · L1/L2/L3 governance (reconciled label system) · CONVENTIONS.md in L2 reviewer context · audit trail · `umx sync` · Actions workflow templates · Lint PR automation · `meta/processing.jsonl` for distributed dream locking |
 | **6** | Viewer / editor | Web viewer · strength/scope/verification/source_type filters · conflict UI · supersession timeline · task board · tombstone panel · lint report · session browser · audit view · gap proposals · pipeline health · manifest coverage · **derived views (topic narrative, conflict matrix, task timeline, session replay)** · TUI |
 | **7** | Hardening | `umx merge` · arbitrator agent · `umx confirm` / `umx history` / `umx resume` / `umx meta` / `umx health` CLI · schema migration tooling · session compression · time decay tuning · signed commits · hypothesis branches · orphaned scope detection · inline metadata conformance test corpus · metric dashboards and calibration guidance |
 | **8** | Cross-project | Cross-project dream · promotion protocol · deep re-derivation (`umx audit --rederive`) · principle governance |
-| **9** | Ecosystem | `aip mem` integration · published spec · legacy bridge · third-party adoption · richer procedure authoring/runtime ergonomics · **semantic re-ranking** (`search.backend: hybrid`): `umx[embeddings]` optional extra, `search_semantic.py`, embedding cache in `.umx.json`, model version invalidation, `umx rebuild-index --embeddings`, `weights.relevance.semantic_similarity` config, graceful fallback to lexical-only (§20a) |
+| **9** | Ecosystem | `aip mem` integration · published spec · legacy bridge · third-party adoption · richer procedure and skill authoring/runtime ergonomics · **semantic re-ranking** (`search.backend: hybrid`): `umx[embeddings]` optional extra, `search_semantic.py`, embedding cache in `.umx.json`, model version invalidation, `umx rebuild-index --embeddings`, `weights.relevance.semantic_similarity` config, graceful fallback to lexical-only (§20a) |
 
 ---
 
@@ -2455,6 +2620,7 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 - **When to create project memory** — rule of thumb: if the project has architecture, it gets memory.
 - **Inline metadata grammar formalisation** — §9 defines the field table. A formal EBNF grammar, escaping rules for `-->` inside JSON values, and a round-trip conformance test corpus (5-10 examples) are deferred to Phase 7 (Hardening). Canonical field ordering: `id`, `conf`, `cort`, `corf`, `pr`, `src`, `xby`, `aby`, `ss`, `st`, `cr`, `v`, `cs`, then optional fields alphabetically.
 - **Procedure ergonomics** — `procedures/` is now part of the v1 schema. What remains open is authoring ergonomics: richer trigger builders, linting, templates, and optional execution-adjacent helpers are deferred beyond v1.
+- **Skill expansion beyond routing MVP** — `skills/` supports trigger/explicit activation, `load:`, `hint:`, and `umx skill test`. Deferred work includes executing `query:`, supporting `link:` chains with cycle detection, semantic skill activation, dream-proposed skills, and automated skill version competition.
 - **Distributed dream locking** — `meta/processing.jsonl` for multi-machine coordination is a Phase 5 deliverable. For now, GitHub Actions `concurrency` groups are sufficient.
 - **`confidence` calibration** — bounded [0,1], informational-only for conflict resolution in v1. Excluded from trust_score until calibrated across models.
 

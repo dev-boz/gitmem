@@ -83,6 +83,19 @@ class SessionsConfig:
 
 
 @dataclass(slots=True)
+class SkillsConfig:
+    """Skill loading and version competition settings."""
+
+    enabled: bool = True
+    max_chain_depth: int = 2
+    max_directives_per_skill: int = 20
+    max_concurrent_skills: int = 5
+    semantic_match_threshold: float = 0.1
+    version_promotion_threshold: float = 2.0
+    prune_inactive_days: int = 30
+
+
+@dataclass(slots=True)
 class InjectConfig:
     """Prompt injection budgets and refresh behavior."""
 
@@ -199,6 +212,7 @@ class UMXConfig:
     prune: PruneConfig = field(default_factory=PruneConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    skills: SkillsConfig = field(default_factory=SkillsConfig)
     inject: InjectConfig = field(default_factory=InjectConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
     bridge: BridgeConfig = field(default_factory=BridgeConfig)
@@ -229,6 +243,7 @@ NESTED_TYPES: dict[type[Any], dict[str, type[Any]]] = {
         "project": ProjectConfig,
         "dream": DreamConfig,
         "decay": DecayConfig,
+        "skills": SkillsConfig,
         "prune": PruneConfig,
         "memory": MemoryConfig,
         "sessions": SessionsConfig,
@@ -314,6 +329,7 @@ __all__ = [
     "RetentionConfig",
     "SessionsConfig",
     "InjectConfig",
+    "SkillsConfig",
     "SearchEmbeddingConfig",
     "SearchConfig",
     "BridgeConfig",

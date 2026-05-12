@@ -16,7 +16,7 @@ from umx.doctor import run_doctor
 from umx.dream.gates import read_dream_state
 from umx.dream.pipeline import DreamPipeline
 from umx.dream.processing import summarize_processing_log
-from umx.inject import emit_gap_signal, inject_for_tool
+from umx.inject import collect_facts_for_injection, emit_gap_signal, inject_for_tool
 from umx.manifest import manifest_path, topic_status
 from umx.metrics import compute_metrics, health_flags
 from umx.memory import find_fact_by_id, load_all_facts, remove_fact, replace_fact
@@ -37,6 +37,7 @@ from umx.governance_health import (
 from umx.search import advance_session_state
 from umx.redaction import RedactionError, validate_redaction_patterns
 from umx.search_semantic import embedding_rebuild_message, embeddings_available
+from umx.skills import load_all_skills, match_skills_by_name, resolve_skill
 from umx.scope import (
     config_path,
     discover_project_slug,
@@ -69,6 +70,17 @@ _BENCHMARK_PROVIDER_HELP = (
 
 def _cfg():
     return load_config(config_path())
+
+
+def _load_skills_for_cwd(cwd: Path) -> list:
+    root = find_project_root(cwd)
+    project_repo = project_memory_dir(root)
+    user_repo = user_memory_dir()
+    skills = []
+    if user_repo.exists():
+        skills.extend(load_all_skills(user_repo))
+    skills.extend(load_all_skills(project_repo))
+    return skills
 
 
 def _parse_bool_value(value: str) -> bool:
@@ -687,6 +699,78 @@ def inject_cmd(
         ),
         nl=False,
     )
+
+
+@main.group("skill")
+def skill_group() -> None:
+    pass
+
+
+@skill_group.command("test")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--name", required=True, help="Exact skill name to inspect.")
+def skill_test_cmd(cwd: Path, name: str) -> None:
+    root = find_project_root(cwd)
+    project_repo = project_memory_dir(root)
+    user_repo = user_memory_dir()
+    skill = match_skills_by_name(_load_skills_for_cwd(root), name)
+    if skill is None:
+        raise click.ClickException(f"skill not found: {name}")
+    resolution = resolve_skill(
+        skill,
+        user_repo if skill.scope == Scope.USER else project_repo,
+        config=_cfg(),
+    )
+    facts, _, _, _ = collect_facts_for_injection(root)
+    fact_index = {fact.fact_id: fact for fact in facts}
+    resolved_facts = [
+        fact_index[fact_id]
+        for fact_id in sorted(resolution.routed_fact_ids)
+        if fact_id in fact_index
+    ]
+    estimated_tokens = estimate_tokens(
+        "\n".join(
+            [
+                *(f"- {fact.text} [id:{fact.fact_id}]" for fact in resolved_facts),
+                *(f"- {hint}" for hint in resolution.hints),
+            ]
+        )
+    )
+    lines = [
+        f"Activated skill: {skill.name}",
+        f"Title: {skill.title}",
+        f"Version: {skill.version}",
+        f"Status: {skill.skill_status.value}",
+        f"Scope: {skill.scope.value}",
+        f"Estimated tokens: {estimated_tokens}",
+        "",
+        "Resolved facts:",
+    ]
+    if resolved_facts:
+        lines.extend(f"- {fact.text} [id:{fact.fact_id}]" for fact in resolved_facts)
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "Hints:"])
+    if resolution.hints:
+        lines.extend(f"- {hint}" for hint in resolution.hints)
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "Missing paths:"])
+    if resolution.missing_paths:
+        lines.extend(f"- {path}" for path in resolution.missing_paths)
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "Blocked paths:"])
+    if resolution.blocked_paths:
+        lines.extend(f"- {path}" for path in resolution.blocked_paths)
+    else:
+        lines.append("- (none)")
+    lines.extend(["", "Unsupported directives:"])
+    if resolution.unsupported_directives:
+        lines.extend(f"- {directive}" for directive in resolution.unsupported_directives)
+    else:
+        lines.append("- (none)")
+    click.echo("\n".join(lines))
 
 
 @main.command("collect")

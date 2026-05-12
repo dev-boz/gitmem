@@ -75,6 +75,14 @@ class ConsolidationStatus(str, Enum):
     FRAGILE = "fragile"
     STABLE = "stable"
 
+class SkillStatus(str, Enum):
+    """Lifecycle state for a versioned skill."""
+
+    DRAFT = "draft"          # new version, not yet in rotation
+    ACTIVE = "active"        # current default version
+    COMPETING = "competing"  # A/B evaluation against another version
+    RETIRED = "retired"      # replaced by a successor, excluded from injection
+
 
 class TaskStatus(str, Enum):
     """Task lifecycle state stored on a fact."""
@@ -83,7 +91,6 @@ class TaskStatus(str, Enum):
     BLOCKED = "blocked"
     RESOLVED = "resolved"
     ABANDONED = "abandoned"
-
 
 @dataclass(slots=True)
 class AppliesTo:
@@ -356,6 +363,7 @@ __all__ = [
     "SourceType",
     "ConsolidationStatus",
     "TaskStatus",
+    "SkillStatus",
     "AppliesTo",
     "CodeAnchor",
     "Provenance",

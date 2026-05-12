@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
 from datetime import UTC, datetime
@@ -12,6 +13,15 @@ from umx.conventions import summarize_conventions
 from umx.memory import iter_fact_files, load_all_facts, read_fact_file, read_memory_md
 from umx.models import Fact, Scope, TaskStatus
 from umx.procedures import Procedure, load_all_procedures, match_procedures
+from umx.skills import (
+    Skill,
+    SkillResolution,
+    SkillRetrieval,
+    load_all_skills,
+    match_skills_by_name,
+    match_skills_by_trigger,
+    resolve_skill_with_attribution,
+)
 from umx.search_semantic import semantic_similarity_map
 from umx.scope import (
     config_path,
@@ -27,12 +37,19 @@ from umx.search import (
     inject_candidate_ids,
     latest_referenced_turn,
     record_injections,
+    record_skill_load,
+    record_skill_retrievals,
 )
 from umx.strength import relevance_score
 from umx.tombstones import is_suppressed, load_tombstones
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9_]+")
+_SKILL_REF_RE = re.compile(r"@skill:(?P<name>[A-Za-z0-9._-]+)")
+_TRIGGER_ROUTE_BOOST = 2.0
+_EXPLICIT_ROUTE_BOOST = 4.0
+_SKILL_HINT_BUDGET_RATIO = 0.2
+_SKILL_HINT_MAX_TOKENS = 160
 _USER_SCOPES = {Scope.USER, Scope.TOOL, Scope.MACHINE}
 _GATHERED_FACT_CACHE: dict[
     tuple[Path, Path],
@@ -43,6 +60,20 @@ _GATHERED_FACT_CACHE: dict[
         str,
     ],
 ] = {}
+
+
+@dataclass(slots=True)
+class ActivatedSkill:
+    skill: Skill
+    load_trigger: str
+    route_boost: float
+
+
+@dataclass(slots=True)
+class ResolvedSkillActivation:
+    activation: ActivatedSkill
+    resolution: SkillResolution
+    retrievals: list[SkillRetrieval]
 
 
 def _keywords(
@@ -313,6 +344,185 @@ def _matched_procedures(
     )
 
 
+
+
+def _load_skills(project_repo: Path, user_repo: Path) -> list[Skill]:
+    skills: list[Skill] = []
+    if user_repo.exists():
+        skills.extend(load_all_skills(user_repo))
+    skills.extend(load_all_skills(project_repo))
+    return skills
+
+
+def _skill_repo(skill: Skill, project_repo: Path, user_repo: Path) -> Path:
+    return user_repo if skill.scope == Scope.USER else project_repo
+
+
+def _explicit_skill_names(prompt: str | None) -> list[str]:
+    if not prompt:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for match in _SKILL_REF_RE.finditer(prompt):
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def _activated_skills(
+    skills: list[Skill],
+    *,
+    tool: str | None = None,
+    prompt: str | None = None,
+    file_paths: list[str] | None = None,
+    command_text: str | None = None,
+    config=None,
+) -> list[ActivatedSkill]:
+    if not bool(getattr(getattr(config, "skills", None), "enabled", True)):
+        return []
+    activated: dict[str, ActivatedSkill] = {}
+    ordered_skill_ids: list[str] = []
+    for name in _explicit_skill_names(prompt):
+        skill = match_skills_by_name(skills, name, activatable_only=True)
+        if skill is None:
+            continue
+        if skill.skill_id not in activated:
+            ordered_skill_ids.append(skill.skill_id)
+        activated[skill.skill_id] = ActivatedSkill(
+            skill=skill,
+            load_trigger="explicit",
+            route_boost=_EXPLICIT_ROUTE_BOOST,
+        )
+    for skill in match_skills_by_trigger(
+        skills,
+        tool=tool,
+        prompt=prompt,
+        file_paths=file_paths,
+        command_text=command_text,
+    ):
+        if skill.skill_id in activated:
+            continue
+        activated[skill.skill_id] = ActivatedSkill(
+            skill=skill,
+            load_trigger="trigger",
+            route_boost=_TRIGGER_ROUTE_BOOST,
+        )
+        ordered_skill_ids.append(skill.skill_id)
+    max_skills = int(getattr(getattr(config, "skills", None), "max_concurrent_skills", 0) or 0)
+    if max_skills > 0:
+        ordered_skill_ids = ordered_skill_ids[:max_skills]
+    return [activated[skill_id] for skill_id in ordered_skill_ids]
+
+
+def _filter_skill_resolution(
+    resolution: SkillResolution,
+    retrievals: list[SkillRetrieval],
+    fact_index: dict[str, Fact],
+    restrict_to_ids: set[str] | None,
+) -> tuple[SkillResolution, list[SkillRetrieval]]:
+    routed_fact_ids = {fact_id for fact_id in resolution.routed_fact_ids if fact_id in fact_index}
+    if restrict_to_ids is not None:
+        routed_fact_ids &= restrict_to_ids
+    filtered_retrievals = [item for item in retrievals if item.fact_id in routed_fact_ids]
+    return (
+        SkillResolution(
+            skill=resolution.skill,
+            routed_fact_ids=routed_fact_ids,
+            hints=list(resolution.hints),
+            directives_resolved=resolution.directives_resolved,
+            missing_paths=list(resolution.missing_paths),
+            blocked_paths=list(resolution.blocked_paths),
+            unsupported_directives=list(resolution.unsupported_directives),
+        ),
+        filtered_retrievals,
+    )
+
+
+def _resolve_activated_skills(
+    activations: list[ActivatedSkill],
+    *,
+    project_repo: Path,
+    user_repo: Path,
+    fact_index: dict[str, Fact],
+    config,
+    restrict_to_ids: set[str] | None,
+) -> list[ResolvedSkillActivation]:
+    resolved: list[ResolvedSkillActivation] = []
+    for activation in activations:
+        resolution, retrievals = resolve_skill_with_attribution(
+            activation.skill,
+            _skill_repo(activation.skill, project_repo, user_repo),
+            config=config,
+        )
+        filtered_resolution, filtered_retrievals = _filter_skill_resolution(
+            resolution,
+            retrievals,
+            fact_index,
+            restrict_to_ids,
+        )
+        resolved.append(
+            ResolvedSkillActivation(
+                activation=activation,
+                resolution=filtered_resolution,
+                retrievals=filtered_retrievals,
+            )
+        )
+    return resolved
+
+
+def _select_skill_hints(
+    resolved_skills: list[ResolvedSkillActivation],
+    *,
+    budget: int,
+) -> tuple[list[str], int, dict[str, int]]:
+    selected: list[str] = []
+    selected_tokens = 0
+    tokens_by_skill: dict[str, int] = {}
+    seen_hints: set[str] = set()
+    for resolved in resolved_skills:
+        skill_tokens = 0
+        for hint in resolved.resolution.hints:
+            if hint in seen_hints:
+                continue
+            cost = estimate_tokens(f"- {hint}")
+            if selected_tokens + cost > budget:
+                continue
+            seen_hints.add(hint)
+            selected.append(hint)
+            selected_tokens += cost
+            skill_tokens += cost
+        if skill_tokens > 0:
+            tokens_by_skill[resolved.activation.skill.skill_id] = skill_tokens
+    return selected, selected_tokens, tokens_by_skill
+
+
+def _selected_skill_fact_tokens(
+    selected: list[Fact],
+    disclosure_levels: dict[str, str],
+    resolved_skills: list[ResolvedSkillActivation],
+) -> tuple[dict[str, int], dict[str, set[str]]]:
+    selected_by_id = {fact.fact_id: fact for fact in selected}
+    tokens_by_skill: dict[str, int] = {}
+    selected_fact_ids_by_skill: dict[str, set[str]] = {}
+    for resolved in resolved_skills:
+        skill_id = resolved.activation.skill.skill_id
+        skill_selected_ids = {
+            fact_id for fact_id in resolved.resolution.routed_fact_ids if fact_id in selected_by_id
+        }
+        selected_fact_ids_by_skill[skill_id] = skill_selected_ids
+        tokens = 0
+        for fact_id in skill_selected_ids:
+            fact = selected_by_id[fact_id]
+            if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+                tokens += estimate_tokens(f"- {fact.text}")
+                continue
+            tokens += _fact_token_cost(fact, disclosure_levels.get(fact_id, "l1"))
+        tokens_by_skill[skill_id] = tokens
+    return tokens_by_skill, selected_fact_ids_by_skill
+
 def _select_procedures(
     procedures: list[Procedure],
     budget: int,
@@ -402,6 +612,7 @@ def _candidate_facts_for_scoring(
     project_fact_fingerprint: tuple[tuple[str, int, int], ...],
     refresh_ids: set[str],
     handoff_fact_ids: set[str] | None,
+    routed_fact_ids: set[str],
     restrict_to_ids: set[str] | None,
 ) -> list[Fact]:
     if restrict_to_ids is not None or config.search.backend != "fts5":
@@ -432,6 +643,7 @@ def _candidate_facts_for_scoring(
             fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}
             or fact.fact_id in refresh_ids
             or fact.fact_id in scoped_fact_ids
+            or fact.fact_id in routed_fact_ids
             or (handoff_fact_ids and fact.fact_id in handoff_fact_ids)
         )
     }
@@ -477,6 +689,26 @@ def build_injection_block(
     )
     if restrict_to_ids is not None:
         facts = [fact for fact in facts if fact.fact_id in restrict_to_ids]
+    resolved_skills = _resolve_activated_skills(
+        _activated_skills(
+            _load_skills(project_repo, user_repo),
+            tool=tool,
+            prompt=prompt,
+            file_paths=file_paths,
+            command_text=command_text,
+            config=cfg,
+        ),
+        project_repo=project_repo,
+        user_repo=user_repo,
+        fact_index={fact.fact_id: fact for fact in facts},
+        config=cfg,
+        restrict_to_ids=restrict_to_ids,
+    )
+    routed_fact_ids = {
+        fact_id
+        for resolved in resolved_skills
+        for fact_id in resolved.resolution.routed_fact_ids
+    }
     session_state = None
     if session_id:
         session_state = ensure_session_state(
@@ -514,8 +746,33 @@ def build_injection_block(
         project_fact_fingerprint=project_fact_fingerprint,
         refresh_ids=refresh_ids,
         handoff_fact_ids=handoff_fact_ids,
+        routed_fact_ids=routed_fact_ids,
         restrict_to_ids=restrict_to_ids,
     )
+    candidate_fact_index = {fact.fact_id: fact for fact in facts}
+    refiltered_skills: list[ResolvedSkillActivation] = []
+    for resolved in resolved_skills:
+        filtered_resolution, filtered_retrievals = _filter_skill_resolution(
+            resolved.resolution,
+            resolved.retrievals,
+            candidate_fact_index,
+            None,
+        )
+        refiltered_skills.append(
+            ResolvedSkillActivation(
+                activation=resolved.activation,
+                resolution=filtered_resolution,
+                retrievals=filtered_retrievals,
+            )
+        )
+    resolved_skills = refiltered_skills
+    route_boosts: dict[str, float] = {}
+    for resolved in resolved_skills:
+        for fact_id in resolved.resolution.routed_fact_ids:
+            route_boosts[fact_id] = max(
+                route_boosts.get(fact_id, 0.0),
+                resolved.activation.route_boost,
+            )
     semantic_scores: dict[str, float] = {}
     semantic_query = " ".join(
         part for part in [tool or "", command_text or "", prompt or "", *(file_paths or [])] if part
@@ -541,6 +798,7 @@ def build_injection_block(
         if fact.scope == Scope.PROJECT_SECRET:
             continue
         refresh_bonus = 1.5 if fact.fact_id in refresh_ids else 0.0
+        route_bonus = route_boosts.get(fact.fact_id, 0.0)
         scored[fact.fact_id] = (
             relevance_score(
                 fact,
@@ -551,6 +809,7 @@ def build_injection_block(
                 config=cfg,
             )
             + refresh_bonus
+            + route_bonus
         )
     always = {
         fact.fact_id
@@ -582,7 +841,16 @@ def build_injection_block(
     else:
         selected_procedures, procedure_tokens = [], 0
     non_secret_facts = [fact for fact in facts if fact.scope != Scope.PROJECT_SECRET]
-    remaining_budget = max(1, max_tokens - reserved_tokens - procedure_tokens - hot_summary_cost)
+    remaining_after_sections = max(0, max_tokens - reserved_tokens - procedure_tokens - hot_summary_cost)
+    hint_budget = min(
+        _SKILL_HINT_MAX_TOKENS,
+        int(remaining_after_sections * _SKILL_HINT_BUDGET_RATIO),
+    )
+    selected_skill_hints, hint_tokens, hint_tokens_by_skill = _select_skill_hints(
+        resolved_skills,
+        budget=max(0, hint_budget),
+    )
+    remaining_budget = max(1, max_tokens - reserved_tokens - procedure_tokens - hot_summary_cost - hint_tokens)
     budget_decision: BudgetDecision = enforce_budget(
         non_secret_facts,
         max_tokens=remaining_budget,
@@ -615,6 +883,11 @@ def build_injection_block(
         fact_budget=remaining_budget,
         always_ids=always,
     )
+    selected_skill_fact_tokens, selected_fact_ids_by_skill = _selected_skill_fact_tokens(
+        selected,
+        disclosure_levels,
+        resolved_skills,
+    )
 
     lines = ["# UMX Memory"]
     pending_injections: dict[Path, list[dict[str, object]]] = {}
@@ -642,6 +915,10 @@ def build_injection_block(
                     "item_kind": "procedure",
                 }
             )
+    if selected_skill_hints:
+        lines.append("")
+        lines.append("## Skill Hints")
+        lines.extend(f"- {hint}" for hint in selected_skill_hints)
     open_task_lines = []
     for fact in selected:
         if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
@@ -677,6 +954,29 @@ def build_injection_block(
         lines.append(_render_fact(fact, disclosure_level))
     for repo_dir, events in pending_injections.items():
         record_injections(repo_dir, events)
+    if session_id:
+        for resolved in resolved_skills:
+            skill = resolved.activation.skill
+            skill_id = skill.skill_id
+            repo_dir = _skill_repo(skill, project_repo, user_repo)
+            load_id = record_skill_load(
+                repo_dir,
+                skill_id=skill.skill_id,
+                skill_name=skill.name,
+                version=skill.version,
+                session_id=session_id,
+                load_trigger=resolved.activation.load_trigger,
+                directives_resolved=resolved.resolution.directives_resolved,
+                facts_retrieved=len(resolved.resolution.routed_fact_ids),
+                tokens_used=hint_tokens_by_skill.get(skill_id, 0) + selected_skill_fact_tokens.get(skill_id, 0),
+            )
+            if resolved.retrievals:
+                record_skill_retrievals(
+                    repo_dir,
+                    load_id,
+                    resolved.retrievals,
+                    selected_fact_ids=selected_fact_ids_by_skill.get(skill_id, set()),
+                )
     return "\n".join(lines).strip() + "\n"
 
 
