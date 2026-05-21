@@ -31,6 +31,7 @@ Facts are governed through pull requests so memory is auditable, correctable, an
 8. [Local Path Convention](#8-local-path-convention)
 9. [Memory File Format](#9-memory-file-format)
 9a. [Procedure File Format](#9a-procedure-file-format)
+8a. [Diary and Session Handover](#diary-and-session-handover)
 9b. [Skill File Format](#9b-skill-file-format)
 9c. [Skill Invocation, Progressive Disclosure, and Promotion](#9c-skill-invocation-progressive-disclosure-and-promotion)
 10. [Read Strategy](#10-read-strategy)
@@ -187,6 +188,12 @@ The memory owner is something you control. This means:
 - **Agent tokens (gitmem mode):** Scoped per role — L1 gets PR-write only, L2 gets merge on allowed labels, indexer gets read-only.
 
 Agents MUST NOT touch GitHub directly during a session. They read and write local files. The umx push queue owns the token and sync cadence.
+
+### Multi-agent shared memory
+
+When multiple agents collaborate on the same project, they share memory through the same gitmem project repo — not through a shared in-process database or a dedicated memory service. Each agent reads from the local clone, writes sessions, and appends proposed facts. The PR-based governance model (in remote/hybrid mode) ensures that concurrent fact proposals are reviewed before they merge to main, which prevents conflicting claims from silently overwriting each other.
+
+This is the file-first equivalent of a `memory.db` or `infra.db` shared between agents. The difference is: the shared store has version history, review gates, and a correction path through `git revert`. A shared database has none of these. When a multi-agent workflow needs tool-specific memory (each agent's native memory format from Claude Code, Aider, Copilot, etc.), normalise through the native memory adapters in §10 and store in `tools/{tool-name}.md` facts tagged with the originating tool. There is no separate coordination database.
 
 ---
 
@@ -643,6 +650,31 @@ The `local/` directory is gitignored. It contains two subdirectories with differ
 
 - **`local/private/`** — private facts that ARE injected (personal preferences, machine-specific config, scratchpad). Always loaded: **Yes**.
 - **`local/secret/`** — tokens, credentials, connection strings. Always loaded: **No**. Never injected into prompts. Accessed only by explicit CLI request (`umx secret get <key>`). Cross-machine syncing of secrets is a non-goal — use a dedicated secret manager (1Password CLI, Vault, etc.).
+- **`local/quarantine/`** — sessions that failed the pre-commit redaction pass. Require manual inspection and resolution before commit. `umx status` surfaces them.
+- **`local/context/`** — durable context: ticket descriptions, research excerpts, roadmap notes, and task briefings that span multiple sessions. Ordinary markdown under git version control; agents read for orientation, humans edit directly.
+- **`local/diary.md`** — append-only observation log. See §8a for format and governance.
+- **`local/blobs/`** — content-addressed raw attachments (screenshots, binary artifacts, large log excerpts). Files stored as `blobs/{sha256-prefix}/{filename}`. Gitignored. Referenced from facts or handover notes by their hash. Deduplication is automatic: two identical files produce the same path.
+
+### Content-addressed blob storage
+
+Raw binary attachments — screenshots, rendered diff images, large log excerpts, audio snippets — are too large and too volatile for inline fact storage. They also change binary content without changing their logical identity, which makes git history noisy. `local/blobs/` solves this with a content-addressed layout: the first 8 hex digits of the SHA-256 hash of the file contents become the directory prefix, and the original filename is preserved:
+
+```
+local/blobs/
+├── a3f9c12e/screenshot-auth-flow.png
+├── b7d8e441/deploy-log-2026-05-21.txt
+└── f19a2b53/heap-dump-worker-crash.bin
+```
+
+A fact or handover note references a blob by its hash prefix and filename:
+
+```markdown
+- Auth flow screenshot confirming token scope UI <!-- ... --> [blob:a3f9c12e/screenshot-auth-flow.png]
+```
+
+Two identical files — regardless of their location or what session produced them — produce the same path, preventing silent duplication across sessions. Blobs are local-only (`local/` is gitignored). If a blob needs to travel with a compiled artifact or compiled knowledge export, it SHOULD be referenced by hash and bundled explicitly. The blob store is not a substitute for a proper media asset manager; it is a low-friction quarantine layer that keeps binaries out of committed history while preserving their traceability.
+
+`umx blob store <file>` returns the hash prefix. `umx blob get <hash-prefix>/<filename>` retrieves the file.
 
 ### Path encoding for folder/file scope
 
@@ -738,9 +770,15 @@ $UMX_HOME/
     │   ├── facts/
     │   ├── principles/
     │   ├── meta/
-    │   └── local/
-    │       ├── private/
-    │       └── secret/
+    │   ├── local/
+    │   │   ├── private/
+    │   │   ├── secret/
+    │   │   ├── diary.md            # append-only observation log (local-only)
+    │   │   ├── handover.md         # latest handover note
+    │   │   ├── handovers/          # dated handover archive
+    │   │   ├── context/            # tickets, roadmap, research notes
+    │   │   └── quarantine/         # failed-redaction sessions awaiting review
+    │   └── blobs/                  # content-addressed raw attachments (gitignored)
     └── agent-interface-protocol/
         └── ...
 ```
@@ -818,6 +856,54 @@ This:
 - **Conflict on push:** Pull, re-run dream consolidation locally, re-push.
 
 Agents work fully offline. Push failures are queued and retried.
+
+### Diary and Session Handover
+
+For agents that run long-lived sessions or hand off work across session boundaries, gitmem supports two lightweight continuity formats:
+
+**Diary (`local/diary.md`)** — an append-only chronological log of brief observations, decisions, and reminders that didn't rise to the level of a formal fact. Written directly by the agent or user without Dream governance. Entries are dated and short (1-3 lines each). The diary is gitignored by default (local-only) but MAY be committed if the owner wants cross-machine sync:
+
+```markdown
+## 2026-05-21
+
+- Tried indexing the monorepo; hit OOM at 6M files — need chunked approach
+- Auth PR merged; cookie domain now scoped to api.prod.example.com
+- Defer the rate-limit refactor — blocked on infra ticket #441
+```
+
+The diary is not a fact store. It has no inline metadata, no strength scores, and no Dream promotion path by default. It is a scratch surface for observations that an agent should re-read at the start of the next session. If an observation survives several diary entries without being promoted or discarded, Dream MAY propose it as a formal fact at the next cycle.
+
+**Handover notes (`local/handover.md`)** — a short structured document written at the end of a session, intended for the agent (or human) that picks up work next. Unlike summaries (which are outward-facing), handover notes are written to the incoming agent:
+
+```markdown
+# Handover — 2026-05-21T10:00:00Z
+
+## Active context
+- Task: implement OAuth token refresh (task-042)
+- Branch: feature/oauth-refresh
+- Last action: wrote tests in tests/test_refresh.py — 2 failing
+
+## What you need to know
+- Token endpoint requires X-Request-ID header (see facts/topics/auth.md)
+- The `refresh_token` expiry is 30 days, not 7 — confirmed in last session
+
+## Next step
+Fix the token clock skew issue in src/auth/refresh.py:127
+```
+
+Handover notes live in `local/handover.md` (latest) and `local/handovers/YYYY-MM-DD.md` (archive). Dream ingest MAY extract formal facts from handover notes during Gather, tagging them with `source_type: tool_output` at S:3.
+
+**Context directory (`local/context/`)** — for larger continuity artifacts: ticket descriptions, roadmap notes, research excerpts, and per-task context packets. These live as ordinary markdown files under git version control. Agents read them for orientation; humans edit them directly. The context directory is the file-first substitute for hosted project wikis and ticket-linked memory systems.
+
+### Governed Sync Constraints
+
+gitmem is versioned-in-git for a reason: adaptation must be **reviewable**, not automatic. The following patterns are explicitly defended against:
+
+**DEFEND: self-modifying online learning** — fine-tuned model weights, online adapters, and embedding stores that auto-update from agent outputs bypass review. gitmem's governance model requires that all durable memory changes go through Dream consolidation and then PR review (in remote/hybrid mode) or explicit human approval (in local mode). Observations land in `sessions/` (immutable) first; only reviewed conclusions land in `facts/`. Nothing in the write path mutates canonical memory without an explicit gate.
+
+**DEFEND: opaque memory stores** — vector databases, proprietary memory APIs, and agent bundles that self-update are not substitutes for gitmem canonical markdown. They may serve as retrieval caches (see §10), but they MUST NOT become the store that agents write conclusions to. If the vector store diverges from markdown, discard the vector store and rebuild. The correction path always runs through files and git history.
+
+**CITE: AMFS** — Agent Memory File System demonstrates that treating agent memory like code (branches, diffs, rollback, PR review) is sound and scalable. gitmem's design independently arrives at the same conclusion. AMFS validates the core architectural choice that memory governance should look like code governance.
 
 ---
 
@@ -2090,6 +2176,8 @@ Matches are replaced with `[REDACTED:<type>]` placeholders. Sessions are immutab
 
 **Emergency purge:** `umx purge --session <id>` rewrites git history (BFG or `git filter-repo`) for secret removal. This breaks the immutability guarantee for that session and is logged in the audit trail. For jurisdictions requiring data deletion (GDPR), this is the escape hatch.
 
+**Binary and media pre-ingest scan.** Before committing any session that includes tool outputs referencing image, audio, or video files, the ingest pipeline SHOULD check whether binary attachments are present. Recognized binary types (`.png`, `.jpg`, `.mp4`, `.wav`, and similar MIME types detectable by file header magic bytes) MUST be intercepted before they reach `sessions/`. Small, text-safe screenshots MAY be stored in `local/blobs/` under content-addressed paths. Large binaries and opaque executable content MUST be quarantined to `local/quarantine/` for review before any ingest. This is a defense against hidden-payload injection through agent tool outputs. The binary scan does not need to be forensic — a file-type check plus size cap (configurable, default: 100KB) is the minimum.
+
 **Startup sweep.** On session start, before pull, the implementation MUST scan for uncommitted session files from prior runs (crashed or killed processes). Any found uncommitted sessions MUST be committed and pushed before proceeding. This prevents session data loss from non-graceful shutdowns.
 
 ### Session capture methods
@@ -2567,6 +2655,10 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 
 **vs Karpathy's LLM Wiki pattern:** Karpathy's wiki shares the "LLM maintains markdown, raw sources are immutable" architecture. umx adds: git-native version history (wiki has no history), PR-based governance (wiki has no review mechanism), encoding strength and provenance (wiki has no quality differentiation), multi-agent support (wiki is single-user single-agent), and tombstone-based forgetting (wiki has no suppression mechanism). The wiki pattern is umx without governance, history, provenance, or multi-agent support.
 
+**vs memory-first coding harnesses** (e.g. Aider's in-session context, Cursor's codebase index): These are harness-level session memories — relevant for a single session, not durable across sessions. They answer "what is in context now?" not "what did this agent learn over the last three months?". gitmem complements them: the harness manages active context, gitmem holds the durable cross-session store. The native memory adapters (§10) normalise harness-format memory into gitmem facts where they carry forward-looking relevance.
+
+**vs benchmarked local-first memory systems** (e.g. MemGPT, Mem0): These systems optimize for fast recall with selective memory pipelines. gitmem is complementary: their strength is retrieval latency (embedding lookup, tiered summarization); gitmem's strength is auditability, governance, and correctness over time. A project MAY use a MemGPT-style cache as the fast retrieval layer while gitmem provides the reviewed, versioned canonical store underneath it.
+
 ### Positioning against retrieval interfaces and cache systems
 
 gitmem is intentionally narrower and more durable than the systems it is often compared against. An MCP memory server is a **retrieval interface**: useful for exposing memory to a tool, but not a canonical store. A vector-memory product is a **search cache**: useful for nearest-neighbor recall, but not durable truth. A compiled knowledge artifact such as AKS is a **transport package**: useful for shipping a frozen bundle, but not the place where edits are authored. gitmem sits underneath all three. Canonical markdown plus immutable session logs are the source of truth; MCP servers, vector indexes, and compiled bundles are views built from those files.
@@ -2638,8 +2730,9 @@ umx/
 ├── shim/
 │   ├── aider.py
 │   └── generic.py
+├── blobs.py                # content-addressed blob store: umx blob store/get/list/purge
 ├── bridge.py               # legacy file bridge (CLAUDE.md / AGENTS.md markers)
-├── doctor.py               # umx doctor: auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embedding availability
+├── doctor.py               # umx doctor: auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embedding availability, stale blobs
 ├── viewer/
 │   └── server.py
 └── mcp_server.py           # read_memory / write_memory MCP tools
@@ -2930,6 +3023,9 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 - `workspace/events.jsonl` feeds the Gather phase as a structured session source (preferred over raw transcripts).
 - `workspace/dream-candidates/` — AIP compaction hooks write dream candidates here; gitmem Dream Orient reads them as a session ingest source alongside raw sessions.
 - `workspace/transcripts/{session_id}.jsonl` — AIP session transcripts are a normalised input format for the extraction pipeline.
+- `workspace/tasks/{task_id}/audit.jsonl` — task-local audit logs are secondary ingest candidates for task-scoped facts; Dream Gather MAY read them when a task's `plan.yaml` completion triggers a large_task_completion dream event.
+- `workspace/status/HEARTBEAT-{agent}.md` — gitmem MAY read heartbeat files during Orient to classify sessions as active, stale, or crashed, adjusting ingest priority accordingly.
+- `workspace/locks/` — gitmem SHOULD NOT consume resource lock files, but lock acquisition and release events emitted to `workspace/events.jsonl` MAY be extracted as episodic facts about resource contention patterns.
 - umx ships as `aip mem` subcommands alongside its standalone CLI.
 - gitmem's GitHub org is separate from the project org — memory governance is isolated from code governance.
 
@@ -2988,6 +3084,22 @@ Secrets, tokens, internal hostnames, and machine-specific identifiers MUST be re
 
 ---
 
+## 30b  `/memories` Compatibility Projection
+
+Some harnesses and tools already know a `/memories`-style directory interface: a flat or shallow directory of markdown files where each file is a discrete memory entry, readable and writable via simple filesystem CRUD. This is a simpler interface than gitmem's scoped repo layout, but it is compatible: a `/memories` directory is a projection of gitmem's `facts/` namespace.
+
+When a harness requests `/memories`-style access, umx MAY generate a compatibility view at `local/memories/` (gitignored, derived):
+
+```bash
+umx export --format memories --output local/memories/
+```
+
+The output is flat markdown files derived from hot-tier and warm-tier facts. Writes to `local/memories/` are treated as user-level S:5 additions and queued for ingest on the next session. The projection is always read-only from gitmem's canonical store; facts added through the projection follow the normal Dream path to become durable. This makes gitmem compatible with agents that assume a flat memory API without letting the flat view become authoritative.
+
+**DEFEND: opaque internet prompt blobs** — agents that scrape prompt libraries, download gist collections, or import external prompt templates directly into memory are introducing unreviewed external content with unknown provenance. gitmem's pre-ingest redaction and quarantine pass applies to these imports: if a gist or prompt blob is worth keeping, capture it to `local/context/` with a provenance note, then extract only the reviewed rules, conventions, or skills into the appropriate gitmem namespace. Never commit an opaque import directly to `facts/` or `skills/`.
+
+---
+
 ## 31  References
 
 [1] Tulving, E. (1972). *Episodic and semantic memory.* In E. Tulving & W. Donaldson (Eds.), Organisation of Memory. Academic Press.
@@ -3028,6 +3140,12 @@ Secrets, tokens, internal hostnames, and machine-specific identifiers MUST be re
 
 [19] Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., & Liang, P. (2023). *Lost in the Middle: How Language Models Use Long Contexts.* Transactions of the Association for Computational Linguistics, 12, 157–173. — Long-context retrieval degrades away from the active cursor; motivates attention refresh near the working edge rather than assuming one injection lasts for the full session.
 
+[20] Hu, S., et al. (2025). *AMFS: Agent Memory File System* — Demonstrates that treating agent memory like code (branches, diffs, rollback, PR review) is a sound and scalable architecture. gitmem independently converged on the same approach. Cited in §8 (Governed Sync Constraints) as external validation for git-native memory governance.
+
+[21] Ma, W., et al. (2024). *Mem0: The Memory Layer for AI Agents.* — Production-scale selective memory pipeline yielding near-full recall accuracy at ~90% lower latency than naive full-context. Validates the tiered memory model (hot/warm/cold) and the importance of selective distillation. Used as comparator in §24.
+
+[22] Packer, C., et al. (2023). *MemGPT: Towards LLMs as Operating Systems.* — Hierarchical memory management across context tiers using self-directed paging. Relevant as a retrieval-speed comparator; gitmem complements MemGPT-style systems by providing the durable reviewed store underneath the fast tier. Used as comparator in §24.
+
 ---
 
 ## Open Questions
@@ -3045,6 +3163,7 @@ Secrets, tokens, internal hostnames, and machine-specific identifiers MUST be re
 - **Inline metadata grammar formalisation** — §9 defines the field table. A formal EBNF grammar, escaping rules for `-->` inside JSON values, and a round-trip conformance test corpus (5-10 examples) are deferred to Phase 7 (Hardening). Canonical field ordering: `id`, `conf`, `cort`, `corf`, `pr`, `src`, `xby`, `aby`, `ss`, `st`, `cr`, `v`, `cs`, then optional fields alphabetically.
 - **Procedure ergonomics** — `procedures/` is now part of the v1 schema. What remains open is authoring ergonomics: richer trigger builders, linting, templates, and optional execution-adjacent helpers are deferred beyond v1.
 - **Skill expansion beyond routing MVP** — `skills/` supports trigger/explicit activation, `load:`, `hint:`, and `umx skill test`. Deferred work includes executing `query:`, supporting `link:` chains with cycle detection, semantic skill activation, dream-proposed skills, and automated skill version competition.
+- **Failed-run skill mining** — when a failure-fix pattern recurs across sessions (e.g. a recurring test failure resolved the same way twice), the Dream pipeline MAY propose a draft skill in `skills/proposed/{name}.md` based on the failure signature and fix steps extracted from session transcripts. These proposals are draft-only until human review. Automatic skill discovery from failed runs is deferred to post-v1 because it requires a reliable failure-pattern extractor and skill de-duplication logic; the architectural slot in Dream's Gather phase is reserved. The principle (skills should graduate through reviewable, versioned proposals rather than staying latent in a swarm) is normative now.
 - **Distributed dream locking** — `meta/processing.jsonl` for multi-machine coordination is a Phase 5 deliverable. For now, GitHub Actions `concurrency` groups are sufficient.
 - **`confidence` calibration** — bounded [0,1], informational-only for conflict resolution in v1. Excluded from trust_score until calibrated across models.
 
