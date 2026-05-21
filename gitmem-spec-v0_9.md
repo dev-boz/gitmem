@@ -127,6 +127,9 @@ Why:
 │    principles/  cross-session patterns (SotA/human gate)         │
 │    procedures/  reusable playbooks and action rules              │
 │    skills/      retrieval routing cues and memory pointers        │
+│    routing/     durable IMX routing lessons and route cards       │
+│    codebase/    codemap, onboarding units, docs registry          │
+│    artifacts/   reasoning artifacts, conclusions, evidence        │
 │    meta/        index, manifest, dream log, schema version       │
 │    local/       gitignored — private/ and secret/ split          │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -211,6 +214,104 @@ Observe → Retrieve → Act → Reflect → Encode → Consolidate
 | **Consolidate** | Dream pipeline: Orient → Gather → Consolidate → Lint → Prune | Mixed |
 
 This division follows a governing design constraint: deterministic work SHOULD live in cheap substrates, and model inference SHOULD be reserved for tasks that actually require reasoning. The result is a cue-dependent retrieval system that reduces free-form recall pressure on the agent by preferring **recognition over regeneration**.
+
+---
+
+## 3b  Codebase Memory and Repo Intelligence
+
+Beyond session-derived facts, gitmem can maintain derived codebase artifacts that sit beside the code and travel through git. These are not facts (they don't go through the Dream pipeline); they are computed derived views of the repo committed at useful cadences.
+
+### codemap.json
+
+A git-committed codemap artifact containing file-level structure, entry points, key symbols, and inter-module relationships. The codemap is derived from AST analysis, `ctags`, or equivalent tools and committed to the memory repo's `codebase/` directory — not to the project repo itself.
+
+```json
+{
+  "schema_version": "0.6",
+  "project": "boz",
+  "generated_at": "2026-04-27T12:00:00Z",
+  "git_sha": "abc123",
+  "modules": {
+    "auth": {
+      "path": "src/auth/",
+      "entry_points": ["src/auth/session.py::validate_token"],
+      "exports": ["validate_token", "create_session", "revoke_session"],
+      "imports": ["src/db/pool.py", "src/config.py"]
+    }
+  }
+}
+```
+
+The codemap is a cache — re-derivable at any time from `git ls-files` and static analysis. It is committed because commit history makes it easy to diff what changed between versions. Agents use it for orientation, not as ground truth for facts.
+
+### onboarding/<path>.md
+
+Path-derived onboarding units are Markdown files that explain a specific directory or module to an agent encountering it for the first time. They are stored in `codebase/onboarding/` keyed by the normalized path they describe.
+
+```text
+codebase/onboarding/
+├── src-auth.md          ← onboarding for src/auth/
+├── src-db.md            ← onboarding for src/db/
+└── src-api.md
+```
+
+Each onboarding unit includes:
+- Purpose of the module
+- Key invariants and constraints (stable interface contracts)
+- Known fragile areas or gotchas
+- Relevant facts and procedures to read first
+- `drift_hash` — SHA of the key files the unit describes; when this hash changes, the unit is flagged as stale and needs re-validation
+
+Onboarding units are authored or Dream-proposed and require L2 review before merge.
+
+### docs/registry.{json,yaml}
+
+A task-type → owned-documentation mapping that keeps documentation ownership explicit. When an agent needs to understand where canonical information lives for a task type, it consults the registry rather than searching broadly.
+
+```yaml
+# codebase/docs/registry.yaml
+schema_version: "0.6"
+project: boz
+task_type_docs:
+  api_design:
+    owned_by: docs/API_SPEC.md
+    conventions: [REST-style, versioned endpoints, no breaking changes to /v1]
+  database_migration:
+    owned_by: docs/DB_MIGRATIONS.md
+    procedures: [procedures/db-migration-checklist.md]
+  deployment:
+    owned_by: docs/DEPLOY.md
+    risk_tier: EXTERNAL
+    requires_approval: true
+```
+
+The registry is maintained by the team and reviewed like any other docs change. Agents read it before starting work on a typed task.
+
+### artifacts/*.md
+
+Reasoning artifacts capture conclusions, evidence, and invalidation conditions from significant decisions. They are not facts (no provenance pipeline) — they are human-or-agent-authored decision records.
+
+```markdown
+---
+artifact_id: 01JQXYZ...
+kind: reasoning_artifact
+conclusion: Use connection pooling via PgBouncer rather than per-request connections
+evidence:
+  - Load test showed 400% latency reduction under 50 concurrent requests
+  - See session 2026-04-08-01JQXYZ for benchmark details
+confidence: 0.92
+invalidates_when:
+  - Postgres version changes to support native connection multiplexing
+  - Team moves to a single-threaded async model
+created_at: 2026-04-08T12:00:00Z
+---
+
+## Reasoning
+
+...
+```
+
+Artifacts are stored in `codebase/artifacts/` and indexed in the SQLite cache for retrieval. They are injected when the task class or query matches `conclusion` or `evidence` keywords. Unlike facts, they carry `invalidates_when` conditions that the Dream pipeline checks against code changes during Orient.
 
 ---
 
@@ -1496,6 +1597,66 @@ When a tool exposes a visible subagent spawn event, gitmem SHOULD relay a bounde
 
 Subagent relay is always a subset of the parent's authorised context. `local/secret/` content MUST NOT be introduced during handoff.
 
+### Context Packs and Briefings
+
+Context packs and briefings are pre-assembled, bounded recall bundles that bridges and harnesses can request without triggering a full injection pipeline. They are designed for use cases where:
+
+- a harness cannot run hooks (batch jobs, CI, cloud agents)
+- a caller needs a reproducible context snapshot rather than a live-assembled one
+- the full injection pipeline is too expensive for the call site
+
+**Context packs** are JSON files assembled from a scope and a query at pack-time:
+
+```text
+context-packs/{pack_id}.json
+```
+
+```json
+{
+  "schema_version": "0.6",
+  "pack_id": "cp-01JQXYZ...",
+  "scope": "project:boz",
+  "query": "database migrations",
+  "assembled_at": "2026-04-27T12:00:00Z",
+  "token_count": 1240,
+  "facts": [...],
+  "procedures": [...],
+  "artifacts": [...],
+  "fallback_tier": "hot_tier_only"
+}
+```
+
+Packs are assembled by `umx pack --scope project:boz --query "database migrations"` and committed to the memory repo. They are caches — re-assemblable at any time. A `fallback_tier` field specifies what to inject if the pack is absent: `hot_tier_only`, `procedures_only`, or `none`.
+
+**Briefings** are human-readable Markdown renderings of a context pack, suitable for direct injection into an agent's system prompt or task context:
+
+```text
+briefings/{briefing_id}.md
+```
+
+Briefings are preferred over packs when the consumer is an LLM — they are already in a format agents understand without requiring JSON parsing. Briefings include headings, bullet facts, procedure excerpts, and relevant onboarding text.
+
+### Injection Audit
+
+`injection-audit.jsonl` is an append-only log of exactly what was injected into each session and why. It enables:
+
+- exact-span deduplication across injection points in a session
+- recall audit: "why did the agent see this fact?"
+- precision calibration: identifying injected-but-unused facts for relevance score tuning
+
+```text
+local/injection-audit.jsonl
+```
+
+```jsonl
+{"session_id":"2026-04-27-01JQ...","ts":"...","injection_point":"session_start","fact_id":"01JQ...","token_count":45,"reason":"scope:project:boz,keyword:database","relevance_score":0.87}
+{"session_id":"2026-04-27-01JQ...","ts":"...","injection_point":"pre_tool","fact_id":"01JQ...","token_count":45,"reason":"tool:bash,path:src/db/pool.py","relevance_score":0.91,"dedup":"already_injected_this_session"}
+```
+
+The `dedup: already_injected_this_session` field marks when a fact would have been injected again but was suppressed as a duplicate. This prevents token waste without losing the signal that the fact was relevant at multiple points.
+
+`injection-audit.jsonl` is local-only (gitignored) — it is session-specific ephemeral data for debugging and telemetry, not committed memory.
+
 ### Fragile fact marking
 
 When a fact at `consolidation_status: fragile` is selected for injection, it SHOULD be prefixed with `[fragile]` in the injected output. Example:
@@ -2139,6 +2300,10 @@ Earlier spec drafts used a `[DEPRECATED]` marker inline. This is superseded by t
 | **Ground truth staleness** | Code changed since fact extraction | Orient phase checks anchored paths; demotes to `fragile` if source changed |
 | **Stale embeddings (model upgrade)** | Cached vectors from old model mixed with new | Per-fact `embedding_model_version` field — mismatch → treat as absent, schedule rebuild |
 | **False contradiction (env mismatch)** | Facts true in different envs | `applies_to` schema prevents non-overlapping facts from being flagged as contradictions |
+| **Retrieval-only ceiling** | Memory is correctly retrieved but never shapes behaviour — agent ignores injected content | Session-aware `injection-audit.jsonl` tracks injected-but-unused facts; relevance calibration demotes consistently unused facts; procedures are injected at pre-tool time where they are hardest to ignore |
+| **Adversarial injection / memory poisoning** | Untrusted session content (handoff summaries, external docs, tool output) is extracted as fact and poisons the store | `source_type: llm_inference` requires corroboration to reach S:3; `untrusted_source` tag propagates through extraction; handoff content carries `contamination_risk` metadata; L2 review blocks high-strength promotion of facts from untrusted provenance |
+| **Self-modifying memory loop** | Dream pipeline proposes facts that were themselves extracted from previous dream output rather than raw sessions | Orient phase traces provenance chains; facts with `source_type: llm_inference` and no session anchor are quarantined if they appear to originate from a previous Dream PR rather than a raw session |
+| **Contradictory recall under context pressure** | Two conflicting facts both injected, agent reasons from the worse one | `conflicts_with` field enables priority ordering in injection; higher-trust fact gets injection priority; conflicting pairs are surfaced together so the agent can reason about the conflict rather than silently using one |
 
 ---
 
@@ -2557,10 +2722,63 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 - AIP hook proxy normalises payloads from all Tier 1 CLIs. umx hook handlers consume those events.
 - AIP shim watch provides lifecycle events for Tier 2 CLIs. umx shim handles collection.
 - `workspace/events.jsonl` feeds the Gather phase as a structured session source (preferred over raw transcripts).
+- `workspace/dream-candidates/` — AIP compaction hooks write dream candidates here; gitmem Dream Orient reads them as a session ingest source alongside raw sessions.
+- `workspace/transcripts/{session_id}.jsonl` — AIP session transcripts are a normalised input format for the extraction pipeline.
 - umx ships as `aip mem` subcommands alongside its standalone CLI.
 - gitmem's GitHub org is separate from the project org — memory governance is isolated from code governance.
 
 **Boundary:** AIP owns orchestration and inter-agent communication. umx owns memory scoping, extraction, strength, injection, and governance.
+
+---
+
+## 30a  Relation to IMX
+
+IMX is the routing and governance layer of the triad. gitmem is its durable memory substrate for routing knowledge.
+
+### What gitmem provides to IMX
+
+- **`routing/` namespace** — durable IMX route cards, routing lessons, known failure patterns, and evaluated heuristics live in `memory-org/<project>/routing/`. This namespace uses the same PR governance as `facts/` but is consumed exclusively by IMX rather than general agents.
+- **Procedures and CONVENTIONS.md** — IMX reads project procedures, conventions, and pre-tool guidance at routing step 2 (Gather) to inform dispatch decisions. These are standard gitmem artifacts consumed through the normal injection path.
+- **Attention refresh** — IMX triggers gitmem attention refresh at workflow iteration boundaries, multi-agent handoffs, and post-compaction state restoration. This uses the standard `~/.imx/state/dream-triggers.jsonl` mechanism.
+- **Task-class query dimension** — procedures and route cards in `routing/` SHOULD be tagged with `task_class` in their YAML front matter so IMX can retrieve them by routing dimension rather than just keyword.
+
+### What gitmem receives from IMX
+
+- **Dream triggers** — IMX writes Dream trigger records to `~/.imx/state/dream-triggers.jsonl`. The gitmem Orient phase reads this file at the start of each Dream cycle. Trigger types include `query_gap`, `route_failure`, `context_saturation`, `large_task_completion`, `entrenchment_risk`, `procedure_regression`, and `policy_drift`.
+- **Distilled telemetry** — IMX promotes summarized task outcomes (failure type, controllability class, node identity, task class) into gitmem as facts in `routing/`. Raw IMX telemetry (JSONL logs) is not pushed to gitmem — only distilled, reviewed lessons that have survived skeptical verification.
+- **Contamination metadata** — IMX `chain_depth` and `contamination_risk.untrusted_sources` fields propagate into gitmem fact provenance when facts are derived from handoff content. The Dream pipeline uses these to weight extraction confidence and gate promotion.
+
+### Route-card governance
+
+Route cards in `routing/` follow the same lifecycle as facts: `draft → active → deprecated → archived`. Promotion from draft to active requires either:
+- empirical evidence (≥3 corroborating task outcomes with the same node × task_class pattern), or
+- skeptical review (a challenge agent found no counter-evidence)
+
+This mirrors how facts require corroboration to reach S:3. Route cards are not promoted on a single routing success.
+
+The `routing/` namespace SHOULD contain a `routing/ROUTING.md` index analogous to `meta/MEMORY.md`, listing active route cards by task class.
+
+### Entrenchment detection
+
+gitmem's Dream pipeline SHOULD periodically challenge route cards that:
+- originate from a single source or session
+- have never been challenged
+- are frequently injected into routing context
+- influence high-risk or EXTERNAL routing decisions
+- lack fresh supporting telemetry (no corroborating outcomes in >30 days)
+
+IMX emits an `entrenchment_risk` Dream trigger when it detects this pattern. The Dream pipeline responds by opening a challenge PR that requires human or skeptic review before the route card remains active.
+
+### Shared redaction vocabulary
+
+IMX and gitmem SHOULD use the same fail-closed redaction vocabulary at their shared boundaries:
+- handoff packets processed by gitmem Dream
+- exported summaries used as memory candidates
+- route decision records promoted to `routing/`
+
+Secrets, tokens, internal hostnames, and machine-specific identifiers MUST be redacted before any artifact crosses from AIP/IMX execution space into gitmem's GitHub-backed store.
+
+**Boundary:** IMX owns live routing decisions, telemetry, and policy gates. gitmem owns durable memory, knowledge governance, and the provenance trail that makes routing decisions reviewable after the fact.
 
 ---
 
