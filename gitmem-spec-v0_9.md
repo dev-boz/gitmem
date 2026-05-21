@@ -1374,6 +1374,10 @@ Inferred patterns                → 1–2 (implicit)
   Repeated mentions across N sessions without explicit save
 ```
 
+### LLMs as synthesis engines, not datastores
+
+The umx retrieval model treats LLMs as bounded synthesis agents, not as the primary filter or lookup engine. Filtering happens through facts, manifests, and SQLite FTS before an LLM is invoked. This keeps deterministic, cheap structured retrieval on the fast path and reserves LLM calls for synthesis and conflict resolution where structured queries produce ambiguous results. The Dream pipeline follows the same principle: Gather and Lint are deterministic passes over committed data; LLM calls are bounded to extraction and review decisions, not to full-context retrieval or memory arbitration.
+
 ### .gitignore-driven extraction safety
 
 During Gather, the Dream pipeline MUST parse the **project repo's** `.gitignore` and convert rules to path-matching patterns. Facts referencing gitignored paths (`.env`, `secrets.json`, etc.) are auto-routed to the memory repo's `local/private/`.
@@ -3145,6 +3149,10 @@ The output is flat markdown files derived from hot-tier and warm-tier facts. Wri
 [21] Ma, W., et al. (2024). *Mem0: The Memory Layer for AI Agents.* — Production-scale selective memory pipeline yielding near-full recall accuracy at ~90% lower latency than naive full-context. Validates the tiered memory model (hot/warm/cold) and the importance of selective distillation. Used as comparator in §24.
 
 [22] Packer, C., et al. (2023). *MemGPT: Towards LLMs as Operating Systems.* — Hierarchical memory management across context tiers using self-directed paging. Relevant as a retrieval-speed comparator; gitmem complements MemGPT-style systems by providing the durable reviewed store underneath the fast tier. Used as comparator in §24.
+
+[23] WRIT Benchmark (2025). *Write Integrity Testing for Long-Context Memory Systems.* — Tests write integrity, drift, provenance, and corruption rather than only retrieval quality. Cited in §24 as the class of benchmark that tests durable-memory correctness; gitmem's provenance trail, tombstone mechanism, and Dream governance are designed to pass write-integrity checks, not just recall benchmarks.
+
+[24] Chen, J., et al. (2025). *Reduced RAG: Deterministic Signal Extraction for Structured Memory.* — Argues for pushing filtering and structure into data artifacts (indexes, fact schemas, manifests) so the LLM is used only for bounded synthesis and review, not as a datastore or filter engine. Validates gitmem's approach: SQLite FTS plus structured markdown facts carry the filtering burden; Dream pipeline LLMs handle only extraction, conflict detection, and review.
 
 ---
 
