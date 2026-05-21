@@ -1896,6 +1896,26 @@ briefings/{briefing_id}.md
 
 Briefings are preferred over packs when the consumer is an LLM — they are already in a format agents understand without requiring JSON parsing. Briefings include headings, bullet facts, procedure excerpts, and relevant onboarding text.
 
+#### Layered Context Blocks (MEMORY CHRONICLES pattern)
+
+Dream SHOULD emit layered context block files alongside context packs. Each block targets a distinct view of the same memory window:
+
+```text
+context/layers/{task_class}-{date}/
+  numeric.md      — quantitative facts, thresholds, counts, rates
+  temporal.md     — timeline of decisions, milestones, status changes
+  narrative.md    — explanatory summaries, rationale, design reasoning
+  digest.md       — compact one-liner per active fact for token-constrained injection
+```
+
+Generation rules:
+- layers are generated once per dream cycle and cached; they do not regenerate per query
+- the digest layer is always injected; numeric/temporal/narrative layers are optional per budget
+- layers are derived outputs — canonical source is the fact files; layers do not replace them
+- layer generation is a dream sub-phase, logged in the dream audit trail
+
+The layered block pattern allows injection to be tuned to the agent's task: a debugging agent gets the numeric layer; a planning agent gets the temporal + narrative layers; a fast classifier gets the digest only.
+
 ### Injection Audit
 
 `injection-audit.jsonl` is an append-only log of exactly what was injected into each session and why. It enables:
@@ -2258,6 +2278,29 @@ umx rebuild-index --cwd "$PWD" --embeddings
 ├── graph.json         # derived relation graph
 └── extracted.jsonl    # normalized retrieval spans
 ```
+
+#### Retrieval-Fidelity Tags
+
+Every injected memory block SHOULD carry a `retrieval_fidelity` tag. Under degraded retrieval conditions (stale index, embedding model mismatch, fallback to keyword-only), the tag tells the receiving agent how much to trust the recalled content.
+
+Fidelity levels:
+| level | meaning |
+|---|---|
+| `exact` | retrieved by deterministic lookup (slug, anchor ID, or exact phrase) — highest trust |
+| `lexical` | retrieved by keyword/FTS match — high trust |
+| `semantic` | retrieved by embedding similarity — moderate trust (embedding may be stale) |
+| `fallback` | retrieved by date-ordered recency when primary retrieval failed — low trust |
+| `expired` | retrieved but TTL exceeded or source anchor changed — label and de-prioritize |
+
+In the injected markdown block, the fidelity appears as a YAML comment on the block header:
+
+```markdown
+<!-- retrieval_fidelity: lexical  source: facts/auth-cookie.md  strength: 4 -->
+### Auth cookie domain is scoped to api.prod.example.com
+...
+```
+
+The receiving agent can use this tag to calibrate confidence. IMX route decisions that rely on gitmem facts for routing SHOULD only use `exact` or `lexical` fidelity facts as evidence inputs.
 
 ### SQLite schema (canonical, defined once)
 
