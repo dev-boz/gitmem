@@ -32,6 +32,7 @@ Facts are governed through pull requests so memory is auditable, correctable, an
 9. [Memory File Format](#9-memory-file-format)
 9a. [Procedure File Format](#9a-procedure-file-format)
 9b. [Skill File Format](#9b-skill-file-format)
+9c. [Skill Invocation, Progressive Disclosure, and Promotion](#9c-skill-invocation-progressive-disclosure-and-promotion)
 10. [Read Strategy](#10-read-strategy)
 11. [Dream Pipeline](#11-dream-pipeline)
 12. [GitHub Dream Governance (gitmem)](#12-github-dream-governance-gitmem)
@@ -1110,6 +1111,130 @@ Skills affect what context an agent sees. In `remote` and `hybrid` modes, skill 
 modification SHOULD follow the same review path as facts and procedures. Trigger-only edits are
 not low-risk: broadening a trigger can materially increase injection volume and change agent
 behaviour.
+
+## 9c  Skill Invocation, Progressive Disclosure, and Promotion
+
+Skills are portable artifacts. A skill file checked into the repo is importable by any agent
+running against that memory store. This section covers how skills are invoked, how they disclose
+their retrieved content progressively based on budget, and how draft skills graduate to active.
+
+### Explicit invocation patterns
+
+**Prompt-level explicit invocation** — the user or an agent embeds `@skill:<name>` in prompt text:
+
+```
+@skill:database-debug — why is the connection being refused?
+```
+
+The injection layer detects the token, activates the named skill at high priority, and routes its
+`load:` targets into the current context pack. Name matching is exact and case-sensitive. Only
+`active` and `competing` skills respond to explicit invocation; `draft` and `retired` skills are
+silently ignored.
+
+**CLI invocation** — `umx skill test` runs a skill in isolation against a sample prompt or
+workspace state, printing what facts and hints would be injected without modifying live context:
+
+```bash
+umx skill test --name database-debug --prompt "psql: connection refused on port 5432"
+# → Activated: database-debug (explicit)
+# → load: facts/topics/database.md — 3 facts routed
+# → load: facts/topics/devenv.md — 2 facts routed
+# → hint: "Check database port facts before assuming the default PostgreSQL port."
+# → Total injected: 5 facts, 1 hint — estimated 420 tokens
+```
+
+`umx skill test` is the primary authoring feedback loop. It is safe to run against production
+memory; it never writes state.
+
+**Harness invocation** — harnesses that support progressive disclosure may request a skill pack
+by name via the injection shim:
+
+```json
+{ "skill_request": "database-debug", "disclosure_level": "L1" }
+```
+
+The shim resolves `load:` targets, scores facts against the current context, and returns the L1
+summary block (see Progressive Disclosure below).
+
+### Progressive disclosure
+
+Activated skills expose their content in three levels. The injection layer chooses a level based
+on available token budget:
+
+| Level | Budget available | Content returned |
+|-------|-----------------|-----------------|
+| L0 | Very tight (< 500 tokens) | Skill name + hint only; no facts loaded |
+| L1 | Moderate (500–3000 tokens) | Hints + top-N facts by relevance (N ≤ 5) |
+| L2 | Comfortable (> 3000 tokens) | Hints + all routed facts up to context budget |
+
+L0 is a signal to the agent that the skill exists but its full content cannot be loaded; the
+agent may request a context refresh or defer the skill to a future turn.
+
+Explicit `@skill:<name>` invocations receive at least L1 regardless of budget — the agent's
+explicit request is treated as a budget override for hints, though individual facts may still be
+dropped by the normal budget-packing pass.
+
+### Skill artifact format and portability
+
+A skill file is self-contained when its `load:` targets reference files that travel with it in
+the repo. Skills that reference paths outside `skills/`-adjacent namespaces are flagged by
+`umx lint` as non-portable.
+
+Skills can be exported as structured JSON artifacts for transfer across memory repos:
+
+```json
+{
+  "skill_artifact_version": "0.9",
+  "name": "database-debug",
+  "version": 1,
+  "skill_status": "active",
+  "description": "Routes database-debugging prompts to database and local development facts.",
+  "triggers": [
+    { "type": "command", "pattern": "psql|pg_dump|pg_restore|pgcli" },
+    { "type": "pattern", "pattern": "database|postgres|connection.*refused" }
+  ],
+  "retrieval": [
+    { "directive": "load", "target": "facts/topics/database.md" },
+    { "directive": "hint", "text": "Check database port facts before assuming the default PostgreSQL port." }
+  ],
+  "exported_at": "2026-05-21T10:00:00Z",
+  "exported_from": "org/project-memory"
+}
+```
+
+Import: `umx skill import --file database-debug.skill.json --status draft`
+
+Imported skills land as `draft` and must be manually promoted. Importing a skill does not import
+the facts it references — those must be reconciled separately.
+
+### Promotion pipeline
+
+Skills progress through statuses: `draft` → `active` → (optionally) `competing` → `retired`.
+
+**Draft** — created by authoring tools, `umx skill import`, or the Dream pipeline when a
+recurring retrieval gap is detected. Not activated by triggers or explicit invocation.
+
+**Active** — promoted by a human or authorized orchestrator after the skill passes `umx skill test`
+against representative prompts. In `remote` mode, promotion requires a PR merge (same review path
+as fact promotion).
+
+**Competing** — two versions of a skill with the same name are both `competing`. The injection
+layer runs both, records which facts were retrieved and used, and emits telemetry. After N
+evaluation sessions (configurable), the higher-performing version is promoted to `active` and the
+other is `retired`.
+
+**Retired** — excluded from activation. Retained in git history for audit. Can be un-retired by
+changing `skill_status`.
+
+**Dream-proposed skills** — when the Dream pipeline's Consolidation step identifies a recurring
+retrieval gap (a topic queried frequently but not well-covered by existing skills), it MAY emit a
+draft skill proposal to `skills/proposed/{name}.md` with a `skill_status: draft` header and a
+`proposed_by: dream` annotation. Humans review before promotion.
+
+**Automated competition** — promotion to `competing` can be triggered by `umx skill compete
+--name <name> --challenger <path>`. The challenger is added as a second `competing` version.
+Full automated version competition (including semantic activation and champion selection) is
+deferred post-v0.9.
 
 ## 10  Read Strategy
 
