@@ -288,7 +288,7 @@ task_type_docs:
 
 The registry is maintained by the team and reviewed like any other docs change. Agents read it before starting work on a typed task.
 
-### artifacts/*.md
+### memory/artifacts/*.md
 
 Reasoning artifacts capture conclusions, evidence, and invalidation conditions from significant decisions. They are not facts (no provenance pipeline) — they are human-or-agent-authored decision records.
 
@@ -312,7 +312,7 @@ created_at: 2026-04-08T12:00:00Z
 ...
 ```
 
-Artifacts are stored in `codebase/artifacts/` and indexed in the SQLite cache for retrieval. They are injected when the task class or query matches `conclusion` or `evidence` keywords. Unlike facts, they carry `invalidates_when` conditions that the Dream pipeline checks against code changes during Orient.
+Artifacts are stored in `memory/artifacts/` and indexed in the SQLite cache for retrieval. Flat-layout repos MAY expose the same canonical files at repo-root `artifacts/` for backward compatibility, but the memory-facing path remains `memory/artifacts/`. They are injected when the task class or query matches `conclusion` or `evidence` keywords. Unlike facts, they carry `invalidates_when` conditions that the Dream pipeline checks against code changes during Orient.
 
 ---
 
@@ -930,6 +930,31 @@ schema_version: 1
 
 This file-level schema is intentionally separate from `meta/schema_version`. It allows ordered fact-file migrations to run via `umx migrate` without conflating them with repo bootstrap repair. `umx doctor` SHOULD report missing, stale, or future fact-file schema headers, but `umx doctor --fix` MUST remain scoped to repo-level repair; operators run fact-file migrations explicitly.
 
+### `agent.md` entrypoints, owned docs, and wikilinks
+
+Each durable agent role MAY expose an `agent.md` entrypoint that tells gitmem where that role's canonical reading surface begins. This file is not a prompt dump and not a cache of generated context. It is a human-readable routing document with two explicit jobs: declare the docs the role owns, and map task types to the files or procedures that should be read first. `agent.md` therefore acts as a file-first registry for role-specific memory entrypoints. An agent that starts a review task does not need a memory server lookup to discover its canon; it reads `agent.md`, follows the listed docs, and resolves any embedded wikilinks.
+
+Wikilinks such as `[[deploy-target]]` or `[[auth-session-boundary]]` are the preferred cross-reference surface inside markdown memory files because they remain stable under ordinary text editing and work well in both rendered and grep-based workflows. Reasoning artifacts referenced from `agent.md` SHOULD live in `memory/artifacts/*.md` and MUST carry `invalidates_when:` so the role entrypoint does not anchor itself to obsolete conclusions. The entrypoint is therefore a directory of truth-bearing files, not a second truth store.
+
+```markdown
+---
+role: reviewer
+owned_docs:
+  - docs/API_SPEC.md
+  - CONVENTIONS.md
+task_types:
+  code_review:
+    read_first:
+      - procedures/review-checklist.md
+      - memory/artifacts/auth-boundary.md
+      - facts/topics/deploy.md
+---
+# reviewer
+
+Start with [[api-versioning]] and [[auth-session-boundary]] before reviewing route changes.
+Escalate conflicts to [[deploy-target]] when code and docs disagree.
+```
+
 ### Conflict file
 
 ```markdown
@@ -1333,6 +1358,26 @@ At session end, accumulated gaps are processed as part of the normal Dream pipel
 
 **Mid-session fast path (optional).** For tools with hook support, an agent MAY write a gap-proposed fact directly to `local/private/scratchpad.md` at S:1 for immediate availability in the current session. This fact is ephemeral — it is always injected within the current session but MUST survive the normal Dream pipeline (corroboration, consolidation) to be promoted to `facts/`. The scratchpad is gitignored; scratchpad facts never reach the remote repo unless promoted.
 
+### Bounded consolidation gates
+
+gitmem places a second boundary around Dream so consolidation stays bounded, idempotent, and reviewable. A run MUST NOT start until the time gate and session-count gate are both satisfied for the configured thresholds, and it MUST acquire a singleton lock at `~/.gitmem/state/dream.lock` before reading any inputs. The existing repo-local `meta/dream.lock` remains the per-clone coordination marker; the user-level lock prevents two Dream processes from racing across multiple repos or shells on the same machine. If the outer lock is stale relative to the configured heartbeat timeout, the next run MAY reclaim it after logging the reclaim event.
+
+The automatic Dream pass is read-only with respect to canonical memory. It reads `sessions/`, current markdown facts, procedures, skills, and artifacts, then writes only proposal material into `dream-candidates/`. Those candidate files use content-addressed IDs so rerunning the same inputs yields the same proposal path instead of duplicate edits. Promotion from `dream-candidates/` into `facts/`, `principles/`, or other canonical markdown happens only through the existing governed PR flow in §12, or through an explicit human approval step in local-only operation. Dream therefore consolidates by proposing, not by silently mutating truth.
+
+```yaml
+# ~/.gitmem/state/dream.lock
+owner: umx-dream
+pid: 48122
+started_at: 2026-05-21T10:00:00Z
+last_heartbeat: 2026-05-21T10:03:00Z
+repo: boz
+```
+
+```text
+dream-candidates/
+└── sha256-6f8e...c1b9.md
+```
+
 ### Phases
 
 The Dream pipeline runs four top-level phases. Phase 3 (Consolidate) contains an integrated Lint sub-phase (3b) that runs after the merge/resolve step (3a) and before Prune.
@@ -1341,8 +1386,8 @@ The Dream pipeline runs four top-level phases. Phase 3 (Consolidate) contains an
 |---|-------|--------|--------|
 | 1 | **Orient** | Read `MEMORY.md`, `CONVENTIONS.md` (if absent: skip convention checks, log notice, `umx status` SHOULD suggest creating one), and `meta/manifest.json`. Check `meta/schema_version`. Compare project file tree against existing `folders/` and `files/` entries (detect orphaned scoped memory from renames). Check tombstones. Check `ground_truth_code` anchors for staleness — demote to `fragile` if referenced files are deleted or significantly changed. | Current memory map + orphan candidates + convention context |
 | 2 | **Gather** | Read tool native memory (`source_type: tool_output`, S:3). Parse project repo's `.gitignore` for exclusions. Read source files referenced in session (`source_type: ground_truth_code`, S:3–4). Extract from sessions (`source_type: llm_inference` for paraphrased, S:2–3). Infer patterns (S:1–2). Process `meta/gaps.jsonl`. Check tombstones — suppress matching facts. Apply `CONVENTIONS.md` phrasing and taxonomy rules. Flag project-specific conventions deviating from common practice (`schema_conflict: true`). If `search.backend: hybrid` and an embedding model is configured, generate embeddings for new facts and write to `.umx.json` cache alongside fact text (never committed). Embedding generation is best-effort: failures MUST NOT block Gather or cause facts to be dropped. | Candidate fact list with strength + `source_type` + provenance (+ embeddings in `.umx.json` if enabled) |
-| 3a | **Consolidate** | Merge candidates against existing facts. Apply corroboration bonus. Detect contradictions and write `conflicts_with` pointers (Interference Theory). Resolve conflicts by composite score; set `supersedes`/`superseded_by` on winner/loser. Flag ties. Mark new facts as `consolidation_status: fragile`. Write atomic facts. **In local mode: direct write. In remote/hybrid mode: commit to branch, open PR.** | Updated topic files or PR |
-| 3b | **Lint** | Integrity checks against the consolidated store: semantic contradiction scan (high similarity + opposing assertions not caught by `conflicts_with`), stale file references (`files/` / `folders/` scopes pointing to paths that no longer exist), orphan `fact_id` references (IDs in `corroborated_by_facts` / `conflicts_with` / `supersedes` / `provenance.sessions` that don't resolve), tag drift (same concept tagged inconsistently: `database` vs `db` vs `postgres`), convention violations (facts breaking `CONVENTIONS.md` phrasing or taxonomy). If `CONVENTIONS.md` is absent, Lint MUST skip convention checks and log a notice. | Lint findings report |
+| 3a | **Consolidate** | Merge candidates against existing facts. Apply corroboration bonus. Detect contradictions and write `conflicts_with` pointers (Interference Theory). Resolve conflicts by composite score; set `supersedes`/`superseded_by` on winner/loser. Flag ties. Mark new facts as `consolidation_status: fragile`. Write content-addressed proposal files in `dream-candidates/`. **In local mode: an explicit human-approved merge MAY promote those proposals directly to markdown. In remote/hybrid mode: commit to branch, open PR.** | Updated candidate set or PR |
+| 3b | **Lint** | Integrity checks against the proposed or consolidated store: semantic contradiction scan (high similarity + opposing assertions not caught by `conflicts_with`), stale file references (`files/` / `folders/` scopes pointing to paths that no longer exist), orphan `fact_id` references (IDs in `corroborated_by_facts` / `conflicts_with` / `supersedes` / `provenance.sessions` that don't resolve), tag drift (same concept tagged inconsistently: `database` vs `db` vs `postgres`), convention violations (facts breaking `CONVENTIONS.md` phrasing or taxonomy). If `CONVENTIONS.md` is absent, Lint MUST skip convention checks and log a notice. | Lint findings report |
 | 4 | **Prune** | Remove facts below threshold (default S:2) **AND** older than `prune.min_age_days` (default: 7 — protects incubating facts in new projects). Apply time decay (Ebbinghaus [5]). Check `expires_at` TTLs; an explicit TTL expiry overrides `prune.min_age_days` and removes the fact immediately. Deduplicate by semantic dedup key. Read `meta/usage.sqlite` to identify injected-but-unused facts for relevance-weight calibration. Rebuild `MEMORY.md` index (see §9 generation algorithm). Rebuild `meta/manifest.json` (topics, uncertainty_hotspots, knowledge_gaps). Promote `consolidation_status: fragile` → `stable` for facts satisfying any stabilisation rule (Section 14). Auto-abandon open/blocked tasks older than `prune.abandon_days`. Enforce MEMORY.md size limit. Detect orphaned scope entries and propose rename/migration. | Pruned index |
 
 ### Lint sub-phase output
@@ -1378,7 +1423,7 @@ dream:
   mode: local       # local | remote | hybrid
 ```
 
-- `local`: dream writes facts directly to markdown, commits, pushes to main. No PR gates, no governance. For solo/offline use.
+- `local`: dream writes candidates locally. An explicit user-approved merge MAY promote them directly to markdown without PR infrastructure. For solo/offline use.
 - `remote`: dream commits to a branch, opens a PR, never pushes facts to main. Full L1/L2/L3 governance. Sessions are still direct-pushed (append-only).
 - `hybrid`: sessions push directly to main (append-only, no governance needed). ALL fact changes go through PRs — same L1/L2/L3 governance as remote mode. This gives immediate session availability with full fact governance.
 
@@ -2100,6 +2145,28 @@ Archive compaction MAY be run explicitly via `umx archive-sessions` or implicitl
 
 **Raw track (direct session scan):** "what actually happened around X" queries. Full context.
 
+### Canonical markdown and derived retrieval caches
+
+Search infrastructure in gitmem is a cache layer, never a truth layer. SQLite FTS, HNSW vector indexes, graph indexes, extracted fact tables, and any other retrieval accelerator are all derived from canonical markdown plus immutable session JSONL. They MUST be gitignored, MUST be safe to delete at any time, and MUST be rebuildable locally from files alone through a single rebuild command or wrapper script (for example `umx index rebuild`, backed by the canonical CLI rebuild path). If an index disagrees with markdown, the index loses. This rule keeps retrieval fast without letting a database quietly become the memory system.
+
+The retrieval model is therefore dual-track by design. Structured queries such as "facts about deploy target" should hit FTS or a derived graph cache first because they benefit from indexing. Full-context questions such as "what happened around the last auth rollback?" should read raw session JSONL directly because compression loses nuance. Before either track injects material into an agent context, implementations MUST deduplicate overlapping spans so the same fact is not shown twice via both FTS and raw replay. Fact extraction outputs may themselves be cached as normalized artifacts, but those artifacts remain disposable products of the source markdown and raw sessions.
+
+```bash
+#!/usr/bin/env bash
+# scripts/rebuild-derived-indexes.sh
+set -euo pipefail
+rm -rf .cache/umx
+umx rebuild-index --cwd "$PWD" --embeddings
+```
+
+```text
+.cache/umx/
+├── search.sqlite      # FTS cache
+├── vectors.hnsw       # semantic cache
+├── graph.json         # derived relation graph
+└── extracted.jsonl    # normalized retrieval spans
+```
+
 ### SQLite schema (canonical, defined once)
 
 ```sql
@@ -2499,6 +2566,20 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 \* *Free compute depends on free-tier availability from third-party providers. Subject to change.*
 
 **vs Karpathy's LLM Wiki pattern:** Karpathy's wiki shares the "LLM maintains markdown, raw sources are immutable" architecture. umx adds: git-native version history (wiki has no history), PR-based governance (wiki has no review mechanism), encoding strength and provenance (wiki has no quality differentiation), multi-agent support (wiki is single-user single-agent), and tombstone-based forgetting (wiki has no suppression mechanism). The wiki pattern is umx without governance, history, provenance, or multi-agent support.
+
+### Positioning against retrieval interfaces and cache systems
+
+gitmem is intentionally narrower and more durable than the systems it is often compared against. An MCP memory server is a **retrieval interface**: useful for exposing memory to a tool, but not a canonical store. A vector-memory product is a **search cache**: useful for nearest-neighbor recall, but not durable truth. A compiled knowledge artifact such as AKS is a **transport package**: useful for shipping a frozen bundle, but not the place where edits are authored. gitmem sits underneath all three. Canonical markdown plus immutable session logs are the source of truth; MCP servers, vector indexes, and compiled bundles are views built from those files.
+
+This is why gitmem can interoperate with them without adopting their failure modes. A project may expose gitmem through an MCP bridge, rebuild HNSW or graph indexes for fast retrieval, or export a compiled artifact for offline distribution, and none of those steps changes what counts as memory truth. If the cache goes stale or the bridge misbehaves, rebuild it from markdown. If the compiled artifact drifts, regenerate it from markdown. The correction path always returns to files and Git history rather than to a service database or opaque embedding store.
+
+```text
+facts/*.md           ← canonical memory
+sessions/*.jsonl     ← canonical evidence
+.cache/umx/*.sqlite  ← derived search cache
+.cache/umx/*.hnsw    ← derived vector cache
+exports/aks/*.json   ← derived exchange artifact
+```
 
 ---
 
