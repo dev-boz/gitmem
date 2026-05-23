@@ -392,3 +392,58 @@ def test_dream_hybrid_search_warns_when_embeddings_unavailable(
 
     assert result.status == "ok"
     assert "embedding prewarm skipped" in caplog.text
+
+
+def test_procedure_regression_trigger_writes_draft(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    from umx.dream import imx_triggers as imx_mod
+    from umx.dream.imx_triggers import ImxDreamTrigger
+
+    # Set up a procedures dir in the project with a matching procedure file
+    procedures_dir = project_dir / "procedures"
+    procedures_dir.mkdir()
+    (procedures_dir / "code-review.md").write_text(
+        "# Code Review\ntask_class: implementation\nReview all changes carefully.",
+        encoding="utf-8",
+    )
+
+    raw_trigger = {
+        "trigger_type": "procedure_regression",
+        "query": "code review skipped in fast-path",
+        "source": "imx",
+        "ts": "2026-05-22T00:00:00Z",
+        "context": {"task_class": "implementation", "task_id": "task-99"},
+    }
+    fake_trigger = ImxDreamTrigger(
+        trigger_type="procedure_regression",
+        source="imx",
+        query="code review skipped in fast-path",
+        ts="2026-05-22T00:00:00Z",
+        context={"task_class": "implementation", "task_id": "task-99"},
+        raw=raw_trigger,
+    )
+    monkeypatch.setattr(imx_mod, "read_imx_triggers", lambda *a, **kw: [fake_trigger])
+
+    drafts_dir = tmp_path / "drafts"
+    pipeline = DreamPipeline(project_dir)
+    # Patch _write_procedure_revision_drafts to use our tmp drafts_dir
+    original_method = pipeline._write_procedure_revision_drafts
+
+    def patched_write(now, **kwargs):
+        return original_method(now, drafts_dir=drafts_dir)
+
+    monkeypatch.setattr(pipeline, "_write_procedure_revision_drafts", patched_write)
+
+    result = pipeline.run(force=True)
+
+    assert result.status == "ok"
+
+    draft_files = list(drafts_dir.glob("procedure-revision-*.md"))
+    assert len(draft_files) == 1, f"expected 1 draft file, found: {draft_files}"
+    body = draft_files[0].read_text(encoding="utf-8")
+    assert "<!-- umx-pr-type: procedure_revision -->" in body
+    assert "code-review" in body

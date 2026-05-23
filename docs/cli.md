@@ -36,7 +36,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem search` | Search facts, or raw sessions with `--raw` / `--all` | `--cwd`, `--raw`, `--all` |
 | `gitmem inject` | Build prompt-ready memory context | `--cwd`, `--tool`, `--prompt`, `--command`, `--session`, `--file`, `--max-tokens` |
 | `gitmem view` | List facts, inspect one fact, or launch viewer | `--cwd`, `--list`, `--fact`, `--min-strength` |
-| `gitmem tui` | Launch the local viewer | `--cwd` |
+| `gitmem tui` | Launch the terminal TUI | `--cwd` |
 | `gitmem status` | Repo status summary | `--cwd` |
 | `gitmem health` | Memory health or governance health | `--cwd`, `--governance`; `--format json\|human` only with `--governance` |
 | `gitmem conflicts` | Show conflicting facts | `--cwd` |

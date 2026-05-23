@@ -988,14 +988,9 @@ def view_cmd(
 @main.command("tui")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 def tui_cmd(cwd: Path) -> None:
-    url, server = start_viewer(cwd)
-    click.echo(url)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    from umx.tui import GitmemTUIApp
+
+    GitmemTUIApp(cwd).run()
 
 
 @main.command("status")
@@ -1495,6 +1490,7 @@ def purge_cmd(cwd: Path, session_id: str, dry_run: bool) -> None:
 def rebuild_index_cmd(cwd: Path, embeddings: bool) -> None:
     repo = project_memory_dir(cwd)
     cfg = _cfg()
+    message = None
     if embeddings and not embeddings_available(cfg):
         click.echo(
             f"embedding provider '{cfg.search.embedding.provider}' is unavailable; rebuilding lexical index only",
@@ -1503,9 +1499,26 @@ def rebuild_index_cmd(cwd: Path, embeddings: bool) -> None:
     refresh_index(repo, with_embeddings=embeddings, config=cfg)
     if cfg.search.backend == "hybrid" and not embeddings:
         message = embedding_rebuild_message(repo, config=cfg)
-        if message:
-            click.echo(message, err=True)
+    if message:
+        click.echo(message, err=True)
     click.echo(str(repo / "meta" / "index.sqlite"))
+
+
+@main.command("codemap")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--project-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Project repository to scan (default: resolve from --cwd).",
+)
+def codemap_cmd(cwd: Path, project_root: Path | None) -> None:
+    from umx.codebase import write_codemap
+
+    root = (project_root or find_project_root(cwd)).resolve()
+    repo = project_memory_dir(cwd)
+    path = write_codemap(repo, root, project_name=discover_project_slug(root))
+    click.echo(str(path))
 
 
 @main.command("archive-sessions")

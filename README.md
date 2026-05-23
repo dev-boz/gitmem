@@ -19,9 +19,24 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 
 **Your AI tools share a brain, and you can see exactly what's in it.**
 
-> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/OpenCode transcript capture, Claude Code live-hook install helpers, native-memory import adapters (including Claude Code), search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, especially remote/hybrid review and provider-backed approval.
+> **Alpha release** — shipping today: local-mode memory repos, Codex/Copilot/Claude Code/Gemini/OpenCode/Amp transcript capture, Claude Code live-hook install helpers, native-memory import adapters (including Claude Code), skills retrieval routing, search/inject/view, and an MCP server. Still rough: GitHub PR governance is experimental, especially remote/hybrid review and provider-backed approval.
 >
 > **Benchmark note** — public-memory benchmark coverage is improving, but full end-to-end evaluation of Dream cycles is still a work in progress.
+
+## What ships today
+
+- memory repos under `~/.umx/`
+- transcript capture for Codex, Copilot CLI, Claude Code, Gemini CLI, OpenCode, and Amp
+- manual session ingest with `gitmem collect`
+- Dream pipeline: gather/extract, consolidate, lint, prune
+- FTS5 search and budget-aware injection
+- skills retrieval routing with `skills/`, `@skill:name`, trigger activation, and `gitmem skill test`
+- codebase-memory artifacts with `gitmem codemap` plus onboarding/docs registry helpers under `codebase/`
+- local web viewer via `gitmem view` and terminal TUI via `gitmem tui`
+- diagnostics and fact lifecycle commands: `status`, `health`, `doctor`, `audit`, `forget`, `confirm`, `promote`, `merge`, `history`, `resume`, `purge`
+- integrations: Claude Code hooks, shims, bridge files, backup/export/import, MCP server
+- benchmark and eval harnesses under `benchmarks/` and `tests/eval/`
+- GitHub-backed bootstrap, sync, and PR-scaffolded governance for `remote` / `hybrid` mode (**experimental**)
 
 ### Current benchmark results
 
@@ -59,7 +74,7 @@ gitmem takes that idea and builds it for the multi-tool coding workflow:
 - **Git-native history** where the wiki has none — every fact change is a commit, every correction is traceable
 - **PR-based governance** where the wiki has no review mechanism — cheap models propose facts, SotA models filter, humans resolve ambiguity
 - **Encoding strength and provenance** where the wiki treats all knowledge equally — a fact read from source code outranks an LLM's guess, always
-- **Multi-agent support** where the wiki is single-user — Claude Code, Codex, Copilot, Gemini CLI, and shim/manual-collect tools like Aider can share the same memory even when their live write paths differ
+- **Multi-agent support** where the wiki is single-user — Claude Code, Codex, Copilot, Gemini CLI, OpenCode, Amp, and shim/manual-collect tools like Aider can share the same memory even when their live write paths differ
 - **Cognitive science taxonomy** where the wiki has flat pages — episodic vs semantic memory, interference-based conflict resolution, cue-dependent retrieval
 
 The wiki pattern is the right intuition. gitmem adds the engineering: governance, history, provenance, and multi-agent coordination.
@@ -80,35 +95,46 @@ The wiki pattern is the right intuition. gitmem adds the engineering: governance
 
 ## How it works
 
-```
+```text
                     You
                      |
-        +-----------+-----------+
-        |           |           |
-   Claude Code    Codex     Gemini CLI    ...any CLI agent
-        |           |           |
-        +-----------+-----------+
-                    |
-          gitmem / umx (capture)
-                    |
-        +-----------+-----------+
-        |                       |
-   sessions/                 dream pipeline
-   (immutable logs)     extract -> consolidate -> lint -> prune
-        |                       |
-        +-----------+-----------+
-                    |
-              memory repo
-         (markdown + git)
-                    |
-              GitHub sync
-         (PRs, governance)
+        +------------+------------+
+        |            |            |
+   Claude Code     Codex      Gemini CLI   ...any CLI agent
+        |            |            |
+        +------------+------------+
+                     |
+             gitmem / umx
+      capture / collect / import / mcp
+                     |
+          +----------+----------+
+          |                     |
+      sessions/            Dream pipeline
+   (immutable logs)   gather -> consolidate
+                         -> lint -> prune
+          |                     |
+          +----------+----------+
+                     |
+               memory repo
+          (markdown + git + sqlite)
+                     |
+               GitHub sync
+          (PRs, governance)
 ```
 
-Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in dedicated GitHub memory repos and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
+Memory is completely separate from your project repos. Project repos contain code. Memory repos contain cognition. They live in dedicated memory repos and only touch the project repo through a single `.umx-project` marker — no `.umx/` directories cluttering your code history.
 
 gitmem is the reference implementation of the **UMX specification**.
-The repo is `gitmem`, the Python package name remains `umx`, and both `gitmem` and `umx` CLI commands work.
+The repository and primary CLI are `gitmem`, the Python package name remains `umx`, and the compatibility entrypoints `umx` and `aip-mem` are shipped too.
+
+## Storage model
+
+- default memory home: `~/.umx` (override with `UMX_HOME`)
+- user memory repo: `~/.umx/user/`
+- project memory repo: `~/.umx/projects/<slug>/`
+- project repo marker: `.umx-project`
+- memory repos contain directories such as `sessions/`, `facts/topics/`, `principles/topics/`, `episodic/topics/`, `procedures/`, `skills/`, `codebase/`, `files/`, `folders/`, `tools/`, `machines/`, `local/private/`, `local/secret/`, `local/quarantine/`, and `meta/`
+- fact scopes include `user`, `tool`, `machine`, `project`, `project_private`, `project_secret`, `folder`, and `file`
 
 ## Install
 
@@ -128,6 +154,16 @@ cd gitmem
 pip install -e ".[dev]"
 ```
 
+Optional extras:
+
+```bash
+pip install -e ".[docs]"
+pip install -e ".[embeddings]"
+```
+
+- `gh` is only required for `remote` / `hybrid` mode.
+- `.[embeddings]` is only needed for local semantic reranking with `sentence-transformers`.
+
 ## Quick start
 
 ```bash
@@ -144,6 +180,7 @@ gitmem capture claude-code --cwd /path/to/project
 gitmem capture claude-code --cwd /path/to/project --all   # import all sessions, not just latest
 gitmem capture gemini --cwd /path/to/project
 gitmem capture opencode --cwd /path/to/project
+gitmem capture amp --cwd /path/to/project
 gitmem collect --cwd /path/to/project --tool aider --file ./aider-session.txt
 cat ./cursor-session.txt | gitmem collect --cwd /path/to/project --tool cursor
 
@@ -156,8 +193,10 @@ gitmem search --cwd /path/to/project postgres
 # Inject memory into a prompt
 gitmem inject --cwd /path/to/project --prompt "postgres deploy flow"
 
-# View facts
+# View facts and open the local viewer or terminal TUI
 gitmem view --cwd /path/to/project --list
+gitmem view --cwd /path/to/project
+gitmem tui --cwd /path/to/project
 
 # Inspect overall memory health
 gitmem status --cwd /path/to/project
@@ -174,6 +213,16 @@ gitmem propose --cwd /path/to/project --cross-project --proposal-key "shared dep
 gitmem promote --cwd /path/to/project --fact FACT123 --to project
 gitmem promote --cwd /path/to/project --fact FACT123 --to principle
 
+# Inspect a skill's routed context
+gitmem skill test --cwd /path/to/project --name database-debug
+
+# Rebuild the local search index
+gitmem rebuild-index --cwd /path/to/project
+gitmem rebuild-index --cwd /path/to/project --embeddings
+
+# Generate or refresh derived codebase artifacts in the project memory repo
+gitmem codemap --cwd /path/to/project
+
 # Install Claude Code live hooks into project-local settings
 gitmem hooks claude-code install --cwd /path/to/project
 
@@ -187,7 +236,32 @@ aip-mem status --cwd /path/to/project
 gitmem mcp
 ```
 
+`gitmem view` starts the local web viewer by default. Use `gitmem view --list` for a plain fact listing or `gitmem view --fact FACT_ID` for a single JSON record. `gitmem tui` starts the terminal dashboard.
+
 `umx` remains as a compatibility alias for existing setups.
+
+## Codebase artifacts
+
+`gitmem codemap` derives repository-intelligence artifacts under `codebase/` inside the project memory repo:
+
+- `codebase/codemap.json` — tracked-file inventory with lightweight Python exports, imports, entry points, and the current git SHA when available
+- `codebase/onboarding/*.md` — onboarding briefs with drift hashes computed from the source paths they describe
+- `codebase/docs/registry.yaml` (or `.json`) — task-type-to-doc mappings with dotted-prefix fallback for broader classes such as `implementation`
+
+These are file-backed helper artifacts, not hidden state. They pair well with AIP/IMX workflows that want stable context packs, onboarding notes, or task-type-specific documentation without stuffing extra prompt text into every run.
+
+## Command surface
+
+| Area | Commands |
+| --- | --- |
+| Setup | `init`, `init-project`, `setup-remote`, `sync` |
+| Capture and import | `capture ...`, `collect`, `import`, `export`, `archive-sessions` |
+| Dream and retrieval | `dream`, `search`, `inject`, `view`, `tui`, `mcp`, `rebuild-index` |
+| Codebase artifacts | `codemap` |
+| Fact lifecycle | `forget`, `confirm`, `promote`, `merge`, `history`, `resume`, `purge`, `rollback` |
+| Diagnostics | `status`, `health`, `doctor`, `audit`, `propose`, `gaps`, `conflicts`, `meta` |
+| Integrations | `hooks claude-code ...`, `shim ...`, `bridge ...`, `secret ...`, `skill test` |
+| Evaluation | `eval ...`, `pytest benchmarks -q`, `tests/eval/` |
 
 ## Optional signed commits
 
@@ -227,6 +301,49 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 - Qodo, Cursor, Jules, and similar third-party CLIs are currently **shim/manual-collect surfaces**, not native transcript capture backends. Their shims inject memory; `collect` is the honest path for saving exported transcripts today.
 - The tool reads files and hook outputs you point it at. It is not doing network interception or replacing the underlying CLI.
 
+## Capture, import, and integrations
+
+Native transcript capture uses adapter-specific session stores. Native memory import is separate: it reads existing instruction or memory formats and converts durable entries into gitmem facts.
+
+```bash
+gitmem import --cwd /path/to/project --adapter claude-code
+gitmem import --cwd /path/to/project --adapter copilot
+gitmem import --cwd /path/to/project --adapter aider
+gitmem import --cwd /path/to/project --adapter generic
+gitmem export --cwd /path/to/project --out ./gitmem-backup
+gitmem import --cwd /path/to/project --full ./gitmem-backup
+```
+
+Additional integration surfaces:
+
+- Claude Code hooks: `gitmem hooks claude-code ...`
+- shims: `gitmem shim aider|generic|amp|cursor|jules|qodo`
+- bridge files: `gitmem bridge sync|remove|import` for `CLAUDE.md`, `AGENTS.md`, and `.cursorrules`
+- secrets: `gitmem secret ...` stores user-local secrets outside normal injection
+
+## Skills retrieval
+
+Skills are retrieval-routing files under `skills/`. They complement procedures: procedures are action playbooks, while skills decide which memory should be pulled into an injection block for a prompt, command, or file context.
+
+Skills can activate from explicit `@skill:name` prompt references or from `command:`, `file:`, and `pattern:` triggers. The active MVP resolves `load:` / `search:` directives that point at allowed memory paths and `hint:` directives that add lightweight contextual cues. Unsupported directives are reported by `gitmem skill test` instead of being silently injected.
+
+```bash
+gitmem skill test --cwd /path/to/project --name database-debug
+```
+
+`gitmem skill test` shows the activated skill, resolved facts, hints, missing paths, blocked paths, unsupported directives, and estimated token cost. Skill loads and routed fact selections are recorded in the local index for usage analysis.
+
+## MCP server
+
+`gitmem mcp` starts a stdio MCP server that exposes:
+
+- `read_memory`
+- `write_memory`
+- `search_memory`
+- `dream`
+- `status`
+- `emit_gap_signal`
+
 ## Privacy and provider status
 
 - In `local` mode, sessions, facts, and SQLite indexes stay on your filesystem.
@@ -236,7 +353,32 @@ For safety, custom patterns must be simple token-shape regexes; empty patterns, 
 - Anonymous telemetry is available as an **opt-in** config path. It is off by default and does not send prompts, facts, transcripts, repo paths, or raw remote URLs.
 - The local alpha does not require model API keys. The repo includes experimental GitHub Actions templates for governed remote flows: L1 extraction uses `GROQ_API_KEY`, and the shipped L2 review path uses `NVIDIA_API_KEY`.
 
-## Remote mode (experimental)
+## Dream, search, and configuration
+
+The default local Dream path falls back to a native session heuristic, so local usage does not require API keys. If provider credentials or CLI-backed reviewer settings are configured, Dream can also use provider-backed extraction and L2 review.
+
+- default search backend: `fts5`
+- optional hybrid/semantic reranking: local `sentence-transformers` via `.[embeddings]`, or remote embeddings via OpenAI / Voyage credentials
+- optional L2 review providers: `anthropic`, `nvidia`, or `claude-cli`
+- main config file: `~/.umx/config.yaml`
+
+Rebuild the index explicitly when needed:
+
+```bash
+gitmem rebuild-index --cwd /path/to/project
+gitmem rebuild-index --cwd /path/to/project --embeddings
+```
+
+CLI config writes currently support:
+
+```bash
+gitmem config set telemetry.enabled true
+gitmem config set redaction.patterns '["ticket-[A-Z]+", "ghp_[A-Za-z0-9]{36}"]'
+```
+
+Anonymous telemetry is opt-in and off by default.
+
+## Remote / hybrid mode (experimental)
 
 Requires `gh` CLI installed and authenticated.
 
@@ -278,6 +420,8 @@ On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remot
 - **Session capture** — `gitmem capture codex` / `gitmem capture copilot` / `gitmem capture claude-code` / `gitmem capture gemini` / `gitmem capture opencode` / `gitmem capture amp`, native memory import adapters, hooks, or MCP server
 - **Claude Code live hooks** — project/user install helpers for session-start injection, pre-tool procedures, pre-compact sync, and session-end capture
 - **MCP server** — `gitmem mcp` exposes read/write/search/dream/status tools over stdio
+- **Skills retrieval** — `skills/` files route facts and hints into injection through `@skill:name` and trigger matching
+- **Codebase artifacts** — `gitmem codemap` generates `codebase/codemap.json`, drift-aware onboarding units, and task-type docs registry helpers
 - **Budget-aware injection** — greedy-packs the most relevant facts into a token budget
 - **Scope hierarchy** — user > tool > project > folder > file — facts injected at the most specific relevant level
 - **Encoding strength 1-5** — ground truth code (S:5) to incidental mention (S:1), with composite scoring for trust, relevance, and retention
@@ -294,7 +438,7 @@ On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remot
 
 - **First-class transcript capture:** Codex, Copilot CLI, Claude Code, Gemini CLI, OpenCode, Amp
 - **Native memory import adapters:** Claude Code, Copilot instructions, Aider
-- **Integration surfaces:** MCP server, Claude Code live hooks, shims (including Amp/Qodo/Cursor/Jules), bridge files, search/inject/view, and `aip-mem`
+- **Integration surfaces:** MCP server, Claude Code live hooks, skills, shims (including Amp/Qodo/Cursor/Jules), bridge files, search/inject/view, and `aip-mem`
 
 The local-mode loop is in daily use. Remote and hybrid mode are included in alpha for bootstrap, PR scaffolding, and session sync, but that governance path is still the roughest part of the project.
 
@@ -306,6 +450,7 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - Local-mode dream pipeline (extract, consolidate, lint, prune)
 - Codex, Copilot, Claude Code, Gemini, OpenCode, and Amp transcript capture
 - Claude Code live-hook install/export workflow
+- Skills retrieval routing with explicit activation, trigger activation, bounded directive resolution, usage telemetry, and `gitmem skill test`
 - User/project/principle promotion via `gitmem promote --to ...`
 - Cross-project audit via `gitmem audit --cross-project` to surface repeated project facts that may merit user-memory promotion
 - Cross-project proposal preview via `gitmem audit --cross-project --proposal-key ...` (read-only preview with preserved evidence and target-topic resolution)
@@ -320,6 +465,7 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 ### Next
 - **Claude Code live hooks** — broaden coverage beyond the current install helpers (more Claude events, richer relay/telemetry)
 - **Read adapters** — generic CLI and hybrid gather across tools
+- **Skills retrieval** — broaden directive support beyond the current `load:` / `search:` and `hint:` MVP if usage data justifies it
 - **Extraction quality** — better prompts, stronger golden-test coverage, and deeper end-to-end Dream-cycle benchmarks beyond the current benchmark/eval surfaces
 - **Provider-backed review** — harden the shipped remote/L1/L2 provider path with stronger provenance, timeouts, and merge policy
 
@@ -337,18 +483,35 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - Signed commits, hypothesis branches
 - deeper `aip mem` runtime integration and published spec for third-party adoption
 
-## Spec
+## Spec and docs
 
-The full specification — memory model, encoding strength taxonomy, dream pipeline, governance tiers, injection architecture, and 19 cognitive science references — is in [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
+The full specification — memory model, encoding strength taxonomy, dream pipeline, governance tiers, injection architecture, skills retrieval, and 19 cognitive science references — is in [gitmem-spec-v0_9.md](gitmem-spec-v0_9.md).
+
+- docs source: [`docs/`](docs/)
+- MkDocs config: [`mkdocs.yml`](mkdocs.yml)
 
 ## Development
 
 ```bash
+pip install -e ".[dev]"
 pytest -q
 
 # Focused test suites
 pytest -q tests/test_codex_capture.py tests/test_copilot_capture.py tests/test_claude_code_capture.py tests/test_opencode_capture.py tests/test_golden_extraction.py
 pytest -q tests/test_mcp_server.py tests/test_security.py tests/test_governance.py
+```
+
+Docs build:
+
+```bash
+pip install -e ".[docs]"
+mkdocs build --strict
+```
+
+Benchmarks are separate from the default test run:
+
+```bash
+pytest benchmarks -q
 ```
 
 ## License

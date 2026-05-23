@@ -26,6 +26,7 @@ from umx.dream.lint import (
 )
 from umx.dream.notice import append_notice
 from umx.dream.pr_render import GovernancePRBodyError
+from umx.dream.procedure_pr import build_procedure_delta_from_eval_trigger, render_procedure_revision_pr_body
 from umx.dream.processing import (
     active_processing_runs,
     append_processing_event,
@@ -367,6 +368,63 @@ class DreamPipeline:
         clear_gap_records(self.repo_dir)
         self._demoted_count = demoted_count
         return stabilized, pruned
+
+    def _write_procedure_revision_drafts(
+        self,
+        now: datetime,
+        *,
+        drafts_dir: Path | None = None,
+    ) -> list[Path]:
+        """Process any procedure_regression IMX triggers and write PR body drafts.
+
+        Returns a list of paths written (may be empty).
+        Failures are logged at WARNING and do not propagate.
+        """
+        from umx.dream.imx_triggers import read_imx_triggers
+
+        written: list[Path] = []
+        try:
+            triggers = read_imx_triggers()
+        except Exception:
+            logger.warning("failed to read IMX triggers for procedure revision", exc_info=True)
+            return written
+
+        regression_triggers = [t for t in triggers if t.trigger_type == "procedure_regression"]
+        if not regression_triggers:
+            return written
+
+        procedures_dir = self.project_root / "procedures"
+        if not procedures_dir.is_dir():
+            logger.debug("no procedures dir at %s; skipping procedure revision drafts", procedures_dir)
+            return written
+
+        resolved_drafts_dir = drafts_dir or (Path.home() / ".imx" / "state" / "drafts")
+
+        for trigger in regression_triggers:
+            try:
+                deltas = build_procedure_delta_from_eval_trigger(
+                    trigger.raw,
+                    procedures_dir=procedures_dir,
+                )
+                if not deltas:
+                    logger.debug(
+                        "procedure_regression trigger yielded no deltas (procedures_dir=%s)",
+                        procedures_dir,
+                    )
+                    continue
+                body = render_procedure_revision_pr_body(deltas)
+                ts_str = now.strftime("%Y%m%dT%H%M%S")
+                draft_path = resolved_drafts_dir / f"procedure-revision-{ts_str}.md"
+                resolved_drafts_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = draft_path.with_suffix(draft_path.suffix + ".tmp")
+                tmp_path.write_text(body, encoding="utf-8")
+                os.replace(tmp_path, draft_path)
+                written.append(draft_path)
+                logger.info("wrote procedure revision draft to %s", draft_path)
+            except Exception:
+                logger.warning("failed to write procedure revision draft for trigger", exc_info=True)
+
+        return written
 
     def _branch_changes(self) -> list[Path]:
         """Tracked changes that should be captured in a PR branch."""
@@ -1317,6 +1375,8 @@ class DreamPipeline:
                 write_lint_report(self.repo_dir, findings)
                 mark_lint_complete(self.repo_dir, now)
             lock.heartbeat()
+
+            self._write_procedure_revision_drafts(now)
 
             provider_results = getattr(self, "_provider_results", [])
             provider_summary = None

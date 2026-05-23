@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>gitmem TUI — wireframe exploration</title>
+<link rel="stylesheet" href="styles.css"/>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="term.jsx"></script>
+<script type="text/babel" src="nav.jsx"></script>
+<script type="text/babel" src="wire1-cockpit.jsx"></script>
+<script type="text/babel" src="wire2-fact-detail.jsx"></script>
+<script type="text/babel" src="wire3-sessions.jsx"></script>
+<script type="text/babel" src="wire4-pr-review.jsx"></script>
+<script type="text/babel" src="wire1-overview-v2.jsx"></script>
+<script type="text/babel" src="wire-v2-screens.jsx"></script>
+<script type="text/babel" src="storyboards.jsx"></script>
+
+<style>
+  body { background: #e8e4d8; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const TWEAKS_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "accent": "cyan",
+  "density": "comfy",
+  "showAnnots": true,
+  "showScanlines": true
+}/*EDITMODE-END*/;
+
+function App() {
+  const [t, setT] = useTweaks ? useTweaks(TWEAKS_DEFAULTS) : [TWEAKS_DEFAULTS, ()=>{}];
+
+  // Apply tweaks
+  React.useEffect(() => {
+    document.documentElement.style.setProperty('--accent-hue',
+      t.accent === 'cyan' ? 'var(--ansi-cyan)' :
+      t.accent === 'green' ? 'var(--ansi-green)' :
+      t.accent === 'magenta' ? 'var(--ansi-magenta)' :
+      'var(--ansi-yellow)');
+    document.body.classList.toggle('no-annots', !t.showAnnots);
+    document.body.classList.toggle('no-scanlines', !t.showScanlines);
+  }, [t.accent, t.showAnnots, t.showScanlines]);
+
+  return (
+    <DesignCanvas>
+
+      <DCSection id="v2" title="v2 · landing page with green/red health hero" subtitle="persistent F-key nav · per-page sub-nav · linkified paths & PRs">
+
+        <DCArtboard id="v2-ok" label="Overview · good day (all green)" width={1120} height={940}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire1OverviewV2 health="ok"/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#15803d'}}>Good day.</b> Giant green ✓, inbox-zero panel, last-cleared timestamp. The user sees this, nods, closes the terminal. The whole point of the landing page is to make "nothing to do" instantly legible.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="v2-bad" label="Overview · bad day (reds surface)" width={1120} height={940}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire1OverviewV2 health="bad"/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#b91c1c'}}>Bad day.</b> Giant red ✗, hero reads "ACTION REQUIRED", and the "what needs you" panel becomes a checklist — every red line is a one-keypress fix (c for conflict resolver, F6 for PRs).
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="v2-facts" label="F3 Facts · with sub-nav (all / conflicted / tombstoned / …)" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire2FactsV2/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              Sub-nav switches dataset within a view. File paths, session IDs, and commit hashes are all clickable — <span style={{color: '#0891b2'}}>↗</span> opens in editor, <span style={{color: '#0891b2'}}>⎋</span> opens on GitHub.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="v2-sessions" label="F4 Sessions · sub-nav filters by tool" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire3SessionsV2/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              Per-tool tabs in the sub-nav (your exact request). Counts live on each tab. "live" tab bubbles up in-progress sessions.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="v2-dream" label="F5 Dream · sub-nav = live / history / schedule / config" width={1120} height={680}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire5DreamV2/>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="v2-prs" label="F6 PRs · sub-nav = pending / conflicts / merged / all · github link" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire6PRsV2/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              The sub-nav right-aligns a direct <span style={{color: '#0891b2'}}>github.com/acme/memory/pulls ⎋</span> link. Every PR number in the body is clickable.
+            </div>
+          </div>
+        </DCArtboard>
+
+      </DCSection>
+
+      <DCSection id="wireframes" title="v1 · initial explorations" subtitle="earlier directions — kept for comparison">
+
+        <DCArtboard id="w1" label="A · cockpit (btop quad)" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire1Cockpit/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#1d4ed8'}}>Direction A — btop-quad cockpit.</b> Four always-on panels. General health at a glance: what the agent "knows" (strength histogram + scope tree), what it's thinking about right now (dream pipeline), what's talking to it (sessions stream), and what needs you (governance: PRs + conflicts). F-keys drill into each.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="w2" label="B · fact detail (lazygit split)" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire2FactDetail/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#1d4ed8'}}>Direction B — drill into a single fact.</b> Filter rail narrows, list is dense (strength bar + scope), detail pane is the star: composite score, provenance, git-style history. This is where you go to <i>audit</i> what the agent learned about X.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="w3" label="C · sessions + live transcript" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire3Sessions/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#1d4ed8'}}>Direction C — watch extraction happen.</b> Three panes: session list (per tool, with spark activity), the raw transcript with inline extraction markers, and "what this session contributed" — proposed facts, retrieved context, stats. Makes the black box observable.
+            </div>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="w4" label="D · PR review + conflict resolver" width={1120} height={820}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Wire4PRReview/>
+            <div className="dc-note" style={{marginTop: 18, maxWidth: 1060}}>
+              <b style={{color: '#1d4ed8'}}>Direction D — human-in-the-loop screen.</b> PR diff of proposed facts on the left (+add, ±update, ⚑conflict), L2-reviewer notes inline, conflict resolver on the right with evidence cards and one-keypress resolution strategies. The only screen a busy user <i>must</i> touch.
+            </div>
+          </div>
+        </DCArtboard>
+
+      </DCSection>
+
+      <DCSection id="flows" title="Key flows" subtitle="Storyboarded as 4-frame sequences">
+
+        <DCArtboard id="s1" label="Flow · review a dream PR" width={1200} height={360}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Story1ReviewPR/>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="s2" label="Flow · resolve a conflict" width={1200} height={360}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Story2Conflict/>
+          </div>
+        </DCArtboard>
+
+        <DCArtboard id="s3" label="Flow · run dream pipeline" width={1200} height={360}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <Story3Dream/>
+          </div>
+        </DCArtboard>
+
+      </DCSection>
+
+      <DCSection id="notes" title="Design system" subtitle="Vocabulary used across all wireframes">
+        <DCArtboard id="ds" label="tokens · glyphs · strength scale" width={1120} height={480}>
+          <div style={{padding: 30, background: '#d8d4c8'}}>
+            <div className="term" style={{width: 1060}}>
+              <div className="term-chrome">
+                <span className="dot r"/><span className="dot y"/><span className="dot g"/>
+                <span className="title">legend</span>
+              </div>
+              <div className="term-body">
+                <div style={{display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 24}}>
+                  <div>
+                    <div className="fg-bright bold">encoding strength</div>
+                    <div className="fg-dim">───────────────</div>
+                    <div><Strength value={5}/><span className="fg-dim"> S:5 </span>ground truth (AST)</div>
+                    <div><Strength value={4}/><span className="fg-dim"> S:4 </span>doc-confirmed</div>
+                    <div><Strength value={3}/><span className="fg-dim"> S:3 </span>multi-source</div>
+                    <div><Strength value={2}/><span className="fg-dim"> S:2 </span>inferred</div>
+                    <div><Strength value={1}/><span className="fg-dim"> S:1 </span>incidental</div>
+                  </div>
+
+                  <div>
+                    <div className="fg-bright bold">status glyphs</div>
+                    <div className="fg-dim">───────────────</div>
+                    <div><span className="fg-green">●</span><span className="fg-dim"> live / ok</span></div>
+                    <div><span className="fg-yellow">◉</span><span className="fg-dim"> running / in-progress</span></div>
+                    <div><span className="fg-dim">○</span><span className="fg-dim"> idle / done</span></div>
+                    <div><span className="fg-green">✓</span><span className="fg-dim"> complete</span></div>
+                    <div><span className="fg-red">⚑</span><span className="fg-dim"> conflict (needs human)</span></div>
+                    <div><span className="fg-yellow">△</span><span className="fg-dim"> updated</span></div>
+                    <div><span className="fg-green">+</span><span className="fg-dim"> added</span></div>
+                  </div>
+
+                  <div>
+                    <div className="fg-bright bold">palette</div>
+                    <div className="fg-dim">───────────────</div>
+                    <div><span className="fg-cyan">■</span><span className="fg-dim"> cyan </span>scopes · paths</div>
+                    <div><span className="fg-magenta">■</span><span className="fg-dim"> magenta </span>models · bots · IDs</div>
+                    <div><span className="fg-yellow">■</span><span className="fg-dim"> yellow </span>in-progress · PR open</div>
+                    <div><span className="fg-green">■</span><span className="fg-dim"> green </span>approved · merged</div>
+                    <div><span className="fg-red">■</span><span className="fg-dim"> red </span>conflict · blocker</div>
+                    <div><span className="fg-blue">■</span><span className="fg-dim"> blue </span>reviewer notes</div>
+                  </div>
+                </div>
+
+                <div className="fg-dim" style={{marginTop: 16}}>─────────────────────────────────────────────────────────────────────────────────────────</div>
+
+                <div style={{marginTop: 10}}>
+                  <div className="fg-bright bold">global keybinds</div>
+                  <div><span className="fg-dim">  F1 </span>help <span className="fg-dim">  F2 </span>facts <span className="fg-dim">  F3 </span>sessions <span className="fg-dim">  F4 </span>dream <span className="fg-dim">  F5 </span>PRs <span className="fg-dim">  F6 </span>search</div>
+                  <div><span className="fg-dim">  ↑↓ </span>nav<span className="fg-dim">  ←→ </span>panes<span className="fg-dim">  ↵ </span>open<span className="fg-dim">  / </span>filter<span className="fg-dim">  Esc </span>back<span className="fg-dim">  q </span>quit</div>
+                  <div><span className="fg-dim">  </span><span className="fg-cyan">c</span> <span className="fg-dim">conflict resolver  </span><span className="fg-cyan">d</span> <span className="fg-dim">run dream  </span><span className="fg-cyan">t</span> <span className="fg-dim">tombstone  </span><span className="fg-cyan">i</span> <span className="fg-dim">inject preview</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+    </DesignCanvas>
+  );
+}
+
+// Tweaks panel
+function AppWithTweaks() {
+  const [tweaks, setTweaks] = useTweaks(TWEAKS_DEFAULTS);
+
+  React.useEffect(() => {
+    const style = document.createElement('style');
+    style.id = 'tweak-style';
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, []);
+
+  React.useEffect(() => {
+    const s = document.getElementById('tweak-style');
+    if (s) s.textContent = `
+      ${!tweaks.showAnnots ? '.annot { display: none !important; }' : ''}
+      ${!tweaks.showScanlines ? '.term::before, .term::after { display: none !important; }' : ''}
+      ${tweaks.density === 'dense' ? '.term-body, .term-body > div { line-height: 15px !important; font-size: 12px !important; }' : ''}
+    `;
+  }, [tweaks]);
+
+  return (
+    <>
+      <App/>
+      <TweaksPanel>
+        <TweakSection title="Display">
+          <TweakToggle label="Annotations" value={tweaks.showAnnots} onChange={v => setTweaks({showAnnots: v})}/>
+          <TweakToggle label="Scanline overlay" value={tweaks.showScanlines} onChange={v => setTweaks({showScanlines: v})}/>
+          <TweakRadio label="Density" value={tweaks.density} options={['comfy', 'dense']} onChange={v => setTweaks({density: v})}/>
+        </TweakSection>
+      </TweaksPanel>
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<AppWithTweaks/>);
+</script>
+</body>
+</html>

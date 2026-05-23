@@ -1,0 +1,213 @@
+/* gitmem TUI wireframes — terminal-accurate base */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Caveat:wght@500&display=swap');
+
+:root {
+  --term-bg: #0b0e14;
+  --term-bg-alt: #10141c;
+  --term-bg-panel: #0d1117;
+  --term-fg: #c9d1d9;
+  --term-fg-bright: #f0f6fc;
+  --term-fg-dim: #6e7681;
+  --term-fg-faint: #484f58;
+  --term-line: #30363d;
+  --term-line-bright: #484f58;
+
+  --ansi-red: #f85149;
+  --ansi-green: #3fb950;
+  --ansi-yellow: #d29922;
+  --ansi-blue: #58a6ff;
+  --ansi-magenta: #bc8cff;
+  --ansi-cyan: #39c5cf;
+  --ansi-orange: #ff8c42;
+
+  --s1: var(--ansi-red);
+  --s2: var(--ansi-orange);
+  --s3: var(--ansi-yellow);
+  --s4: var(--ansi-green);
+  --s5: #56d364;
+
+  --mono: 'JetBrains Mono', 'Menlo', 'Consolas', ui-monospace, monospace;
+  --hand: 'Caveat', cursive;
+
+  --char-w: 8.4px;
+  --line-h: 18px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #d8d4c8;
+  font-family: var(--mono);
+  color: var(--term-fg);
+  font-size: 13px;
+  line-height: var(--line-h);
+}
+
+/* Terminal surface — what each wireframe sits inside */
+.term {
+  background: var(--term-bg);
+  color: var(--term-fg);
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: var(--line-h);
+  white-space: pre;
+  position: relative;
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.18), 0 0 0 1px #000;
+}
+
+/* Subtle scanline + vignette — evokes terminal without overpowering */
+.term::before {
+  content: '';
+  position: absolute; inset: 0;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.012) 0,
+      rgba(255,255,255,0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  pointer-events: none;
+  z-index: 5;
+}
+.term::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.35) 100%);
+  pointer-events: none;
+  z-index: 6;
+}
+
+/* Fake macOS chrome for wrapper realism */
+.term-chrome {
+  background: #161b22;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid #000;
+  font-size: 11px;
+  color: var(--term-fg-dim);
+}
+.term-chrome .dot { width: 11px; height: 11px; border-radius: 50%; }
+.term-chrome .dot.r { background: #ff5f56; }
+.term-chrome .dot.y { background: #ffbd2e; }
+.term-chrome .dot.g { background: #27c93f; }
+.term-chrome .title { flex: 1; text-align: center; font-family: var(--mono); }
+.term-chrome .title b { color: var(--term-fg); font-weight: 500; }
+
+.term-body {
+  padding: 10px 14px;
+  position: relative;
+}
+
+/* Typographic helpers */
+.fg-dim { color: var(--term-fg-dim); }
+.fg-faint { color: var(--term-fg-faint); }
+.fg-bright { color: var(--term-fg-bright); }
+.fg-red { color: var(--ansi-red); }
+.fg-green { color: var(--ansi-green); }
+.fg-yellow { color: var(--ansi-yellow); }
+.fg-blue { color: var(--ansi-blue); }
+.fg-magenta { color: var(--ansi-magenta); }
+.fg-cyan { color: var(--ansi-cyan); }
+.fg-orange { color: var(--ansi-orange); }
+
+.bg-sel { background: #1f2937; }
+.bg-sel-active { background: #1f6feb33; color: var(--term-fg-bright); }
+.bg-hl { background: #3fb9501a; }
+
+.bold { font-weight: 700; }
+.inv { background: var(--term-fg); color: var(--term-bg); }
+
+/* Strength dots */
+.s-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; vertical-align: middle; margin: 0 1px; }
+.s-1 { background: var(--s1); }
+.s-2 { background: var(--s2); }
+.s-3 { background: var(--s3); }
+.s-4 { background: var(--s4); }
+.s-5 { background: var(--s5); box-shadow: 0 0 4px var(--s5); }
+.s-off { background: var(--term-line); }
+
+/* Hand annotations over wireframes */
+.annot {
+  position: absolute;
+  font-family: var(--hand);
+  font-size: 18px;
+  color: #c2410c;
+  line-height: 1.1;
+  pointer-events: none;
+  z-index: 10;
+  transform: rotate(-2deg);
+  max-width: 220px;
+}
+.annot.blue { color: #1d4ed8; transform: rotate(1deg); }
+.annot.green { color: #15803d; transform: rotate(-1deg); }
+.annot svg { display: block; overflow: visible; }
+
+/* Section label over canvas */
+.dc-note {
+  font-family: var(--hand);
+  color: #3a2e22;
+  font-size: 22px;
+  line-height: 1.25;
+  max-width: 440px;
+}
+
+/* Misc */
+.row { display: flex; }
+.col { display: flex; flex-direction: column; }
+.sp { white-space: pre; }
+
+/* Progress bar cells */
+.bar {
+  display: inline-block;
+  letter-spacing: 0;
+}
+
+/* Spark blocks */
+.spark { font-family: var(--mono); letter-spacing: -0.5px; }
+
+/* Hint bar common style */
+.hintbar {
+  border-top: 1px solid var(--term-line);
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--term-fg-dim);
+  background: var(--term-bg-panel);
+  display: flex;
+  gap: 16px;
+  white-space: pre;
+}
+.hintbar b {
+  color: var(--term-bg);
+  background: var(--term-fg);
+  font-weight: 500;
+  padding: 0 4px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+/* Storyboard frame caption */
+.frame-cap {
+  font-family: var(--hand);
+  font-size: 22px;
+  color: #3a2e22;
+  margin-bottom: 6px;
+}
+.frame-num {
+  display: inline-block;
+  font-family: var(--hand);
+  font-size: 18px;
+  color: #c2410c;
+  border: 1.5px solid #c2410c;
+  border-radius: 999px;
+  width: 28px; height: 28px;
+  text-align: center; line-height: 26px;
+  margin-right: 8px;
+  transform: rotate(-3deg);
+}

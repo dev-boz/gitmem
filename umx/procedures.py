@@ -31,6 +31,7 @@ class Procedure:
     source_label: str = "human_authored"
     scope: Scope = Scope.PROJECT
     topic: str = "procedures"
+    task_classes: list[str] = field(default_factory=list)
     file_path: Path | None = None
 
     @property
@@ -82,6 +83,11 @@ def _parse_triggers(text: str) -> list[ProcedureTrigger]:
     return triggers
 
 
+def _parse_task_classes(metadata: dict[str, str]) -> list[str]:
+    raw = metadata.get("task_classes") or metadata.get("task_class", "")
+    return [tc.strip() for tc in raw.split(",") if tc.strip()] if raw else []
+
+
 def read_procedure_file(path: Path, repo_dir: Path) -> list[Procedure]:
     if not path.exists():
         return []
@@ -100,6 +106,7 @@ def read_procedure_file(path: Path, repo_dir: Path) -> list[Procedure]:
         source_label=metadata.get("src", "human_authored"),
         scope=_repo_default_scope(repo_dir),
         topic=path.stem,
+        task_classes=_parse_task_classes(metadata),
         file_path=path,
     )
     return [procedure]
@@ -141,6 +148,15 @@ def _matches_prompt(pattern: str, prompt_text: str) -> bool:
         return False
 
 
+def _matches_task_class(procedure_classes: list[str], query_class: str) -> bool:
+    """Dotted-prefix match: query 'implementation.bugfix' matches procedure with 'implementation'."""
+    q = query_class.lower()
+    return any(
+        q == c.lower() or q.startswith(c.lower() + ".") or c.lower().startswith(q + ".")
+        for c in procedure_classes
+    )
+
+
 def match_procedures(
     procedures: list[Procedure],
     *,
@@ -148,11 +164,16 @@ def match_procedures(
     prompt: str | None = None,
     file_paths: list[str] | None = None,
     command_text: str | None = None,
+    task_class: str | None = None,
 ) -> list[Procedure]:
     command_signature = " ".join(part for part in [tool or "", command_text or ""] if part).strip()
     prompt_text = prompt or ""
     matched: list[Procedure] = []
     for procedure in procedures:
+        # task_class filter: if procedure declares task_classes, check compatibility
+        if task_class and procedure.task_classes:
+            if not _matches_task_class(procedure.task_classes, task_class):
+                continue
         for trigger in procedure.triggers:
             if trigger.kind == "command" and _matches_command(trigger.pattern, command_signature):
                 matched.append(procedure)
@@ -161,6 +182,9 @@ def match_procedures(
                 matched.append(procedure)
                 break
             if trigger.kind == "pattern" and _matches_prompt(trigger.pattern, prompt_text):
+                matched.append(procedure)
+                break
+            if trigger.kind == "task_class" and task_class and _matches_task_class([trigger.pattern], task_class):
                 matched.append(procedure)
                 break
     matched.sort(key=lambda procedure: procedure.title.lower())
