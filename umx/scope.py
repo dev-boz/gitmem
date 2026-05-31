@@ -200,6 +200,7 @@ def ensure_repo_structure(repo_dir: Path, *, ensure_schema: bool = True) -> None
         "local/private",
         "local/secret",
         "local/quarantine",
+        "local/blobs",
         "folders",
         "files",
         "tools",

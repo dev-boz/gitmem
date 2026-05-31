@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from umx.blobs import stale_blob_summary
 from umx.calibration import build_calibration_advice
 from umx.config import load_config
 from umx.conventions import validate_conventions_file
@@ -160,6 +161,7 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["auth"] = _auth_summary()
         result["push_queue"] = push_queue_summary(repo_dir)
         result["index"] = index_staleness(repo_dir)
+        result["blobs"] = stale_blob_summary(repo_dir)
         result["embeddings"] = {
             "backend": cfg.search.backend,
             "provider": cfg.search.embedding.provider,
@@ -213,6 +215,7 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
             "issues": ["gh CLI not checked"],
         }
         result["push_queue"] = {"branches": [], "count": 0, "oldest_queued_at": None}
+        result["blobs"] = {"total": 0, "unreferenced_count": 0, "unreferenced": []}
         result["index"] = {
             "current_files": 0,
             "drift": [],

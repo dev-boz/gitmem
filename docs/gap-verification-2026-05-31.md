@@ -10,7 +10,8 @@ for each GAP's concrete markers and tying claims to tests.
 > sessions. **Recommend committing now** before any further work. The 7 *commits*
 > already on the branch are the earlier spec-writing task, not the gap build-out.
 
-**Test suite: 1014 passed** (`python3 -m pytest -q`, ~109s, zero failures). Test deltas
+**Test suite: 1023 passed** (`python3 -m pytest -q`, ~110s, zero failures; was 1014 at
+the initial audit, +9 from `tests/test_blobs.py` for the GAP-01 build). Test deltas
 corroborate the features (e.g. `test_git_ops +108`, `test_doctor +72`, `test_viewer +98`,
 `test_backup +178`, `test_inject_search +233`).
 
@@ -28,6 +29,7 @@ suite rather than a dedicated assertion.)
 
 | GAP | Evidence |
 |---|---|
+| 01 blob store (**Critical**) | `umx/blobs.py` content-addressed store; `umx blob store/get/list/purge` CLI; doctor stale-blob check; `local/blobs` init scaffold; `tests/test_blobs.py` (9 tests) |
 | 02 SOTA promotion | `dream/pipeline.py:841` assigns `Verification.SOTA_REVIEWED` |
 | 03 L2 context (sessions+manifest) | `dream/l2_review.py` loads `source_sessions`, `missing_source_sessions`, manifest |
 | 04 principle promotion bar | `fact_actions.py:125-130` gates ≥3 sessions + 14-day stability |
