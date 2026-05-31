@@ -48,6 +48,8 @@ def _sha_prefix(data: bytes) -> str:
 
 
 def _safe_filename(filename: str) -> str:
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise BlobError(f"invalid blob filename: {filename!r}")
     name = Path(filename).name
     if not name or name in {".", ".."}:
         raise BlobError(f"invalid blob filename: {filename!r}")

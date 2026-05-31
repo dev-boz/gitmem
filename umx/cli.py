@@ -2416,6 +2416,66 @@ def secret_set(key: str, value: str) -> None:
     click.echo(key)
 
 
+@main.group("blob")
+def blob_group() -> None:
+    """Content-addressed blob store (local/blobs/)."""
+
+
+@blob_group.command("store")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+def blob_store_cmd(cwd: Path, file: Path) -> None:
+    from umx.blobs import store_blob
+
+    repo = project_memory_dir(cwd)
+    ref = store_blob(repo, file)
+    click.echo(ref.key)
+
+
+@blob_group.command("get")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--output", "output", type=click.Path(path_type=Path), default=None)
+@click.argument("key")
+def blob_get_cmd(cwd: Path, output: Path | None, key: str) -> None:
+    from umx.blobs import BlobError, get_blob
+
+    repo = project_memory_dir(cwd)
+    try:
+        data = get_blob(repo, key)
+    except BlobError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if output is None:
+        click.get_binary_stream("stdout").write(data)
+    else:
+        output.write_bytes(data)
+        click.echo(str(output))
+
+
+@blob_group.command("list")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+def blob_list_cmd(cwd: Path) -> None:
+    from umx.blobs import list_blobs
+
+    repo = project_memory_dir(cwd)
+    click.echo(json.dumps([ref.key for ref in list_blobs(repo)], sort_keys=True))
+
+
+@blob_group.command("purge")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--dry-run", is_flag=True, default=False)
+def blob_purge_cmd(cwd: Path, dry_run: bool) -> None:
+    from umx.blobs import purge_unreferenced
+
+    repo = project_memory_dir(cwd)
+    purged = purge_unreferenced(repo, dry_run=dry_run)
+    click.echo(
+        json.dumps(
+            {"dry_run": dry_run, "purged": [ref.key for ref in purged], "count": len(purged)},
+            sort_keys=True,
+        )
+    )
+
+
 @main.command("export")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option(
