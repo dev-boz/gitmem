@@ -14,13 +14,14 @@ from umx.dream.anchors import anchor_current_sha, code_anchor_is_stale
 from umx.dream.conflict import facts_conflict, resolve_conflict
 from umx.dream.consolidation import stabilize_facts
 from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
-from umx.dream.gates import DreamLock, mark_dream_complete, read_dream_state, should_dream
+from umx.dream.gates import CompositeDreamLock, DreamLock, UserDreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
 from umx.dream.lint import (
     generate_lint_findings,
     lint_report_path,
     lint_state_path,
     mark_lint_complete,
+    schema_lock_in_findings,
     should_run as should_run_lint,
     write_lint_report,
 )
@@ -102,14 +103,75 @@ from umx.scope import (
 )
 from umx.search import injected_without_reference_sessions, rebuild_index, usage_snapshot
 from umx.search_semantic import embeddings_available, ensure_embeddings
-from umx.sessions import scheduled_archive_sessions
+from umx.sessions import list_sessions, scheduled_archive_sessions
 from umx.strength import apply_corroboration, independent_corroboration, should_prune
 from umx.tasks import auto_abandon_tasks
 from umx.tombstones import is_suppressed, load_tombstones
+from umx.trust_tags import REVIEW_RISK_TAGS, SELF_DERIVED_QUARANTINE_TAG
+
+
+_NON_SESSION_SOURCE_IDS = frozenset({"manual", "manual-edit", "cross-project-promotion", "gap", "adapter"})
 
 
 def _default_lint_status() -> dict[str, object]:
     return {"ran": False, "reason": "not-started"}
+
+
+def _raw_session_anchors(fact: Fact, *, available_session_ids: set[str]) -> list[str]:
+    candidates = list(
+        dict.fromkeys(
+            session_id
+            for session_id in [fact.source_session, *fact.provenance.sessions]
+            if session_id
+        )
+    )
+    return [
+        session_id
+        for session_id in candidates
+        if session_id not in _NON_SESSION_SOURCE_IDS and session_id in available_session_ids
+    ]
+
+
+def _is_self_derived_llm_inference_fact(
+    fact: Fact,
+    *,
+    available_session_ids: set[str],
+) -> bool:
+    if fact.source_type != SourceType.LLM_INFERENCE:
+        return False
+    if not fact.provenance.pr:
+        return False
+    return not _raw_session_anchors(fact, available_session_ids=available_session_ids)
+
+
+def _orient_llm_inference_fact(
+    fact: Fact,
+    *,
+    available_session_ids: set[str],
+) -> Fact:
+    tags = [tag for tag in fact.tags if tag != SELF_DERIVED_QUARANTINE_TAG]
+    if not _is_self_derived_llm_inference_fact(
+        fact,
+        available_session_ids=available_session_ids,
+    ):
+        return fact if tags == fact.tags else fact.clone(tags=tags)
+
+    if SELF_DERIVED_QUARANTINE_TAG not in tags:
+        tags.append(SELF_DERIVED_QUARANTINE_TAG)
+    if tags == fact.tags and fact.consolidation_status == ConsolidationStatus.FRAGILE:
+        return fact
+    return fact.clone(tags=tags, consolidation_status=ConsolidationStatus.FRAGILE)
+
+
+def _l2_review_strength_target(fact: Fact, config: UMXConfig) -> int:
+    target = max(fact.encoding_strength, 4)
+    if fact.verification == Verification.HUMAN_CONFIRMED:
+        return target
+    if not (set(fact.tags) & REVIEW_RISK_TAGS):
+        return target
+    # Cap L2-driven promotion for risky facts without downgrading strength earned elsewhere.
+    ceiling = max(1, int(config.dream.untrusted_strength_ceiling))
+    return max(fact.encoding_strength, min(target, ceiling))
 
 
 @dataclass(slots=True)
@@ -135,6 +197,7 @@ class DreamPipeline:
         self.config = config or load_config(config_path())
         self.conventions = ConventionSet()
         self.new_fact_ids: set[str] = set()
+        self._extracted_session_ids: list[str] = []
         self._gathered_session_ids: list[str] = []
         self._push_block_reason: str | None = None
 
@@ -142,6 +205,7 @@ class DreamPipeline:
         ensure_repo_structure(self.repo_dir)
         self.conventions = parse_conventions(self.repo_dir / "CONVENTIONS.md")
         facts = load_all_facts(self.repo_dir, include_superseded=True)
+        available_session_ids = {path.stem for path in list_sessions(self.repo_dir)}
         updated: list[Fact] = []
         for fact in facts:
             if fact.source_type == SourceType.GROUND_TRUTH_CODE and fact.code_anchor:
@@ -155,8 +219,16 @@ class DreamPipeline:
                     updated.append(fact.clone(code_anchor=anchor))
                     continue
                 updated.append(fact)
-            else:
-                updated.append(fact)
+                continue
+            if fact.source_type == SourceType.LLM_INFERENCE:
+                updated.append(
+                    _orient_llm_inference_fact(
+                        fact,
+                        available_session_ids=available_session_ids,
+                    )
+                )
+                continue
+            updated.append(fact)
         return updated
 
     def gather(self) -> list[Fact]:
@@ -166,8 +238,11 @@ class DreamPipeline:
             config=self.config,
         )
         self._provider_results = provider_results
-        self._gathered_session_ids = list(
+        self._extracted_session_ids = list(
             dict.fromkeys(result.session_id for result in provider_results)
+        )
+        self._gathered_session_ids = list(
+            dict.fromkeys(result.session_id for result in provider_results if not result.native_only)
         )
         self._dream_provider = None
         self._dream_partial = False
@@ -273,27 +348,7 @@ class DreamPipeline:
         )
 
     def schema_lock_in_findings(self, candidates: list[Fact]) -> list[dict[str, str]]:
-        if not self.conventions.topics or len(candidates) < 5:
-            return []
-        matched = 0
-        for candidate in candidates:
-            if candidate.topic in self.conventions.topics:
-                matched += 1
-                continue
-            if any(candidate.topic.startswith(f"{topic}/") for topic in self.conventions.topics):
-                matched += 1
-        ratio = matched / max(1, len(candidates))
-        if ratio <= 0.8:
-            return []
-        return [
-            {
-                "kind": "schema-lock-in",
-                "message": (
-                    f"{matched}/{len(candidates)} gathered facts matched existing convention topics; "
-                    "challenge CONVENTIONS.md coverage before the schema hardens further"
-                ),
-            }
-        ]
+        return schema_lock_in_findings(candidates, conventions=self.conventions)
 
     def prune(self, facts: list[Fact], now: datetime) -> tuple[list[Fact], int]:
         usage = usage_snapshot(self.repo_dir)
@@ -781,7 +836,12 @@ class DreamPipeline:
             provenance["approved_by"] = reviewed_by
             provenance["approval_tier"] = approval_tier
             provenance["pr"] = str(pr_number)
+            verification = fact.verification
+            if verification != Verification.HUMAN_CONFIRMED:
+                verification = Verification.SOTA_REVIEWED
             updated_fact = fact.clone(
+                encoding_strength=_l2_review_strength_target(fact, self.config),
+                verification=verification,
                 provenance=Provenance.from_dict(provenance),
             )
             updated = replace_fact(self.repo_dir, updated_fact) or updated
@@ -1327,7 +1387,10 @@ class DreamPipeline:
             )
         if not should_dream(self.repo_dir, force=force):
             return DreamResult(status="skipped", message="dream gates not met")
-        lock = DreamLock(self.repo_dir)
+        lock = CompositeDreamLock(
+            UserDreamLock(),
+            DreamLock(self.repo_dir),
+        )
         if not lock.acquire():
             return DreamResult(status="skipped", message="dream lock held")
         shared_refs = ("origin/main",) if mode in {"remote", "hybrid"} else ()
@@ -1371,7 +1434,6 @@ class DreamPipeline:
             findings: list[dict[str, str]] = []
             if lint_ran:
                 findings = self.lint(consolidated)
-                findings.extend(self.schema_lock_in_findings(candidates))
                 write_lint_report(self.repo_dir, findings)
                 mark_lint_complete(self.repo_dir, now)
             lock.heartbeat()
@@ -1401,7 +1463,7 @@ class DreamPipeline:
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
-                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    pr_proposal = self._generate_pr(proposal_facts, self._extracted_session_ids)
                     if self._commit_to_branch(
                         pr_proposal.branch,
                         message="dream(l1): update memory snapshot",
@@ -1504,7 +1566,7 @@ class DreamPipeline:
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
-                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    pr_proposal = self._generate_pr(proposal_facts, self._extracted_session_ids)
                     if self._commit_to_branch(
                         pr_proposal.branch,
                         message="dream(l1): update memory snapshot",

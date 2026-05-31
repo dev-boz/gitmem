@@ -5,7 +5,7 @@ from pathlib import Path
 
 from umx.config import load_config
 from umx.dream.gates import increment_session_count
-from umx.git_ops import git_fetch, git_pull_rebase, safety_sweep
+from umx.git_ops import drain_push_queue, git_fetch, git_pull_rebase, git_push_with_retry, safety_sweep
 from umx.inject import inject_for_tool
 from umx.search import ensure_session_state
 from umx.scope import config_path, find_project_root, project_memory_dir
@@ -29,8 +29,9 @@ def run(
     cfg = load_config(config_path())
 
     # Startup sweep: commit any uncommitted session files from crashed runs
+    swept_commit_count = 0
     try:
-        safety_sweep(repo_dir)
+        swept_commit_count = safety_sweep(repo_dir)
     except Exception:
         logger.debug("session_start: safety sweep failed", exc_info=True)
 
@@ -40,6 +41,9 @@ def run(
         if mode in ("remote", "hybrid"):
             git_fetch(repo_dir)
             git_pull_rebase(repo_dir)
+            drain_push_queue(repo_dir, config=cfg)
+            if swept_commit_count > 0:
+                git_push_with_retry(repo_dir, config=cfg, queue_on_failure=True)
     except Exception:
         logger.debug("session_start: remote sync failed", exc_info=True)
 

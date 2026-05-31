@@ -10,7 +10,7 @@ import pytest
 
 from umx.config import default_config, load_config, save_config
 from umx.dream.gates import increment_session_count, read_dream_state
-from umx.git_ops import GitCommitResult, git_add_and_commit, git_init
+from umx.git_ops import GitCommitResult, GitPushResult, git_add_and_commit, git_init
 from umx.hooks import dispatch_hook
 from umx.hooks.assistant_output import run as assistant_output_run
 from umx.hooks.post_tool_use import run as post_tool_use_run
@@ -118,6 +118,45 @@ def test_session_start_runs_safety_sweep(
     with patch("umx.hooks.session_start.safety_sweep") as mock_sweep:
         session_start_run(cwd=project_dir)
         mock_sweep.assert_called_once_with(project_repo)
+
+
+def test_session_start_pushes_swept_commits_before_remote_sync(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    cfg = load_config(config_path())
+    cfg.dream.mode = "remote"
+    save_config(config_path(), cfg)
+    events: list[str] = []
+
+    def record_sweep(_repo: Path) -> int:
+        events.append("sweep")
+        return 1
+
+    def record_fetch(_repo: Path) -> None:
+        events.append("fetch")
+
+    def record_pull(_repo: Path) -> None:
+        events.append("pull")
+
+    def record_drain(_repo: Path, config=None) -> dict[str, int]:
+        events.append("drain")
+        return {"drained": 0, "remaining": 0}
+
+    def record_push(_repo: Path, config=None, queue_on_failure: bool = False) -> GitPushResult:
+        events.append("push")
+        return GitPushResult(status="ok")
+
+    with (
+        patch("umx.hooks.session_start.safety_sweep", side_effect=record_sweep),
+        patch("umx.hooks.session_start.git_fetch", side_effect=record_fetch),
+        patch("umx.hooks.session_start.git_pull_rebase", side_effect=record_pull),
+        patch("umx.hooks.session_start.drain_push_queue", side_effect=record_drain),
+        patch("umx.hooks.session_start.git_push_with_retry", side_effect=record_push),
+    ):
+        session_start_run(cwd=project_dir)
+
+    assert events[:5] == ["sweep", "fetch", "pull", "drain", "push"]
 
 
 # --- session_end ---

@@ -34,7 +34,7 @@ def _make_fact(text: str = "test fact", scope: Scope = Scope.PROJECT, code_ancho
         scope=scope,
         topic="general",
         encoding_strength=3,
-        memory_type=MemoryType.IMPLICIT,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
         verification=Verification.SELF_REPORTED,
         source_type=SourceType.TOOL_OUTPUT,
         confidence=0.6,
@@ -78,6 +78,7 @@ class TestClaudeCodeAdapter:
         facts = adapter.read_native_memory(tmp_path)
         assert len(facts) == 3
         assert all(f.source_type == SourceType.TOOL_OUTPUT for f in facts)
+        assert all(f.memory_type == MemoryType.EXPLICIT_SEMANTIC for f in facts)
         assert all(f.encoding_strength == 3 for f in facts)
         assert facts[0].topic == "project_setup"
 

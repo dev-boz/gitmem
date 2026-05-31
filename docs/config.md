@@ -6,6 +6,10 @@ This is a focused reference for the config knobs that most directly affect captu
 
 ```yaml
 inject:
+  tool_max_tokens:
+    aider: 4000
+    claude-code: 12000
+    codex: 12000
   pre_tool_max_tokens: 1400
   disclosure_slack_pct: 0.20
   subagent_max_tokens: 2000
@@ -13,6 +17,7 @@ inject:
   turn_token_estimate: 250
 ```
 
+- `inject.tool_max_tokens`: per-tool fallback budgets used when `umx inject` or shim commands omit `--max-tokens`. Unknown tools still fall back to `4000`.
 - `inject.pre_tool_max_tokens`: default token budget for pre-tool hook injection.
 - `inject.disclosure_slack_pct`: fraction of the fact budget reserved before stable `L1` facts are downgraded to `L0`.
 - `inject.subagent_max_tokens`: default relay budget for subagent handoff memory.

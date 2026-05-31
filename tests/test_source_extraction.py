@@ -229,6 +229,7 @@ def test_source_files_to_facts_markdown_is_external_doc_and_fragile(
     assert all(f.source_type == SourceType.EXTERNAL_DOC for f in doc_facts)
     assert all(f.encoding_strength == 2 for f in doc_facts)
     assert all(f.consolidation_status == ConsolidationStatus.FRAGILE for f in doc_facts)
+    assert all("untrusted_source" in f.tags for f in doc_facts)
 
 
 def test_source_files_to_facts_ignores_user_only_path_mentions(
@@ -437,3 +438,73 @@ def test_orient_backfills_missing_anchor_git_sha_for_ground_truth_fact(
     assert refreshed.consolidation_status == ConsolidationStatus.STABLE
     assert refreshed.code_anchor is not None
     assert refreshed.code_anchor.git_sha == git_blob_sha(source_path)
+
+
+def test_orient_quarantines_self_derived_llm_inference_without_raw_session_anchor(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = Fact(
+        fact_id="01TESTFACT0000000000000993",
+        text="deploy guidance lives in docs/release.md",
+        scope=Scope.PROJECT,
+        topic="deploy",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SOTA_REVIEWED,
+        source_type=SourceType.LLM_INFERENCE,
+        source_tool="session-extract",
+        source_session="manual",
+        consolidation_status=ConsolidationStatus.STABLE,
+        provenance=Provenance(
+            extracted_by="dream-gather",
+            approval_tier="l2-auto",
+            pr="19",
+            sessions=["manual"],
+        ),
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    oriented = DreamPipeline(project_dir).orient()
+
+    refreshed = next(item for item in oriented if item.fact_id == fact.fact_id)
+    assert refreshed.consolidation_status == ConsolidationStatus.FRAGILE
+    assert "quarantine:self-derived" in refreshed.tags
+
+
+def test_orient_keeps_raw_session_anchored_llm_inference_out_of_self_derived_quarantine(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    write_session(
+        project_repo,
+        {"session_id": "2026-04-21-anchor"},
+        [{"role": "assistant", "content": "Deploy guidance lives in docs/release.md."}],
+        auto_commit=False,
+    )
+    fact = Fact(
+        fact_id="01TESTFACT0000000000000994",
+        text="deploy guidance lives in docs/release.md",
+        scope=Scope.PROJECT,
+        topic="deploy",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SOTA_REVIEWED,
+        source_type=SourceType.LLM_INFERENCE,
+        source_tool="session-extract",
+        source_session="2026-04-21-anchor",
+        tags=["quarantine:self-derived"],
+        consolidation_status=ConsolidationStatus.FRAGILE,
+        provenance=Provenance(
+            extracted_by="dream-gather",
+            approval_tier="l2-auto",
+            pr="20",
+            sessions=["2026-04-21-anchor"],
+        ),
+    )
+    add_fact(project_repo, fact, auto_commit=False)
+
+    oriented = DreamPipeline(project_dir).orient()
+
+    refreshed = next(item for item in oriented if item.fact_id == fact.fact_id)
+    assert "quarantine:self-derived" not in refreshed.tags

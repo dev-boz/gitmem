@@ -34,6 +34,7 @@ class DreamConfig:
     paid_api_key: str | None = None
     l2_model: str = "claude-opus-4-7"
     lint_interval: str = "weekly"
+    untrusted_strength_ceiling: int = 3
 
 
 @dataclass(slots=True)
@@ -74,6 +75,7 @@ class SessionsConfig:
     """Session ingest, redaction, and archive settings."""
 
     redaction: str = "default"
+    binary_cap_kb: int = 100
     redaction_patterns: list[str] = field(default_factory=list)
     entropy_threshold: float = 4.5
     entropy_min_length: int = 16
@@ -103,6 +105,20 @@ class InjectConfig:
     refresh_window_pct: float = 0.25
     max_refreshes_per_fact: int = 3
     max_concurrent_facts: int = 12
+    tool_max_tokens: dict[str, int] = field(
+        default_factory=lambda: {
+            "aider": 4000,
+            "amp": 6000,
+            "claude-code": 12000,
+            "copilot": 8000,
+            "codex": 12000,
+            "cursor": 8000,
+            "gemini": 12000,
+            "jules": 6000,
+            "opencode": 12000,
+            "qodo": 6000,
+        }
+    )
     pre_tool_max_tokens: int = 1400
     disclosure_slack_pct: float = 0.20
     subagent_max_tokens: int = 2000
@@ -146,6 +162,8 @@ class GitConfig:
 
     sign_commits: bool = False
     require_signed_commits: bool = False
+    push_max_attempts: int = 3
+    push_backoff_base_seconds: float = 0.5
 
 
 @dataclass(slots=True)

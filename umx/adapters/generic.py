@@ -38,7 +38,7 @@ class NativeMemoryAdapter:
             scope=scope,
             topic=topic,
             encoding_strength=3,
-            memory_type=MemoryType.IMPLICIT,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
             verification=Verification.SELF_REPORTED,
             source_type=SourceType.TOOL_OUTPUT,
             confidence=0.6,

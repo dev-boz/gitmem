@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,7 +42,7 @@ from umx.memory import (
     topic_path,
 )
 from umx.merge import merge_all
-from umx.models import ConsolidationStatus, Fact, Scope, Verification
+from umx.models import ConsolidationStatus, Fact, Scope, Verification, utcnow
 from umx.scope import config_path, project_memory_dir, user_memory_dir
 from umx.tombstones import forget_fact, forget_topic, load_tombstones, remove_tombstones
 
@@ -105,6 +106,29 @@ def _is_principle_fact(repo: Path, fact: Fact) -> bool:
     except ValueError:
         return False
     return relative.startswith("principles/")
+
+
+def _principle_source_session_count(fact: Fact) -> int:
+    session_ids = list(fact.provenance.sessions)
+    if fact.source_session:
+        session_ids.append(fact.source_session)
+    filtered = [
+        session_id
+        for session_id in session_ids
+        if session_id and session_id not in {"manual", "manual-edit"}
+    ]
+    return len(dict.fromkeys(filtered))
+
+
+def _principle_promotion_error(fact: Fact) -> str | None:
+    session_count = _principle_source_session_count(fact)
+    if session_count < 3:
+        return f"principle promotion requires >=3 source sessions; found {session_count}"
+    if fact.encoding_strength < 4:
+        return f"principle promotion requires encoding strength >=4; found {fact.encoding_strength}"
+    if fact.created > utcnow() - timedelta(days=14):
+        return "principle promotion requires facts to remain stable for at least 14 days"
+    return None
 
 
 def _capture_file_snapshots(*paths: Path) -> dict[Path, str | None]:
@@ -687,6 +711,8 @@ def promote_fact_action(cwd: Path, fact_id: str, destination: str) -> ActionResu
         kind = "principles"
         if fact.file_path == target_path:
             return ActionResult(ok=False, action="promote", message=f"fact already in principles: {fact.fact_id}", fact_id=fact.fact_id)
+        if error := _principle_promotion_error(fact):
+            return ActionResult(ok=False, action="promote", message=error, fact_id=fact.fact_id)
     else:
         target_repo = user_memory_dir()
         target_repo.mkdir(parents=True, exist_ok=True)

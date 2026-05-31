@@ -8,7 +8,7 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
-from umx.models import SourceType, Verification
+from umx.models import Scope, SourceType, Verification
 
 
 def _find_free_port() -> int:
@@ -65,6 +65,56 @@ def _summary_card(label: str, value: str) -> str:
         f"<div class='card-value'>{html.escape(value)}</div>"
         "</div>"
     )
+
+
+def _summary_rate(value: object, count: object, total: object) -> str:
+    if (
+        not isinstance(value, (int, float))
+        or not isinstance(count, int)
+        or not isinstance(total, int)
+        or total <= 0
+    ):
+        return "n/a"
+    return f"{value * 100:.1f}% ({count}/{total})"
+
+
+def _tree_fact_item(fact, repo: Path, user_repo: Path) -> str:
+    location = _display_path(fact.file_path, repo, user_repo)
+    meta_bits = [fact.scope.value, f"S:{fact.encoding_strength}", fact.verification.value]
+    if location:
+        meta_bits.append(location)
+    return (
+        "<li>"
+        f"<code>{html.escape(fact.fact_id)}</code> "
+        f"{html.escape(fact.text)}"
+        f"<span class='meta'>[{html.escape(' · '.join(meta_bits))}]</span>"
+        "</li>"
+    )
+
+
+def _tree_scope_section(
+    label: str,
+    facts: list,
+    repo: Path,
+    user_repo: Path,
+    *,
+    children_html: str = "",
+) -> str:
+    topic_groups: dict[str, list] = {}
+    for fact in sorted(facts, key=lambda item: (item.topic, item.created, item.fact_id)):
+        topic_groups.setdefault(fact.topic, []).append(fact)
+    topic_html = "".join(
+        "<details open>"
+        f"<summary>{html.escape(topic)} ({len(topic_facts)})</summary>"
+        + "<ul>"
+        + "".join(_tree_fact_item(fact, repo, user_repo) for fact in topic_facts)
+        + "</ul></details>"
+        for topic, topic_facts in sorted(topic_groups.items())
+    )
+    content = topic_html + children_html
+    if not content:
+        content = "<p>No facts in this scope.</p>"
+    return f"<details open><summary>{html.escape(label)} ({len(facts)})</summary>{content}</details>"
 
 
 def _display_path(path: Path | None, *roots: Path) -> str:
@@ -265,6 +315,32 @@ def _build_html(
             for fact in ordered
         )
         topic_html += f"<h3>{html.escape(topic)}</h3><ol>{items}</ol>"
+
+    user_tree_facts = [fact for fact in filtered_facts if fact.scope == Scope.USER]
+    machine_tree_facts = [fact for fact in filtered_facts if fact.scope == Scope.MACHINE]
+    project_tree_facts = [
+        fact
+        for fact in filtered_facts
+        if fact.scope in {Scope.PROJECT, Scope.PROJECT_PRIVATE, Scope.PROJECT_SECRET}
+    ]
+    folder_tree_facts = [fact for fact in filtered_facts if fact.scope == Scope.FOLDER]
+    file_tree_facts = [fact for fact in filtered_facts if fact.scope == Scope.FILE]
+    memory_tree_html = (
+        "<details open>"
+        f"<summary>Memory Tree ({len(filtered_facts)})</summary>"
+        + _tree_scope_section("User Scope", user_tree_facts, repo, user_repo)
+        + _tree_scope_section("Machine Scope", machine_tree_facts, repo, user_repo)
+        + _tree_scope_section(
+            "Project Scope",
+            project_tree_facts,
+            repo,
+            user_repo,
+            children_html=
+                _tree_scope_section("Folder Scope", folder_tree_facts, repo, user_repo)
+                + _tree_scope_section("File Scope", file_tree_facts, repo, user_repo),
+        )
+        + "</details>"
+    )
 
     def _fact_actions(fact) -> str:
         is_principle = (
@@ -621,12 +697,25 @@ def _build_html(
         if pr_inventory_available
         else "unknown"
     )
+    governance_review_total = governance_summary.get("review_decision_count")
+    governance_rejection_rate = _summary_rate(
+        governance_summary.get("rejection_rate"),
+        governance_summary.get("rejection_count"),
+        governance_review_total,
+    )
+    governance_escalation_rate = _summary_rate(
+        governance_summary.get("escalation_rate"),
+        governance_summary.get("escalation_count"),
+        governance_review_total,
+    )
     governance_html = (
         "<div class='cards'>"
         + _summary_card("Governance", "ok" if governance.get("ok") else "warn")
         + _summary_card("Open PRs", governance_pr_count)
         + _summary_card("Awaiting L2", governance_reviewer_count)
         + _summary_card("Human Review", governance_human_count)
+        + _summary_card("Reject Rate", governance_rejection_rate)
+        + _summary_card("Escalation Rate", governance_escalation_rate)
         + _summary_card("Stale Branches", governance_stale_count)
         + _summary_card("Label Drift", governance_drift_count)
         + "</div>"
@@ -913,6 +1002,7 @@ def _build_html(
 {_summary_card("Last Dream", str(state.get('last_dream', 'never')))}
 </div>
 </div>
+<div class="section"><h2>Memory Tree</h2>{memory_tree_html}</div>
 <div class="section"><h2>Fact Inventory</h2>
 {filter_form_html}
 {('<table><tr><th>Scope</th><th>Topic</th><th>S</th><th>Verification</th><th>State</th><th>Task</th><th>Source</th><th>Session</th><th>File</th><th>ID</th><th>Text</th><th>Actions</th></tr>' + fact_rows + '</table>') if fact_rows else '<p>No facts found.</p>'}

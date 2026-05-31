@@ -65,6 +65,33 @@ def verification_bonus(value: Verification) -> float:
     return VERIFICATION_BONUS[value]
 
 
+def corroborating_source_weights(fact: Fact) -> list[float]:
+    raw_weights = fact.encoding_context.get("corroborating_source_weights")
+    if isinstance(raw_weights, list):
+        resolved = [float(weight) for weight in raw_weights if isinstance(weight, (int, float))]
+        if resolved:
+            return resolved
+    occurrences = fact.encoding_context.get("cross_project_occurrences")
+    if not isinstance(occurrences, list):
+        return []
+    weights: list[float] = []
+    for occurrence in occurrences:
+        if not isinstance(occurrence, dict):
+            continue
+        explicit = occurrence.get("source_weight")
+        if isinstance(explicit, (int, float)):
+            weights.append(float(explicit))
+            continue
+        source_type = occurrence.get("source_type")
+        if not isinstance(source_type, str):
+            continue
+        try:
+            weights.append(SOURCE_TYPE_WEIGHTS[SourceType(source_type)])
+        except (KeyError, ValueError):
+            continue
+    return weights
+
+
 def source_type_weight(value: SourceType, corroborating_source_weights: list[float] | None = None) -> float:
     if value == SourceType.DREAM_CONSOLIDATION and corroborating_source_weights:
         return sum(corroborating_source_weights) / len(corroborating_source_weights)
@@ -74,11 +101,12 @@ def source_type_weight(value: SourceType, corroborating_source_weights: list[flo
 def trust_score(fact: Fact, config: UMXConfig | None = None) -> float:
     cfg = config or default_config()
     weights = cfg.weights.trust
+    corroboration_weights = corroborating_source_weights(fact)
     score = (
         weights.strength * fact.encoding_strength
         + weights.corroboration * len(fact.corroborated_by_tools + fact.corroborated_by_facts)
         + weights.verification * verification_bonus(fact.verification)
-        + weights.source_type * source_type_weight(fact.source_type)
+        + weights.source_type * source_type_weight(fact.source_type, corroboration_weights)
     )
     if fact.consolidation_status == ConsolidationStatus.FRAGILE:
         score -= 0.25
@@ -142,7 +170,7 @@ def independent_corroboration(existing: Fact, incoming: Fact) -> bool:
         return False
     if (
         existing.source_session == incoming.source_session
-        and existing.source_type == incoming.source_type
+        and existing.source_tool == incoming.source_tool
     ):
         return False
     if existing.source_session != incoming.source_session and existing.source_tool != incoming.source_tool:

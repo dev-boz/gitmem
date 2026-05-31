@@ -10,7 +10,7 @@ from umx.dream.processing import summarize_processing_log
 from umx.git_ops import git_signing_payload
 from umx.metrics import compute_metrics, health_flags
 from umx.memory import load_all_facts
-from umx.sessions import quarantine_summary
+from umx.sessions import quarantine_summary, redaction_review_summary
 from umx.scope import config_path, discover_project_slug, project_memory_dir
 from umx.tombstones import load_tombstones
 
@@ -24,6 +24,7 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
     flags = health_flags(metrics)
     advice = build_calibration_advice(metrics, flags)
     quarantine = quarantine_summary(repo)
+    redaction_review = redaction_review_summary(repo)
     conventions_present = (repo / "CONVENTIONS.md").exists()
     if not conventions_present:
         conventions_flag = (
@@ -83,6 +84,34 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
                 ],
             },
         ]
+    if int(redaction_review["high_entropy_count"]) > 0:
+        redaction_flag = (
+            f"Review {redaction_review['high_entropy_count']} high-entropy redaction(s) before relying on extracted facts."
+        )
+        flags = [*flags, redaction_flag]
+        advice = [
+            *advice,
+            {
+                "metric": "high_entropy_redactions",
+                "label": "High-entropy redactions",
+                "severity": "warn",
+                "status": "warn",
+                "direction": "high",
+                "value": int(redaction_review["high_entropy_count"]),
+                "healthy_min": 0,
+                "healthy_max": 0,
+                "signal": f"{redaction_review['high_entropy_count']} high-entropy redaction(s) need human review.",
+                "flag": redaction_flag,
+                "why": f"{redaction_review['high_entropy_count']} high-entropy redaction(s) need human review.",
+                "why_it_matters": (
+                    "High-entropy masking is heuristic, so Dream may need an operator to confirm the masked session content was truly sensitive."
+                ),
+                "recommended_actions": [
+                    "Inspect the listed sessions and confirm the redacted spans are expected secrets or tokens.",
+                    "If the masking is too broad, adjust session redaction patterns before the next Dream gather.",
+                ],
+            },
+        ]
     hot_metric = metrics["hot_tier_utilisation"]["value"]
     sessions_dir = repo / "sessions"
     session_count = len(list(sessions_dir.glob("**/*.jsonl"))) if sessions_dir.exists() else 0
@@ -99,6 +128,8 @@ def build_status_payload(cwd: Path) -> dict[str, Any]:
         "conventions_present": conventions_present,
         "last_dream": state.get("last_dream"),
         "quarantine": quarantine,
+        "redaction_review": redaction_review,
+        "high_entropy_redaction_count": int(redaction_review["high_entropy_count"]),
         "processing": summarize_processing_log(repo, refs=("origin/main",)),
         "git": git_signing_payload(cfg),
         "hot_tier_tokens": int(round(hot_metric * cfg.memory.hot_tier_max_tokens)),

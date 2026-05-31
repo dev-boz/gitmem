@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 import json
 import subprocess
 from pathlib import Path
@@ -21,7 +22,7 @@ from umx.models import (
     SourceType,
     Verification,
 )
-from umx.tombstones import load_tombstones
+from umx.tombstones import Tombstone, append_tombstone, load_tombstones
 from umx.scope import config_path
 
 
@@ -49,6 +50,32 @@ def _make_fact(
     }
     values.update(overrides)
     return Fact(**values)
+
+
+def _principle_ready_fact(
+    fact_id: str,
+    text: str,
+    *,
+    topic: str = "devenv",
+    source_session: str = "sess-001",
+    **overrides,
+) -> Fact:
+    values = {
+        "encoding_strength": 4,
+        "created": datetime(2026, 1, 1, tzinfo=UTC),
+        "provenance": Provenance(
+            extracted_by="test",
+            sessions=[source_session, "sess-002", "sess-003"],
+        ),
+    }
+    values.update(overrides)
+    return _make_fact(
+        fact_id,
+        text,
+        topic=topic,
+        source_session=source_session,
+        **values,
+    )
 
 
 # ── merge tests ──────────────────────────────────────────────────
@@ -153,6 +180,35 @@ def test_audit_rederive(project_repo: Path) -> None:
     assert any("8080" in f.text for f in facts)
 
 
+def test_audit_rederive_honors_rederive_phase_tombstones(project_repo: Path) -> None:
+    from umx.audit import rederive_from_sessions
+    from umx.sessions import write_session
+
+    write_session(
+        project_repo,
+        {"session_id": "2026-01-15-rederive-suppressed"},
+        [
+            {"role": "assistant", "content": "The API server runs on port 8080 for local development."},
+        ],
+        config=default_config(),
+    )
+    append_tombstone(
+        project_repo,
+        Tombstone(
+            fact_id=None,
+            match="port 8080",
+            reason="skip audit rederive fixture",
+            author="test",
+            created="2026-01-15T00:00:00Z",
+            suppress_from=["rederive"],
+        ),
+    )
+
+    facts = rederive_from_sessions(project_repo, config=default_config())
+
+    assert all("8080" not in fact.text for fact in facts)
+
+
 def test_audit_compare_derived() -> None:
     from umx.audit import compare_derived
 
@@ -240,6 +296,28 @@ def test_audit_rederive_opens_correction_pr(project_dir: Path, project_repo: Pat
     )
     assert current_branch.stdout.strip() == "main"
     assert {fact.fact_id for fact in load_all_facts(project_repo, include_superseded=False)} == {"E2"}
+
+
+def test_audit_report_honors_audit_phase_tombstones(project_dir: Path, project_repo: Path) -> None:
+    add_fact(project_repo, _make_fact("FACT_AUDIT_PHASE", "redis cache is enabled"), auto_commit=False)
+    append_tombstone(
+        project_repo,
+        Tombstone(
+            fact_id="FACT_AUDIT_PHASE",
+            match=None,
+            reason="ignore during audit",
+            author="test",
+            created="2026-01-15T00:00:00Z",
+            suppress_from=["audit"],
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["audit", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["total_facts"] == 0
+    assert payload["source_types"] == {}
 
 
 def test_audit_rederive_opens_correction_pr_for_metadata_only_drift(
@@ -380,7 +458,7 @@ def test_promote_to_principle_moves_fact_into_principles(
     project_dir: Path,
     project_repo: Path,
 ) -> None:
-    fact = _make_fact(
+    fact = _principle_ready_fact(
         "FACT_PROMOTE_PRINCIPLE",
         "prefer additive migrations over destructive rewrites",
         topic="migrations",
@@ -406,7 +484,7 @@ def test_promote_folder_fact_to_principle_moves_into_principles(
     project_dir: Path,
     project_repo: Path,
 ) -> None:
-    fact = _make_fact(
+    fact = _principle_ready_fact(
         "FACT_PROMOTE_FOLDER_PRINCIPLE",
         "shared config fragments live under config/shared",
         topic="config",
@@ -426,6 +504,69 @@ def test_promote_folder_fact_to_principle_moves_into_principles(
     assert promoted.scope == Scope.PROJECT
     assert promoted.file_path is not None
     assert promoted.file_path.relative_to(project_repo).as_posix() == "principles/topics/config.md"
+
+
+def test_promote_to_principle_requires_three_source_sessions(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _principle_ready_fact(
+        "FACT_PROMOTE_PRINCIPLE_FEW_SESSIONS",
+        "prefer additive migrations over destructive rewrites",
+        topic="migrations",
+        provenance=Provenance(extracted_by="test", sessions=["sess-001", "sess-002"]),
+    )
+    add_fact(project_repo, fact)
+
+    result = CliRunner().invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "principle"],
+    )
+
+    assert result.exit_code != 0
+    assert "requires >=3 source sessions" in result.output
+
+
+def test_promote_to_principle_requires_strength_four(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _principle_ready_fact(
+        "FACT_PROMOTE_PRINCIPLE_WEAK",
+        "prefer additive migrations over destructive rewrites",
+        topic="migrations",
+        encoding_strength=3,
+    )
+    add_fact(project_repo, fact)
+
+    result = CliRunner().invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "principle"],
+    )
+
+    assert result.exit_code != 0
+    assert "requires encoding strength >=4" in result.output
+
+
+def test_promote_to_principle_requires_fourteen_day_age(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _principle_ready_fact(
+        "FACT_PROMOTE_PRINCIPLE_YOUNG",
+        "prefer additive migrations over destructive rewrites",
+        topic="migrations",
+        created=datetime.now(tz=UTC) - timedelta(days=13),
+    )
+    add_fact(project_repo, fact)
+
+    result = CliRunner().invoke(
+        main,
+        ["promote", "--cwd", str(project_dir), "--fact", fact.fact_id, "--to", "principle"],
+    )
+
+    assert result.exit_code != 0
+    assert "requires facts to remain stable for at least 14 days" in result.output
 
 
 def test_promote_to_user_moves_fact_into_user_scope(

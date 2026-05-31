@@ -9,8 +9,10 @@ from umx.conventions import ConventionSet, validate_fact
 from umx.dream.anchors import code_anchor_status
 from umx.dream.conflict import facts_conflict
 from umx.models import Fact, SourceType, parse_datetime
+from umx.procedures import load_all_procedures
 from umx.scope import find_orphaned_scoped_memory
 from umx.search_semantic import load_semantic_cache
+from umx.skills import load_all_skills, resolve_skill
 
 
 _LINT_INTERVALS = {
@@ -105,6 +107,24 @@ def should_run(
     return False, f"{interval}-not-due"
 
 
+def schema_lock_in_findings(
+    facts: list[Fact],
+    *,
+    conventions: ConventionSet,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for fact in facts:
+        if fact.topic in conventions.topics or len(fact.text.split()) < 5:
+            continue
+        findings.append(
+            {
+                "kind": "schema-lock-in",
+                "message": f"{fact.fact_id} introduces unknown topic '{fact.topic}' with durable phrasing",
+            }
+        )
+    return findings
+
+
 def generate_lint_findings(
     facts: list[Fact],
     *,
@@ -115,6 +135,43 @@ def generate_lint_findings(
     findings: list[dict[str, str]] = []
     reverify_cutoff = datetime.now(tz=UTC) - timedelta(days=90)
     by_id = {fact.fact_id: fact for fact in facts}
+    for procedure in load_all_procedures(repo_dir):
+        if procedure.triggers:
+            continue
+        target = procedure.procedure_id
+        if procedure.file_path is not None:
+            try:
+                target = procedure.file_path.relative_to(repo_dir).as_posix()
+            except ValueError:
+                target = procedure.file_path.as_posix()
+        findings.append(
+            {
+                "kind": "procedure-trigger",
+                "message": f"{target} is missing required ## Triggers section",
+            }
+        )
+    for skill in load_all_skills(repo_dir):
+        resolution = resolve_skill(skill, repo_dir)
+        target = skill.name
+        if skill.file_path is not None:
+            try:
+                target = skill.file_path.relative_to(repo_dir).as_posix()
+            except ValueError:
+                target = skill.file_path.as_posix()
+        for directive in resolution.unsupported_directives:
+            findings.append(
+                {
+                    "kind": "skill-directive",
+                    "message": f"{target} uses unsupported retrieval directive {directive}",
+                }
+            )
+        for blocked_path in resolution.blocked_paths:
+            findings.append(
+                {
+                    "kind": "skill-portability",
+                    "message": f"{target} uses non-portable load target {blocked_path}",
+                }
+            )
     for orphan in find_orphaned_scoped_memory(repo_dir, project_root):
         findings.append(
             {
@@ -159,6 +216,7 @@ def generate_lint_findings(
                         "message": f"{left.fact_id} and {right.fact_id} appear contradictory",
                     }
                 )
+    findings.extend(schema_lock_in_findings(facts, conventions=conventions))
     return findings
 
 

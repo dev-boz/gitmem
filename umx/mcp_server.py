@@ -202,7 +202,7 @@ class UMXMCPServer:
         fact_id = args.get("fact_id")
         prompt = args.get("prompt")
         file_paths = list(args.get("file_paths", []))
-        max_tokens = args.get("max_tokens", 4000)
+        max_tokens = args.get("max_tokens")
         tool = args.get("tool")
         command_text = args.get("command_text")
         session_id = args.get("session_id")

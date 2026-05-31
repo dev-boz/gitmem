@@ -218,6 +218,21 @@ def test_cli_inject_outputs_memory_block(project_dir, project_repo, user_repo) -
     assert "postgres runs on 5433 in dev" in result.output
 
 
+def test_cli_inject_omits_max_tokens_when_flag_is_unset(project_dir, monkeypatch) -> None:
+    captured = {}
+
+    def fake_inject_for_tool(*args, **kwargs):
+        captured["max_tokens"] = kwargs["max_tokens"]
+        return "# UMX Memory\n"
+
+    monkeypatch.setattr("umx.cli.inject_for_tool", fake_inject_for_tool)
+
+    result = CliRunner().invoke(main, ["inject", "--cwd", str(project_dir), "--tool", "aider"])
+
+    assert result.exit_code == 0
+    assert captured["max_tokens"] is None
+
+
 def test_cli_view_fact_and_health(project_dir, project_repo) -> None:
     from umx.memory import add_fact
     from umx.models import (
@@ -429,6 +444,21 @@ def test_cli_status_surfaces_git_signing_config(project_dir, umx_home) -> None:
         "sign_commits": True,
         "require_signed_commits": True,
     }
+
+
+def test_cli_import_accepts_hidden_tool_alias(project_dir, monkeypatch) -> None:
+    adapter = Mock()
+    adapter.read_native_memory.return_value = []
+    monkeypatch.setattr("umx.adapters.get_adapter_by_name", lambda name: adapter if name == "copilot" else None)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["import", "--cwd", str(project_dir), "--tool", "copilot", "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"dry_run": True, "facts_found": 0}
 
 
 def test_cli_config_set_redaction_patterns_roundtrips_to_sessions_config(umx_home) -> None:
@@ -1936,7 +1966,7 @@ def test_cli_setup_remote_surfaces_auth_status_retry_next_steps(project_dir) -> 
 
 
 def test_cli_sync_returns_nonzero_when_push_fails(project_dir, project_repo, tmp_path, monkeypatch) -> None:
-    from umx.git_ops import git_add_and_commit, git_push
+    from umx.git_ops import GitPushResult, git_add_and_commit, git_push
 
     remote = tmp_path / "sync-push-fails.git"
     subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
@@ -1958,12 +1988,48 @@ def test_cli_sync_returns_nonzero_when_push_fails(project_dir, project_repo, tmp
     (sessions_dir / "2026-01-15-sync-fail.jsonl").write_text('{"_meta":{"session_id":"2026-01-15-sync-fail"}}\n')
 
     monkeypatch.setattr("umx.git_ops.git_pull_rebase", lambda *args, **kwargs: True)
-    monkeypatch.setattr("umx.git_ops.git_push", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.git_ops.drain_push_queue", lambda *args, **kwargs: {"drained": 0, "remaining": 0})
+    monkeypatch.setattr("umx.git_ops.git_push_with_retry", lambda *args, **kwargs: GitPushResult(status="failed"))
 
     result = CliRunner().invoke(main, ["sync", "--cwd", str(project_dir)])
 
     assert result.exit_code != 0
     assert "push failed" in result.output
+
+
+def test_cli_sync_reports_queued_push_after_retries(project_dir, project_repo, tmp_path, monkeypatch) -> None:
+    from umx.git_ops import GitPushResult, git_add_and_commit, git_push
+
+    remote = tmp_path / "sync-push-queued.git"
+    subprocess.run(["git", "init", "--bare", str(remote)], capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "remote", "add", "origin", str(remote)],
+        capture_output=True,
+        check=True,
+    )
+    git_add_and_commit(project_repo, message="sync push queue baseline")
+    git_push(project_repo)
+
+    cfg = default_config()
+    cfg.org = "memory-org"
+    cfg.dream.mode = "remote"
+    save_config(config_path(), cfg)
+
+    sessions_dir = project_repo / "sessions" / "2026" / "01"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    (sessions_dir / "2026-01-15-sync-queued.jsonl").write_text('{"_meta":{"session_id":"2026-01-15-sync-queued"}}\n')
+
+    monkeypatch.setattr("umx.git_ops.git_pull_rebase", lambda *args, **kwargs: True)
+    monkeypatch.setattr("umx.git_ops.drain_push_queue", lambda *args, **kwargs: {"drained": 0, "remaining": 0})
+    monkeypatch.setattr(
+        "umx.git_ops.git_push_with_retry",
+        lambda *args, **kwargs: GitPushResult(status="queued", attempts=3),
+    )
+
+    result = CliRunner().invoke(main, ["sync", "--cwd", str(project_dir)])
+
+    assert result.exit_code == 0
+    assert f"queued push to {remote}" in result.output
 
 
 def test_cli_sync_rejects_unsigned_commits_when_required(

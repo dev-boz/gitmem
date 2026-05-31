@@ -21,6 +21,7 @@ from umx.models import (
 )
 from umx.redaction import redact_candidate_fact_text
 from umx.sessions import iter_session_payloads, list_sessions, read_session
+from umx.trust_tags import UNTRUSTED_SOURCE_TAG
 
 _SKIP_PREFIXES = (
     "i ",
@@ -638,11 +639,13 @@ def source_files_to_facts(
             encoding_strength = 2
             confidence = 0.7
             consolidation_status = ConsolidationStatus.FRAGILE
+            tags = [UNTRUSTED_SOURCE_TAG]
         else:
             source_type = SourceType.GROUND_TRUTH_CODE
             encoding_strength = 3
             confidence = 0.9
             consolidation_status = ConsolidationStatus.STABLE
+            tags = []
         for stmt in statements:
             key = stmt.strip().lower()
             if key in seen_texts:
@@ -660,6 +663,7 @@ def source_files_to_facts(
                     verification=Verification.SELF_REPORTED,
                     source_type=source_type,
                     confidence=confidence,
+                    tags=tags,
                     source_tool="source-extract",
                     source_session=session_ids[0] if session_ids else "source",
                     consolidation_status=consolidation_status,

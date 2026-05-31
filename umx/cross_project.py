@@ -39,6 +39,7 @@ class CrossProjectOccurrence:
     created: str
     encoding_strength: int
     file_path: str | None
+    source_type: str = SourceType.GROUND_TRUTH_CODE.value
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +50,7 @@ class CrossProjectOccurrence:
             "created": self.created,
             "encoding_strength": self.encoding_strength,
             "file_path": self.file_path,
+            "source_type": self.source_type,
         }
 
 
@@ -114,6 +116,7 @@ def _build_occurrence(repo_dir: Path, fact: Fact) -> CrossProjectOccurrence:
         created=isoformat_z(fact.created) or "",
         encoding_strength=fact.encoding_strength,
         file_path=file_path,
+        source_type=fact.source_type.value,
     )
 
 
@@ -489,6 +492,7 @@ def _candidate_from_payload(payload: dict[str, Any]) -> CrossProjectCandidate:
                 created=str(occurrence["created"]),
                 encoding_strength=int(occurrence["encoding_strength"]),
                 file_path=str(occurrence["file_path"]) if occurrence["file_path"] is not None else None,
+                source_type=str(occurrence.get("source_type") or SourceType.GROUND_TRUTH_CODE.value),
             )
             for occurrence in payload["occurrences"]
         ],

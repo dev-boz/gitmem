@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import json
 from pathlib import Path
 from time import perf_counter
@@ -390,6 +391,18 @@ def _sync_in_progress_operation_error(prefix: str, operation: str) -> str:
     )
 
 
+@dataclass(slots=True, frozen=True)
+class SyncRemoteResult:
+    remote: str
+    queued: bool = False
+
+
+def _normalize_sync_result(result: SyncRemoteResult | str | None) -> SyncRemoteResult | None:
+    if result is None or isinstance(result, SyncRemoteResult):
+        return result
+    return SyncRemoteResult(remote=result)
+
+
 def _sync_memory_repo(
     repo: Path,
     *,
@@ -400,12 +413,13 @@ def _sync_memory_repo(
     error_prefix: str = "",
     project_root: Path | None = None,
     include_bridge: bool = False,
-) -> str | None:
+) -> SyncRemoteResult | None:
     from umx.git_ops import (
         GitSignedHistoryError,
         assert_signed_commit_range,
         changed_paths,
         conflicted_paths,
+        drain_push_queue,
         diff_committed_paths_against_ref,
         git_add_and_commit,
         git_commit_failure_message,
@@ -413,7 +427,7 @@ def _sync_memory_repo(
         git_fetch,
         git_in_progress_operation,
         git_pull_rebase,
-        git_push,
+        git_push_with_retry,
         git_remote_url,
     )
     from umx.github_ops import GitHubRemoteIdentityError, assert_expected_github_origin
@@ -503,9 +517,13 @@ def _sync_memory_repo(
         )
     except GitSignedHistoryError as exc:
         raise click.ClickException(str(exc)) from exc
-    if not git_push(repo):
+    drain_push_queue(repo, config=config)
+    push_result = git_push_with_retry(repo, config=config, queue_on_failure=True)
+    if not push_result.ok:
+        if push_result.queued:
+            return SyncRemoteResult(remote=remote, queued=True)
         raise click.ClickException(_sync_error(error_prefix, "push failed"))
-    return remote
+    return SyncRemoteResult(remote=remote)
 
 
 @click.group(cls=TelemetryGroup)
@@ -659,7 +677,7 @@ def init_project_cmd(cwd: Path, slug: str | None, yes: bool) -> None:
 @click.option("--context-window", "context_window_tokens", type=int, default=None)
 @click.option("--expand-fact", "expanded_facts", multiple=True)
 @click.option("--file", "files", multiple=True)
-@click.option("--max-tokens", type=int, default=4000)
+@click.option("--max-tokens", type=int, default=None)
 def inject_cmd(
     cwd: Path,
     tool: str | None,
@@ -669,7 +687,7 @@ def inject_cmd(
     context_window_tokens: int | None,
     expanded_facts: tuple[str],
     files: tuple[str],
-    max_tokens: int,
+    max_tokens: int | None,
 ) -> None:
     if session_id:
         observed_text = " ".join(
@@ -1219,6 +1237,7 @@ def audit_cmd(
         audit_report,
         compare_derived,
         compare_derived_facts,
+        filter_suppressed_facts,
         materialize_rederive_correction_branch,
         rederive_from_sessions,
     )
@@ -1255,7 +1274,11 @@ def audit_cmd(
     if rederive:
         ids = list(session_ids) if session_ids else None
         rederived = rederive_from_sessions(repo, session_ids=ids, config=cfg)
-        existing = load_all_facts(repo, include_superseded=False)
+        existing = filter_suppressed_facts(
+            repo,
+            load_all_facts(repo, include_superseded=False),
+            phase="audit",
+        )
         comparison = compare_derived(existing, rederived)
         matching, missing_from_existing_facts, missing_from_rederived_facts = compare_derived_facts(
             existing,
@@ -1376,38 +1399,51 @@ def sync_cmd(cwd: Path) -> None:
         click.echo("no remote configured; run 'umx setup-remote' first")
         return
 
-    user_synced_remote = _sync_memory_repo(
-        user_repo,
-        config=cfg,
-        mode=mode,
-        repo_label="user memory repo",
-        operation="user memory sync",
-        error_prefix="user memory repo ",
-    )
-    try:
-        project_synced_remote = _sync_memory_repo(
-            project_repo,
+    user_sync_result = _normalize_sync_result(
+        _sync_memory_repo(
+            user_repo,
             config=cfg,
             mode=mode,
-            repo_label="project memory repo",
-            operation="sync",
-            project_root=root,
-            include_bridge=True,
+            repo_label="user memory repo",
+            operation="user memory sync",
+            error_prefix="user memory repo ",
+        )
+    )
+    try:
+        project_sync_result = _normalize_sync_result(
+            _sync_memory_repo(
+                project_repo,
+                config=cfg,
+                mode=mode,
+                repo_label="project memory repo",
+                operation="sync",
+                project_root=root,
+                include_bridge=True,
+            )
         )
     except click.ClickException as exc:
-        if user_synced_remote is not None:
+        if user_sync_result is not None:
             raise click.ClickException(
-                f"user memory already synced with {user_synced_remote}; {exc.format_message()}"
+                f"user memory already synced with {user_sync_result.remote}; {exc.format_message()}"
             ) from exc
         raise
 
-    if project_synced_remote is not None and user_synced_remote is None:
-        click.echo(f"synced with {project_synced_remote}")
+    if project_sync_result is not None and user_sync_result is None:
+        if project_sync_result.queued:
+            click.echo(f"queued push to {project_sync_result.remote}")
+        else:
+            click.echo(f"synced with {project_sync_result.remote}")
         return
-    if project_synced_remote is not None:
-        click.echo(f"synced project memory with {project_synced_remote}")
-    if user_synced_remote is not None:
-        click.echo(f"synced user memory with {user_synced_remote}")
+    if project_sync_result is not None:
+        if project_sync_result.queued:
+            click.echo(f"queued project memory push to {project_sync_result.remote}")
+        else:
+            click.echo(f"synced project memory with {project_sync_result.remote}")
+    if user_sync_result is not None:
+        if user_sync_result.queued:
+            click.echo(f"queued user memory push to {user_sync_result.remote}")
+        else:
+            click.echo(f"synced user memory with {user_sync_result.remote}")
 
 
 @main.command("setup-remote")
@@ -2162,7 +2198,7 @@ def _emit_hook_response(payload: dict | None) -> None:
 def _run_generic_shim(
     cwd: Path,
     output: Path | None,
-    max_tokens: int,
+    max_tokens: int | None,
     *,
     tool: str | None = None,
 ) -> None:
@@ -2296,8 +2332,8 @@ def bridge_import_cmd(
 @shim_group.command("aider")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
-def shim_aider_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+@click.option("--max-tokens", type=int, default=None)
+def shim_aider_cmd(cwd: Path, output: Path | None, max_tokens: int | None) -> None:
     from umx.shim.aider import generate_aider_prompt, write_aider_memory_file
 
     if output:
@@ -2311,9 +2347,9 @@ def shim_aider_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--tool", default=None)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
+@click.option("--max-tokens", type=int, default=None)
 def shim_generic_cmd(
-    cwd: Path, tool: str | None, output: Path | None, max_tokens: int
+    cwd: Path, tool: str | None, output: Path | None, max_tokens: int | None
 ) -> None:
     _run_generic_shim(cwd, output, max_tokens, tool=tool)
 
@@ -2321,32 +2357,32 @@ def shim_generic_cmd(
 @shim_group.command("amp")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
-def shim_amp_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+@click.option("--max-tokens", type=int, default=None)
+def shim_amp_cmd(cwd: Path, output: Path | None, max_tokens: int | None) -> None:
     _run_generic_shim(cwd, output, max_tokens, tool="amp")
 
 
 @shim_group.command("cursor")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
-def shim_cursor_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+@click.option("--max-tokens", type=int, default=None)
+def shim_cursor_cmd(cwd: Path, output: Path | None, max_tokens: int | None) -> None:
     _run_generic_shim(cwd, output, max_tokens, tool="cursor")
 
 
 @shim_group.command("jules")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
-def shim_jules_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+@click.option("--max-tokens", type=int, default=None)
+def shim_jules_cmd(cwd: Path, output: Path | None, max_tokens: int | None) -> None:
     _run_generic_shim(cwd, output, max_tokens, tool="jules")
 
 
 @shim_group.command("qodo")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--output", type=click.Path(path_type=Path), default=None)
-@click.option("--max-tokens", type=int, default=4000)
-def shim_qodo_cmd(cwd: Path, output: Path | None, max_tokens: int) -> None:
+@click.option("--max-tokens", type=int, default=None)
+def shim_qodo_cmd(cwd: Path, output: Path | None, max_tokens: int | None) -> None:
     _run_generic_shim(cwd, output, max_tokens, tool="qodo")
 
 
@@ -2382,13 +2418,22 @@ def secret_set(key: str, value: str) -> None:
 
 @main.command("export")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
-@click.option("--out", type=click.Path(path_type=Path), required=True)
-def export_cmd(cwd: Path, out: Path) -> None:
-    from umx.backup import export_full
+@click.option(
+    "--format",
+    "export_format",
+    type=click.Choice(["full", "memories"]),
+    default="full",
+)
+@click.option("--out", "--output", "output", type=click.Path(path_type=Path), required=True)
+def export_cmd(cwd: Path, export_format: str, output: Path) -> None:
+    from umx.backup import export_full, export_memories
 
     repo = project_memory_dir(cwd)
     try:
-        payload = export_full(repo, out).to_dict()
+        if export_format == "memories":
+            payload = export_memories(repo, output).to_dict()
+        else:
+            payload = export_full(repo, output).to_dict()
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(json.dumps(payload, sort_keys=True))
@@ -2401,22 +2446,37 @@ def export_cmd(cwd: Path, out: Path) -> None:
     type=click.Choice(["claude-code", "copilot", "aider", "generic"]),
     required=False,
 )
+@click.option(
+    "--tool",
+    "adapter",
+    type=click.Choice(["claude-code", "copilot", "aider", "generic"]),
+    required=False,
+    hidden=True,
+)
 @click.option("--full", "full_backup", type=click.Path(path_type=Path), default=None)
+@click.option("--memories", type=click.Path(path_type=Path), default=None)
 @click.option("--force", is_flag=True, default=False)
 @click.option("--dry-run", is_flag=True, default=False)
 def import_cmd(
     cwd: Path,
     adapter: str | None,
     full_backup: Path | None,
+    memories: Path | None,
     force: bool,
     dry_run: bool,
 ) -> None:
     from umx.adapters import get_adapter_by_name
-    from umx.backup import import_full, inspect_backup_dir, target_contains_backup_data
+    from umx.backup import (
+        import_full,
+        import_memories,
+        inspect_backup_dir,
+        inspect_memories_dir,
+        target_contains_backup_data,
+    )
     from umx.memory import add_fact
 
-    if (adapter is None) == (full_backup is None):
-        raise click.ClickException("Provide exactly one of --adapter or --full.")
+    if sum(option is not None for option in (adapter, full_backup, memories)) != 1:
+        raise click.ClickException("Provide exactly one of --adapter, --full, or --memories.")
     if force and full_backup is None:
         raise click.ClickException("--force is only supported with --full.")
 
@@ -2445,6 +2505,34 @@ def import_cmd(
         except RuntimeError as exc:
             raise click.ClickException(str(exc)) from exc
         _commit_repo(repo, "umx: import full backup")
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+
+    if memories is not None:
+        try:
+            inspection = inspect_memories_dir(memories, repo)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if dry_run:
+            click.echo(
+                json.dumps(
+                    {
+                        "changes_found": inspection.changes_found,
+                        "dry_run": True,
+                        "files_found": inspection.files_found,
+                        "source_dir": inspection.source_dir,
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+        _require_direct_fact_write_allowed("umx import")
+        try:
+            payload = import_memories(memories, repo).to_dict()
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+        if payload["changed_files"]:
+            _commit_repo(repo, "umx: import memories projection")
         click.echo(json.dumps(payload, sort_keys=True))
         return
 

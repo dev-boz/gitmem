@@ -22,6 +22,7 @@ from umx.sessions import iter_session_payloads, list_sessions, read_session
 
 INDEX_NAME = "index.sqlite"
 USAGE_NAME = "usage.sqlite"
+INJECTION_AUDIT_NAME = "injection-audit.jsonl"
 REFERENCE_STOPWORDS = {
     "a",
     "an",
@@ -159,6 +160,20 @@ def index_path(repo_dir: Path) -> Path:
 
 def usage_path(repo_dir: Path) -> Path:
     return repo_dir / "meta" / USAGE_NAME
+
+
+def injection_audit_path(repo_dir: Path) -> Path:
+    return repo_dir / "local" / INJECTION_AUDIT_NAME
+
+
+def _append_injection_audit(repo_dir: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path = injection_audit_path(repo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -364,6 +379,17 @@ def ensure_usage_db(repo_dir: Path) -> None:
             "cited_count": "INTEGER DEFAULT 0",
             "last_session": "TEXT",
             "item_kind": "TEXT DEFAULT 'fact'",
+        },
+    )
+    _ensure_columns(
+        conn,
+        "usage_events",
+        {
+            "reason": "TEXT",
+            "relevance_score": "REAL",
+            "dedup": "TEXT",
+            "retrieval_fidelity": "TEXT",
+            "source_path": "TEXT",
         },
     )
     _ensure_columns(
@@ -904,17 +930,35 @@ def _record_injection_event(
     parent_session_id: str | None = None,
     token_count: int = 0,
     item_kind: str = "fact",
-) -> int | None:
+    reason: str | None = None,
+    relevance_score: float | None = None,
+    dedup: str | None = None,
+    retrieval_fidelity: str | None = None,
+    source_path: str | None = None,
+) -> tuple[int | None, str | None, str | None]:
     if session_id is None:
-        return None
+        return None, dedup, None
     now = _utcnow_iso()
+    dedup_value = dedup
+    if dedup_value is None:
+        prior = conn.execute(
+            """
+            SELECT injection_count
+            FROM session_fact_state
+            WHERE session_id = ? AND fact_id = ? AND item_kind = ?
+            """,
+            (session_id, fact_id, item_kind),
+        ).fetchone()
+        if prior is not None and int(prior["injection_count"] or 0) > 0:
+            dedup_value = "already_injected_this_session"
     cursor = conn.execute(
         """
         INSERT INTO usage_events (
           fact_id, item_kind, session_id, turn_index, event_kind, injection_point,
           disclosure_level, tool, parent_session_id, token_count, session_tokens,
-          used_in_output, content_preview, created_at
-        ) VALUES (?, ?, ?, ?, 'inject', ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+          used_in_output, content_preview, reason, relevance_score, dedup,
+          retrieval_fidelity, source_path, created_at
+        ) VALUES (?, ?, ?, ?, 'inject', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
         """,
         (
             fact_id,
@@ -927,6 +971,11 @@ def _record_injection_event(
             parent_session_id,
             max(0, int(token_count)),
             max(0, int(session_tokens or 0)),
+            reason,
+            relevance_score,
+            dedup_value,
+            retrieval_fidelity,
+            source_path,
             now,
         ),
     )
@@ -962,7 +1011,11 @@ def _record_injection_event(
                 refresh_delta,
             ),
         )
-    return int(cursor.lastrowid) if cursor.lastrowid is not None else None
+    return (
+        int(cursor.lastrowid) if cursor.lastrowid is not None else None,
+        dedup_value,
+        now,
+    )
 
 
 def record_injection(
@@ -978,31 +1031,34 @@ def record_injection(
     parent_session_id: str | None = None,
     token_count: int = 0,
     item_kind: str = "fact",
+    reason: str | None = None,
+    relevance_score: float | None = None,
+    dedup: str | None = None,
+    retrieval_fidelity: str | None = None,
+    source_path: str | None = None,
 ) -> int | None:
-    ensure_usage_db(repo_dir)
-    conn = _hot_connect(usage_path(repo_dir))
-    _record_usage_row(
-        conn,
-        fact_id,
-        injected=True,
-        session_id=session_id,
-        item_kind=item_kind,
-    )
-    event_id = _record_injection_event(
-        conn,
-        fact_id,
-        session_id=session_id,
-        turn_index=turn_index,
-        session_tokens=session_tokens,
-        injection_point=injection_point,
-        disclosure_level=disclosure_level,
-        tool=tool,
-        parent_session_id=parent_session_id,
-        token_count=token_count,
-        item_kind=item_kind,
-    )
-    conn.commit()
-    return event_id
+    return record_injections(
+        repo_dir,
+        [
+            {
+                "fact_id": fact_id,
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "session_tokens": session_tokens,
+                "injection_point": injection_point,
+                "disclosure_level": disclosure_level,
+                "tool": tool,
+                "parent_session_id": parent_session_id,
+                "token_count": token_count,
+                "item_kind": item_kind,
+                "reason": reason,
+                "relevance_score": relevance_score,
+                "dedup": dedup,
+                "retrieval_fidelity": retrieval_fidelity,
+                "source_path": source_path,
+            }
+        ],
+    )[0]
 
 
 def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[int | None]:
@@ -1034,6 +1090,7 @@ def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[
         conn.commit()
         return [None] * len(injections)
     event_ids: list[int | None] = []
+    audit_rows: list[dict[str, Any]] = []
     for injection in injections:
         fact_id = str(injection["fact_id"])
         session_id = (
@@ -1049,34 +1106,78 @@ def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[
             session_id=session_id,
             item_kind=item_kind,
         )
-        event_ids.append(
-            _record_injection_event(
-                conn,
-                fact_id,
-                session_id=session_id,
-                turn_index=(
-                    int(injection["turn_index"])
-                    if injection.get("turn_index") is not None
-                    else None
-                ),
-                session_tokens=(
-                    int(injection["session_tokens"])
-                    if injection.get("session_tokens") is not None
-                    else None
-                ),
-                injection_point=str(injection.get("injection_point") or "prompt"),
-                disclosure_level=str(injection.get("disclosure_level") or "l1"),
-                tool=str(injection["tool"]) if injection.get("tool") is not None else None,
-                parent_session_id=(
-                    str(injection["parent_session_id"])
-                    if injection.get("parent_session_id") is not None
-                    else None
-                ),
-                token_count=int(injection.get("token_count") or 0),
-                item_kind=item_kind,
-            )
+        event_id, dedup_value, created_at = _record_injection_event(
+            conn,
+            fact_id,
+            session_id=session_id,
+            turn_index=(
+                int(injection["turn_index"])
+                if injection.get("turn_index") is not None
+                else None
+            ),
+            session_tokens=(
+                int(injection["session_tokens"])
+                if injection.get("session_tokens") is not None
+                else None
+            ),
+            injection_point=str(injection.get("injection_point") or "prompt"),
+            disclosure_level=str(injection.get("disclosure_level") or "l1"),
+            tool=str(injection["tool"]) if injection.get("tool") is not None else None,
+            parent_session_id=(
+                str(injection["parent_session_id"])
+                if injection.get("parent_session_id") is not None
+                else None
+            ),
+            token_count=int(injection.get("token_count") or 0),
+            item_kind=item_kind,
+            reason=(
+                str(injection["reason"])
+                if injection.get("reason") is not None
+                else None
+            ),
+            relevance_score=(
+                float(injection["relevance_score"])
+                if injection.get("relevance_score") is not None
+                else None
+            ),
+            dedup=(
+                str(injection["dedup"])
+                if injection.get("dedup") is not None
+                else None
+            ),
+            retrieval_fidelity=(
+                str(injection["retrieval_fidelity"])
+                if injection.get("retrieval_fidelity") is not None
+                else None
+            ),
+            source_path=(
+                str(injection["source_path"])
+                if injection.get("source_path") is not None
+                else None
+            ),
         )
+        event_ids.append(event_id)
+        if session_id and item_kind == "fact":
+            audit_row = {
+                "session_id": session_id,
+                "ts": created_at or _utcnow_iso(),
+                "injection_point": str(injection.get("injection_point") or "prompt"),
+                "fact_id": fact_id,
+                "token_count": int(injection.get("token_count") or 0),
+            }
+            if injection.get("reason") is not None:
+                audit_row["reason"] = str(injection["reason"])
+            if injection.get("relevance_score") is not None:
+                audit_row["relevance_score"] = float(injection["relevance_score"])
+            if dedup_value is not None:
+                audit_row["dedup"] = dedup_value
+            if injection.get("retrieval_fidelity") is not None:
+                audit_row["retrieval_fidelity"] = str(injection["retrieval_fidelity"])
+            if injection.get("source_path") is not None:
+                audit_row["source_path"] = str(injection["source_path"])
+            audit_rows.append(audit_row)
     conn.commit()
+    _append_injection_audit(repo_dir, audit_rows)
     return event_ids
 
 
@@ -1416,6 +1517,39 @@ def incremental_rebuild(repo_dir: Path) -> int:
     conn.close()
     _mark_inject_index_ready(repo_dir, True)
     return len(changed) + len(deleted)
+
+
+def index_staleness(repo_dir: Path) -> dict[str, object]:
+    path = index_path(repo_dir)
+    current = _compute_file_hashes(repo_dir)
+    if not path.exists():
+        return {
+            "current_files": len(current),
+            "drift": sorted(current)[:20],
+            "path": path.relative_to(repo_dir).as_posix(),
+            "present": False,
+            "stale": True,
+            "tracked_files": 0,
+        }
+    conn = _connect(path)
+    try:
+        stored = _load_file_hashes(conn) or {}
+    finally:
+        conn.close()
+    drift = sorted(
+        {
+            *[rel for rel in stored if rel not in current],
+            *[rel for rel in current if stored.get(rel) != current.get(rel)],
+        }
+    )
+    return {
+        "current_files": len(current),
+        "drift": drift[:20],
+        "path": path.relative_to(repo_dir).as_posix(),
+        "present": True,
+        "stale": stored != current,
+        "tracked_files": len(stored),
+    }
 
 
 def search_sessions(repo_dir: Path, query: str, limit: int = 20) -> list[dict]:

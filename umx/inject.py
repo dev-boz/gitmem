@@ -25,6 +25,7 @@ from umx.skills import (
 from umx.search_semantic import semantic_similarity_map
 from umx.scope import (
     config_path,
+    decode_scope_path,
     encode_scope_path,
     find_project_root,
     project_memory_dir,
@@ -51,6 +52,19 @@ _EXPLICIT_ROUTE_BOOST = 4.0
 _SKILL_HINT_BUDGET_RATIO = 0.2
 _SKILL_HINT_MAX_TOKENS = 160
 _USER_SCOPES = {Scope.USER, Scope.TOOL, Scope.MACHINE}
+_DEFAULT_TOOL_MAX_TOKENS = 4000
+_TOOL_LIMIT_ALIASES = {
+    "claude": "claude-code",
+    "claude-cli": "claude-code",
+    "codex-cli": "codex",
+    "gemini-cli": "gemini",
+    "github-copilot": "copilot",
+    "opencode-cli": "opencode",
+}
+_SUBAGENT_CONTAMINATION_NOTICE = (
+    "> contamination_risk: this handoff may include second-hand or externally derived memory. "
+    "Treat facts as unverified until corroborated against raw sessions or code."
+)
 _GATHERED_FACT_CACHE: dict[
     tuple[Path, Path],
     tuple[
@@ -74,6 +88,14 @@ class ResolvedSkillActivation:
     activation: ActivatedSkill
     resolution: SkillResolution
     retrievals: list[SkillRetrieval]
+
+
+@dataclass(slots=True)
+class InjectionTrace:
+    retrieval_fidelity: str
+    source_path: str
+    reason: str
+    relevance_score: float
 
 
 def _keywords(
@@ -192,6 +214,123 @@ def _load_scoped_facts(project_repo: Path, file_paths: list[str] | None = None) 
     return scoped_facts
 
 
+def _fact_terms(fact: Fact) -> set[str]:
+    terms = {match.group(0).lower() for match in WORD_RE.finditer(fact.text)}
+    terms.update(tag.lower() for tag in fact.tags if tag)
+    return terms
+
+
+def _fact_source_path(fact: Fact, project_repo: Path, user_repo: Path) -> str:
+    if fact.scope == Scope.FILE:
+        return f"files/{decode_scope_path(fact.topic)}.md"
+    if fact.scope == Scope.FOLDER:
+        return f"folders/{decode_scope_path(fact.topic)}.md"
+    if fact.file_path is not None:
+        resolved = fact.file_path.resolve()
+        for base in (project_repo.resolve(), user_repo.resolve()):
+            try:
+                return str(resolved.relative_to(base))
+            except ValueError:
+                continue
+        return fact.file_path.name
+    return f"facts/topics/{fact.topic}.md"
+
+
+def _render_retrieval_fidelity_comment(
+    fact: Fact,
+    trace: InjectionTrace | None,
+) -> str | None:
+    if trace is None:
+        return None
+    return (
+        f"<!-- retrieval_fidelity: {trace.retrieval_fidelity} "
+        f"source: {trace.source_path} strength: {fact.encoding_strength} -->"
+    )
+
+
+def _default_trace_for_fact(fact: Fact) -> InjectionTrace:
+    return InjectionTrace(
+        retrieval_fidelity="fallback",
+        source_path=(
+            f"files/{decode_scope_path(fact.topic)}.md"
+            if fact.scope == Scope.FILE
+            else (
+                f"folders/{decode_scope_path(fact.topic)}.md"
+                if fact.scope == Scope.FOLDER
+                else f"facts/topics/{fact.topic}.md"
+            )
+        ),
+        reason=f"scope:{fact.scope.value}",
+        relevance_score=0.0,
+    )
+
+
+def _build_injection_traces(
+    facts: list[Fact],
+    *,
+    keywords: set[str],
+    semantic_scores: dict[str, float],
+    scoped_fact_ids: set[str],
+    routed_retrievals: dict[str, list[str]],
+    refresh_ids: set[str],
+    tool: str | None,
+    restrict_to_ids: set[str] | None,
+    handoff_fact_ids: set[str] | None,
+    relevance_scores: dict[str, float],
+    project_repo: Path,
+    user_repo: Path,
+) -> dict[str, InjectionTrace]:
+    exact_ids = set(scoped_fact_ids)
+    exact_ids.update(routed_retrievals)
+    if restrict_to_ids:
+        exact_ids.update(restrict_to_ids)
+    if handoff_fact_ids:
+        exact_ids.update(handoff_fact_ids)
+    traces: dict[str, InjectionTrace] = {}
+    normalized_tool = tool.strip().casefold() if tool else None
+    for fact in facts:
+        matched_keywords = sorted(keywords & _fact_terms(fact))
+        semantic_score = semantic_scores.get(fact.fact_id, 0.0)
+        if fact.fact_id in exact_ids:
+            fidelity = "exact"
+        elif matched_keywords:
+            fidelity = "lexical"
+        elif semantic_score > 0:
+            fidelity = "semantic"
+        else:
+            fidelity = "fallback"
+        reason_parts: list[str] = []
+        seen_parts: set[str] = set()
+
+        def add_reason(part: str | None) -> None:
+            if part and part not in seen_parts:
+                seen_parts.add(part)
+                reason_parts.append(part)
+
+        add_reason(f"tool:{normalized_tool}" if normalized_tool else None)
+        if fact.fact_id in scoped_fact_ids and fact.scope in {Scope.FILE, Scope.FOLDER}:
+            scoped_path = decode_scope_path(fact.topic)
+            add_reason(f"path:{scoped_path}" if scoped_path else None)
+        for directive_value in routed_retrievals.get(fact.fact_id, [])[:2]:
+            add_reason(f"load:{directive_value}")
+        for token in matched_keywords[:3]:
+            add_reason(f"keyword:{token}")
+        if fact.fact_id in refresh_ids:
+            add_reason("refresh:attention")
+        if fidelity == "semantic":
+            add_reason("semantic:embedding")
+        if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
+            add_reason(f"task:{fact.task_status.value}")
+        add_reason(f"scope:{fact.scope.value}")
+        traces[fact.fact_id] = InjectionTrace(
+            retrieval_fidelity=fidelity,
+            source_path=_fact_source_path(fact, project_repo, user_repo),
+            reason=",".join(reason_parts),
+            relevance_score=float(relevance_scores.get(fact.fact_id, 0.0)),
+        )
+    return traces
+
+
 def _render_fact(fact: Fact, disclosure_level: str) -> str:
     prefix = "[fragile] " if fact.is_fragile else ""
     if disclosure_level == "l0":
@@ -211,8 +350,17 @@ def _render_fact(fact: Fact, disclosure_level: str) -> str:
     )
 
 
-def _fact_token_cost(fact: Fact, disclosure_level: str) -> int:
-    return estimate_tokens(_render_fact(fact, disclosure_level))
+def _fact_token_cost(
+    fact: Fact,
+    disclosure_level: str,
+    trace: InjectionTrace | None = None,
+) -> int:
+    effective_trace = trace or _default_trace_for_fact(fact)
+    lines = [_render_fact(fact, disclosure_level)]
+    comment = _render_retrieval_fidelity_comment(fact, effective_trace)
+    if comment:
+        lines.insert(0, comment)
+    return estimate_tokens("\n".join(lines))
 
 
 def _render_procedure(procedure: Procedure) -> list[str]:
@@ -258,6 +406,7 @@ def _disclosure_levels(
     token_budget: int,
     disclosure_slack_pct: float,
     expanded_ids: set[str] | None = None,
+    traces: dict[str, InjectionTrace] | None = None,
 ) -> dict[str, str]:
     expanded = expanded_ids or set()
     levels: dict[str, str] = {}
@@ -268,7 +417,7 @@ def _disclosure_levels(
         else:
             level = "l1"
         levels[fact.fact_id] = level
-        total_tokens += _fact_token_cost(fact, level)
+        total_tokens += _fact_token_cost(fact, level, (traces or {}).get(fact.fact_id))
     downgrade_candidates = [
         fact
         for fact in selected
@@ -281,7 +430,8 @@ def _disclosure_levels(
         total_tokens > token_budget or token_budget - total_tokens < target_slack
     ):
         fact = downgrade_candidates.pop(0)
-        total_tokens -= _fact_token_cost(fact, "l1") - _fact_token_cost(fact, "l0")
+        trace = (traces or {}).get(fact.fact_id)
+        total_tokens -= _fact_token_cost(fact, "l1", trace) - _fact_token_cost(fact, "l0", trace)
         levels[fact.fact_id] = "l0"
     return levels
 
@@ -293,8 +443,12 @@ def _enforce_rendered_budget(
     *,
     fact_budget: int,
     always_ids: set[str],
+    traces: dict[str, InjectionTrace] | None = None,
 ) -> tuple[list[Fact], dict[str, str]]:
-    total = sum(_fact_token_cost(fact, disclosure_levels.get(fact.fact_id, "l1")) for fact in selected)
+    total = sum(
+        _fact_token_cost(fact, disclosure_levels.get(fact.fact_id, "l1"), (traces or {}).get(fact.fact_id))
+        for fact in selected
+    )
     if total <= fact_budget:
         return selected, disclosure_levels
     mutable = sorted(
@@ -302,22 +456,27 @@ def _enforce_rendered_budget(
         key=lambda fact: packing_scores.get(fact.fact_id, 0.0),
     )
     for fact in mutable:
+        trace = (traces or {}).get(fact.fact_id)
         current = disclosure_levels.get(fact.fact_id, "l1")
         if current == "l2":
             disclosure_levels[fact.fact_id] = "l1"
-            total -= _fact_token_cost(fact, "l2") - _fact_token_cost(fact, "l1")
+            total -= _fact_token_cost(fact, "l2", trace) - _fact_token_cost(fact, "l1", trace)
         if total <= fact_budget:
             return selected, disclosure_levels
         current = disclosure_levels.get(fact.fact_id, "l1")
         if current == "l1":
             disclosure_levels[fact.fact_id] = "l0"
-            total -= _fact_token_cost(fact, "l1") - _fact_token_cost(fact, "l0")
+            total -= _fact_token_cost(fact, "l1", trace) - _fact_token_cost(fact, "l0", trace)
         if total <= fact_budget:
             return selected, disclosure_levels
     while total > fact_budget and mutable:
         victim = mutable.pop(0)
         selected = [fact for fact in selected if fact.fact_id != victim.fact_id]
-        total -= _fact_token_cost(victim, disclosure_levels.get(victim.fact_id, "l1"))
+        total -= _fact_token_cost(
+            victim,
+            disclosure_levels.get(victim.fact_id, "l1"),
+            (traces or {}).get(victim.fact_id),
+        )
         disclosure_levels.pop(victim.fact_id, None)
     return selected, disclosure_levels
 
@@ -503,6 +662,7 @@ def _selected_skill_fact_tokens(
     selected: list[Fact],
     disclosure_levels: dict[str, str],
     resolved_skills: list[ResolvedSkillActivation],
+    traces: dict[str, InjectionTrace] | None = None,
 ) -> tuple[dict[str, int], dict[str, set[str]]]:
     selected_by_id = {fact.fact_id: fact for fact in selected}
     tokens_by_skill: dict[str, int] = {}
@@ -519,7 +679,7 @@ def _selected_skill_fact_tokens(
             if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
                 tokens += estimate_tokens(f"- {fact.text}")
                 continue
-            tokens += _fact_token_cost(fact, disclosure_levels.get(fact_id, "l1"))
+            tokens += _fact_token_cost(fact, disclosure_levels.get(fact_id, "l1"), (traces or {}).get(fact_id))
         tokens_by_skill[skill_id] = tokens
     return tokens_by_skill, selected_fact_ids_by_skill
 
@@ -767,11 +927,16 @@ def build_injection_block(
         )
     resolved_skills = refiltered_skills
     route_boosts: dict[str, float] = {}
+    routed_retrievals: dict[str, list[str]] = {}
     for resolved in resolved_skills:
         for fact_id in resolved.resolution.routed_fact_ids:
             route_boosts[fact_id] = max(
                 route_boosts.get(fact_id, 0.0),
                 resolved.activation.route_boost,
+            )
+        for retrieval in resolved.retrievals:
+            routed_retrievals.setdefault(retrieval.fact_id, []).append(
+                retrieval.directive_value
             )
     semantic_scores: dict[str, float] = {}
     semantic_query = " ".join(
@@ -818,6 +983,20 @@ def build_injection_block(
         or fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}
         or (handoff_fact_ids and fact.fact_id in handoff_fact_ids)
     }
+    traces = _build_injection_traces(
+        facts,
+        keywords=keywords,
+        semantic_scores=semantic_scores,
+        scoped_fact_ids=scoped_fact_ids,
+        routed_retrievals=routed_retrievals,
+        refresh_ids=refresh_ids,
+        tool=tool,
+        restrict_to_ids=restrict_to_ids,
+        handoff_fact_ids=handoff_fact_ids,
+        relevance_scores=scored,
+        project_repo=project_repo,
+        user_repo=user_repo,
+    )
     reserved_tokens = estimate_tokens(convention_summary) if convention_summary else 0
     hot_summary_lines = (
         _render_hot_summary(project_repo, hot_summary_tokens or cfg.inject.subagent_hot_tokens)
@@ -875,6 +1054,7 @@ def build_injection_block(
         token_budget=remaining_budget,
         disclosure_slack_pct=cfg.inject.disclosure_slack_pct,
         expanded_ids=expanded_ids,
+        traces=traces,
     )
     selected, disclosure_levels = _enforce_rendered_budget(
         selected,
@@ -882,14 +1062,18 @@ def build_injection_block(
         budget_decision.packing_scores,
         fact_budget=remaining_budget,
         always_ids=always,
+        traces=traces,
     )
     selected_skill_fact_tokens, selected_fact_ids_by_skill = _selected_skill_fact_tokens(
         selected,
         disclosure_levels,
         resolved_skills,
+        traces=traces,
     )
 
     lines = ["# UMX Memory"]
+    if budget_decision.warning:
+        lines.extend(["", f"> Warning: {budget_decision.warning}"])
     pending_injections: dict[Path, list[dict[str, object]]] = {}
     if convention_summary:
         lines.extend(["", "## Conventions", convention_summary])
@@ -919,12 +1103,21 @@ def build_injection_block(
         lines.append("")
         lines.append("## Skill Hints")
         lines.extend(f"- {hint}" for hint in selected_skill_hints)
-    open_task_lines = []
-    for fact in selected:
-        if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
-            open_task_lines.append(f"- {fact.text}")
-    if open_task_lines:
-        lines.extend(["", "## Open Tasks", *open_task_lines])
+    open_task_facts = [
+        fact
+        for fact in selected
+        if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}
+    ]
+    if open_task_facts:
+        lines.extend(["", "## Open Tasks"])
+        for fact in open_task_facts:
+            comment = _render_retrieval_fidelity_comment(
+                fact,
+                traces.get(fact.fact_id),
+            )
+            if comment:
+                lines.append(comment)
+            lines.append(f"- {fact.text}")
     current_topic: str | None = None
     lines.append("")
     lines.append("## Facts")
@@ -943,7 +1136,27 @@ def build_injection_block(
                 "disclosure_level": disclosure_level,
                 "tool": tool,
                 "parent_session_id": parent_session_id,
-                "token_count": _fact_token_cost(fact, disclosure_level),
+                "token_count": _fact_token_cost(
+                    fact,
+                    disclosure_level,
+                    traces.get(fact.fact_id),
+                ),
+                "reason": traces.get(fact.fact_id).reason if traces.get(fact.fact_id) else None,
+                "relevance_score": (
+                    traces.get(fact.fact_id).relevance_score
+                    if traces.get(fact.fact_id)
+                    else None
+                ),
+                "retrieval_fidelity": (
+                    traces.get(fact.fact_id).retrieval_fidelity
+                    if traces.get(fact.fact_id)
+                    else None
+                ),
+                "source_path": (
+                    traces.get(fact.fact_id).source_path
+                    if traces.get(fact.fact_id)
+                    else None
+                ),
             }
         )
         if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}:
@@ -951,6 +1164,12 @@ def build_injection_block(
         if fact.topic != current_topic:
             current_topic = fact.topic
             lines.append(f"### {current_topic}")
+        comment = _render_retrieval_fidelity_comment(
+            fact,
+            traces.get(fact.fact_id),
+        )
+        if comment:
+            lines.append(comment)
         lines.append(_render_fact(fact, disclosure_level))
     for repo_dir, events in pending_injections.items():
         record_injections(repo_dir, events)
@@ -1015,7 +1234,7 @@ def build_subagent_handoff(
             for fact in load_all_facts(repo_dir, include_superseded=False)
             if fact.task_status in {TaskStatus.OPEN, TaskStatus.BLOCKED}
         )
-    return build_injection_block(
+    block = build_injection_block(
         cwd,
         tool=tool,
         prompt=objective,
@@ -1030,6 +1249,20 @@ def build_subagent_handoff(
         allow_procedures=False,
         context_window_tokens=None,
     )
+    lines = block.rstrip("\n").splitlines()
+    if lines and lines[0] == "# UMX Memory":
+        return "\n".join([lines[0], "", _SUBAGENT_CONTAMINATION_NOTICE, *lines[1:]]) + "\n"
+    return f"{_SUBAGENT_CONTAMINATION_NOTICE}\n\n{block}"
+
+
+def inferred_max_tokens_for_tool(tool: str | None, *, config=None) -> int:
+    cfg = config or load_config(config_path())
+    if not tool:
+        return _DEFAULT_TOOL_MAX_TOKENS
+    normalized = tool.strip().casefold().replace("_", "-")
+    canonical = _TOOL_LIMIT_ALIASES.get(normalized, normalized)
+    configured = cfg.inject.tool_max_tokens
+    return int(configured.get(canonical, configured.get(normalized, _DEFAULT_TOOL_MAX_TOKENS)))
 
 
 def emit_gap_signal(
@@ -1073,7 +1306,7 @@ def inject_for_tool(
     tool: str | None = None,
     prompt: str | None = None,
     file_paths: list[str] | None = None,
-    max_tokens: int = 4000,
+    max_tokens: int | None = None,
     session_id: str | None = None,
     injection_point: str = "prompt",
     parent_session_id: str | None = None,
@@ -1081,12 +1314,13 @@ def inject_for_tool(
     expanded_ids: set[str] | None = None,
     context_window_tokens: int | None = None,
 ) -> str:
+    cfg = load_config(config_path())
     return build_injection_block(
         cwd,
         tool=tool,
         prompt=prompt,
         file_paths=file_paths,
-        max_tokens=max_tokens,
+        max_tokens=max_tokens if max_tokens is not None else inferred_max_tokens_for_tool(tool, config=cfg),
         session_id=session_id,
         injection_point=injection_point,
         parent_session_id=parent_session_id,

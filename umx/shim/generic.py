@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from umx.inject import build_injection_block
+from umx.inject import inject_for_tool
 
 
 def generate_prompt(
-    cwd: Path, tool: str | None = None, max_tokens: int = 4000
+    cwd: Path, tool: str | None = None, max_tokens: int | None = None
 ) -> str:
     """Generate memory injection for any tool.
 
@@ -15,14 +15,14 @@ def generate_prompt(
     - Written to file: `umx shim generic --output context.md`
     - Read programmatically
     """
-    return build_injection_block(cwd, tool=tool, max_tokens=max_tokens)
+    return inject_for_tool(cwd, tool=tool, max_tokens=max_tokens)
 
 
 def write_context_file(
     cwd: Path,
     output_path: Path,
     tool: str | None = None,
-    max_tokens: int = 4000,
+    max_tokens: int | None = None,
 ) -> Path:
     """Write memory context to a file."""
     content = generate_prompt(cwd, tool=tool, max_tokens=max_tokens)
@@ -31,7 +31,7 @@ def write_context_file(
 
 
 def run(
-    cwd: Path | None = None, tool: str | None = None, max_tokens: int = 4000
+    cwd: Path | None = None, tool: str | None = None, max_tokens: int | None = None
 ) -> str:
     """Main entry point for generic shim."""
     cwd = cwd or Path.cwd()

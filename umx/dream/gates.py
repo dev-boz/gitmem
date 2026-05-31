@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from umx.models import parse_datetime
+from umx.scope import get_umx_home
 
 
 def _state_path(repo_dir: Path) -> Path:
@@ -41,25 +42,47 @@ def mark_dream_complete(repo_dir: Path, now: datetime) -> None:
     _state_path(repo_dir).write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
 
 
-@dataclass(slots=True)
-class DreamLock:
-    repo_dir: Path
-    stale_minutes: int = 30
+def _lock_payload() -> dict[str, object]:
+    stamp = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
+    return {
+        "pid": os.getpid(),
+        "hostname": os.uname().nodename,
+        "started": stamp,
+        "heartbeat": stamp,
+    }
+
+
+def _read_lock_payload(path: Path) -> dict[str, object]:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+class _JsonFileLock:
+    stale_minutes: int
 
     @property
     def path(self) -> Path:
-        return self.repo_dir / "meta" / "dream.lock"
+        raise NotImplementedError
 
     def acquire(self) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists() and not self.is_stale():
             return False
-        payload = {
-            "pid": os.getpid(),
-            "hostname": os.uname().nodename,
-            "started": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-            "heartbeat": datetime.now(tz=UTC).isoformat().replace("+00:00", "Z"),
-        }
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+        self.path.write_text(json.dumps(_lock_payload(), indent=2, sort_keys=True) + "\n")
         return True
 
     def release(self) -> None:
@@ -68,18 +91,68 @@ class DreamLock:
     def heartbeat(self) -> None:
         if not self.path.exists():
             return
-        payload = json.loads(self.path.read_text())
+        payload = _read_lock_payload(self.path)
         payload["heartbeat"] = datetime.now(tz=UTC).isoformat().replace("+00:00", "Z")
         self.path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     def is_stale(self) -> bool:
         if not self.path.exists():
             return False
-        payload = json.loads(self.path.read_text())
-        heartbeat = parse_datetime(payload.get("heartbeat"))
+        payload = _read_lock_payload(self.path)
+        heartbeat = parse_datetime(str(payload.get("heartbeat") or ""))
+        pid = payload.get("pid")
+        if isinstance(pid, bool):
+            pid = None
+        if isinstance(pid, str) and pid.isdigit():
+            pid = int(pid)
+        if isinstance(pid, int) and pid > 0 and not _pid_is_running(pid):
+            return True
         if heartbeat is None:
             return True
         return heartbeat <= datetime.now(tz=UTC) - timedelta(minutes=self.stale_minutes)
+
+
+@dataclass(slots=True)
+class DreamLock(_JsonFileLock):
+    repo_dir: Path
+    stale_minutes: int = 30
+
+    @property
+    def path(self) -> Path:
+        return self.repo_dir / "meta" / "dream.lock"
+
+ 
+
+@dataclass(slots=True)
+class UserDreamLock(_JsonFileLock):
+    umx_home: Path = field(default_factory=get_umx_home)
+    stale_minutes: int = 30
+
+    @property
+    def path(self) -> Path:
+        return self.umx_home / "state" / "dream.lock"
+
+
+@dataclass(slots=True)
+class CompositeDreamLock:
+    primary: _JsonFileLock
+    secondary: _JsonFileLock
+
+    def acquire(self) -> bool:
+        if not self.primary.acquire():
+            return False
+        if self.secondary.acquire():
+            return True
+        self.primary.release()
+        return False
+
+    def release(self) -> None:
+        self.secondary.release()
+        self.primary.release()
+
+    def heartbeat(self) -> None:
+        self.primary.heartbeat()
+        self.secondary.heartbeat()
 
 
 def should_dream(

@@ -7,7 +7,7 @@ from pathlib import Path
 from tests.secret_literals import ANTHROPIC_KEY_FAKE
 from umx.config import default_config
 from umx.dream.extract import mark_sessions_gathered, session_records_to_facts
-from umx.dream.gates import read_dream_state
+from umx.dream.gates import UserDreamLock, read_dream_state
 from umx.dream.pipeline import DreamPipeline
 from umx.dream.processing import read_processing_log, start_processing_run
 from umx.inject import emit_gap_signal
@@ -15,6 +15,7 @@ from umx.memory import add_fact, find_fact_by_id, load_all_facts
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.search import search_sessions
 from umx.sessions import archive_path, archive_state_path, session_path, write_session
+from umx.scope import init_project_memory, project_memory_dir
 from umx.tombstones import forget_fact
 
 
@@ -115,6 +116,49 @@ def test_dream_run_skips_when_processing_is_active(project_dir: Path, project_re
 
     assert result.status == "skipped"
     assert result.message == "dream processing held"
+
+
+def test_dream_run_skips_when_user_level_lock_is_held(
+    umx_home: Path,
+    tmp_path: Path,
+) -> None:
+    other_project = tmp_path / "other-project"
+    other_project.mkdir()
+    (other_project / ".git").mkdir()
+    init_project_memory(other_project)
+    project_memory_dir(other_project)
+
+    lock = UserDreamLock(umx_home=umx_home)
+    assert lock.acquire()
+    try:
+        result = DreamPipeline(other_project).run(force=True)
+    finally:
+        lock.release()
+
+    assert result.status == "skipped"
+    assert result.message == "dream lock held"
+
+
+def test_user_dream_lock_reclaims_stale_lock(umx_home: Path) -> None:
+    lock = UserDreamLock(umx_home=umx_home)
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    lock.path.write_text(
+        json.dumps(
+            {
+                "pid": 999999,
+                "hostname": "stale-host",
+                "started": "2000-01-01T00:00:00Z",
+                "heartbeat": "2000-01-01T00:00:00Z",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    assert lock.acquire()
+    payload = json.loads(lock.path.read_text())
+    assert payload["pid"] != 999999
+    lock.release()
 
 
 def test_dream_run_archives_due_sessions_and_keeps_them_searchable(

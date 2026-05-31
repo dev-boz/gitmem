@@ -27,6 +27,7 @@ This page is a concise operator reference for the shipped CLI. For a command-by-
 | `gitmem collect` | Store manual or wrapper-exported sessions | `--cwd`, `--tool`, `--file`, `--format`, `--role`, `--session-id`, `--meta`, `--dry-run` |
 | `gitmem import --adapter ...` | Import existing native-memory files | `--cwd`, `--adapter`, `--dry-run` |
 | `gitmem import --full ...` | Restore a full project backup | `--cwd`, `--full`, `--force`, `--dry-run` |
+| `gitmem import --memories ...` | Ingest a `/memories` projection back into canonical facts | `--cwd`, `--memories`, `--dry-run` |
 
 ## Retrieval and review
 
@@ -152,7 +153,7 @@ If an operator bypasses the L2 approval gate with `gitmem dream --tier l2 --forc
 | `gitmem migrate-scope` | Move a scope path inside the memory repo | `--cwd`, `--from`, `--to` |
 | `gitmem rebuild-index` | Rebuild search indexes | `--cwd`, `--embeddings` |
 | `gitmem archive-sessions` | Compact older sessions into archives | `--cwd` |
-| `gitmem export` | Create a full project backup bundle | `--cwd`, `--out` |
+| `gitmem export` | Create a full backup bundle or a `/memories` projection | `--cwd`, `--format`, `--out`/`--output` |
 
 ## Integration surfaces
 

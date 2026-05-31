@@ -750,6 +750,8 @@ def test_dream_l2_review_approves_but_blocks_merge_without_human_approval(
     assert merged == []
     facts = load_all_facts(project_repo, include_superseded=False)
     approved = next(fact for fact in facts if fact.fact_id == "01TESTL2APPROVE000000001")
+    assert approved.encoding_strength == 4
+    assert approved.verification == Verification.SOTA_REVIEWED
     assert approved.provenance.approved_by == "native:l2-rules"
     assert approved.provenance.approval_tier == "l2-auto"
     assert approved.provenance.pr == "7"
@@ -831,6 +833,70 @@ def test_dream_l2_review_force_override_merges_with_audit_reason(
     assert payload["merge_override_reason"] == "manual hotfix release needed before approval label lands"
     assert merged == [("memory-org", project_repo.name, 36, True)]
     assert any("<!-- umx:approval-override -->" in body for _, _, _, body in comments)
+
+
+def test_dream_l2_review_caps_untrusted_fact_strength_at_configured_ceiling(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from umx.git_ops import git_add_and_commit, git_push
+
+    remote = tmp_path / "review-untrusted.git"
+    _connect_origin(project_repo, remote)
+    git_add_and_commit(project_repo, message="seed review baseline")
+    git_push(project_repo)
+    subprocess.run(
+        ["git", "-C", str(project_repo), "checkout", "-b", "dream/l1/review-untrusted"],
+        capture_output=True,
+        check=True,
+    )
+    add_fact(
+        project_repo,
+        _make_fact(
+            fact_id="01TESTL2UNTRUSTED0000001",
+            text="release notes say deploys require a staging dry run",
+            encoding_strength=2,
+            source_type=SourceType.EXTERNAL_DOC,
+            tags=["untrusted_source"],
+        ),
+        auto_commit=False,
+    )
+    git_add_and_commit(project_repo, message="review untrusted candidate")
+
+    merged: list[tuple[str, str, int]] = []
+    monkeypatch.setattr(
+        "umx.github_ops.merge_pr",
+        lambda org, repo, pr, method="squash", **kwargs: merged.append((org, repo, pr)) or True,
+    )
+    monkeypatch.setattr("umx.github_ops.comment_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.github_ops.close_pr", lambda *args, **kwargs: False)
+    monkeypatch.setattr("umx.dream.pipeline.git_fetch", lambda *args, **kwargs: True)
+    monkeypatch.setattr("umx.dream.pipeline.git_push", lambda *args, **kwargs: True)
+
+    cfg = default_config()
+    cfg.dream.mode = "remote"
+    cfg.org = "memory-org"
+    cfg.dream.untrusted_strength_ceiling = 3
+    save_config(config_path(), cfg)
+    result = CliRunner().invoke(
+        main,
+        ["dream", "--cwd", str(project_dir), "--mode", "remote", "--tier", "l2", "--pr", "48"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert payload["action"] == "approve"
+    assert merged == []
+    facts = load_all_facts(project_repo, include_superseded=False)
+    approved = next(fact for fact in facts if fact.fact_id == "01TESTL2UNTRUSTED0000001")
+    assert approved.encoding_strength == 3
+    assert approved.verification == Verification.SOTA_REVIEWED
+    assert approved.provenance.approved_by == "native:l2-rules"
+    assert approved.provenance.approval_tier == "l2-auto"
+    assert approved.provenance.pr == "48"
 
 
 def test_dream_l2_review_blocks_merge_when_approved_label_disappears_before_merge(
@@ -1182,6 +1248,14 @@ def test_dream_l2_review_provider_approval_persists_comment_and_blocks_merge(
     assert processing_rows[-1]["review_usage"] == {"input_tokens": 321, "output_tokens": 87, "total_tokens": 408}
     assert processing_rows[-1]["review_prompt_id"] == "anthropic-l2-review"
     assert processing_rows[-1]["review_prompt_version"] == "v1"
+    approved = next(
+        fact
+        for fact in load_all_facts(project_repo, include_superseded=False)
+        if fact.fact_id == reviewed_fact_id
+    )
+    assert approved.encoding_strength == 4
+    assert approved.verification == Verification.SOTA_REVIEWED
+    assert approved.provenance.approved_by == "provider:anthropic/anthropic"
 
 
 def test_dream_l2_review_provider_detached_head_does_not_persist_comment(
@@ -1591,6 +1665,8 @@ def test_dream_l2_review_approves_only_changed_fact_in_existing_topic_file(
     assert unchanged.provenance.approved_by is None
     assert unchanged.provenance.approval_tier is None
     assert unchanged.provenance.pr is None
+    assert changed.encoding_strength == 4
+    assert changed.verification == Verification.SOTA_REVIEWED
     assert changed.provenance.approved_by == "native:l2-rules"
     assert changed.provenance.approval_tier == "l2-auto"
     assert changed.provenance.pr == "19"
@@ -1669,6 +1745,8 @@ def test_dream_l2_review_approve_fails_from_detached_head(
     assert head_after == head_before
     facts = load_all_facts(project_repo, include_superseded=False)
     approved = next(fact for fact in facts if fact.fact_id == "01TESTL2DETACHED000001")
+    assert approved.encoding_strength == 3
+    assert approved.verification == Verification.SELF_REPORTED
     assert approved.provenance.approved_by is None
     assert approved.provenance.approval_tier is None
 

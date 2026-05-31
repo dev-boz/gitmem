@@ -12,8 +12,10 @@ from umx.config import UMXConfig, default_config
 
 BUILTIN_PATTERNS: list[tuple[str, str]] = [
     ("aws-key", r"AKIA[0-9A-Z]{16}"),
+    ("gcp-api-key", r"\bAIza[0-9A-Za-z\-_]{35}\b"),
     ("openai-key", r"sk-[A-Za-z0-9]{20,}"),
     ("anthropic-key", r"sk-ant-[A-Za-z0-9_-]{20,}"),
+    ("stripe-key", r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
     ("bearer-token", r"Bearer\s+[A-Za-z0-9._-]{16,}"),
     ("jwt", r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9._-]+\.[A-Za-z0-9._-]+\b"),
     (

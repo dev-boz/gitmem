@@ -6,11 +6,21 @@ import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
-from umx.backup import BACKUP_MANIFEST_NAME, BACKUP_SNAPSHOT_DIRNAME, export_full, import_full
+from umx.backup import (
+    BACKUP_MANIFEST_NAME,
+    BACKUP_SNAPSHOT_DIRNAME,
+    MEMORIES_MANIFEST_NAME,
+    export_full,
+    export_memories,
+    import_full,
+    import_memories,
+    inspect_memories_dir,
+)
 from umx.cli import main
-from umx.memory import add_fact, topic_path
+from umx.memory import add_fact, load_all_facts, topic_path
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.scope import project_memory_dir
 from umx.sessions import archive_path, session_index_path, session_path, write_session
@@ -22,6 +32,10 @@ def _export_manifest_path(backup_dir: Path) -> Path:
 
 def _backup_snapshot_root(backup_dir: Path) -> Path:
     return backup_dir / BACKUP_SNAPSHOT_DIRNAME
+
+
+def _memories_manifest_path(memories_dir: Path) -> Path:
+    return memories_dir / MEMORIES_MANIFEST_NAME
 
 
 def _make_fact(
@@ -236,6 +250,164 @@ def test_cli_import_full_dry_run_and_force_restore(
     assert restored_fact_file.read_bytes() == fact_file.read_bytes()
 
 
+def test_export_memories_writes_projection_and_skips_private_and_superseded(
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    add_fact(
+        project_repo,
+        _make_fact(
+            "01TESTFACT0000000000001003",
+            "private deployment credential rotation lives elsewhere",
+        ).clone(
+            scope=Scope.PROJECT_PRIVATE,
+            topic="vault",
+            encoding_strength=5,
+            verification=Verification.HUMAN_CONFIRMED,
+            source_type=SourceType.USER_PROMPT,
+            source_tool="human",
+            source_session="manual-edit",
+        ),
+        auto_commit=False,
+    )
+
+    memories_dir = tmp_path / "memories"
+    exported = export_memories(project_repo, memories_dir)
+
+    assert exported.files_copied == ["backup--01TESTFACT0000000000001002.md"]
+    assert (memories_dir / exported.files_copied[0]).exists()
+    assert "deploys now run after staging verification every weekday" in (
+        memories_dir / exported.files_copied[0]
+    ).read_text()
+    manifest = json.loads(_memories_manifest_path(memories_dir).read_text())
+    assert manifest["format_version"] == 1
+    assert manifest["entries"][0]["fact_id"] == "01TESTFACT0000000000001002"
+
+
+def test_export_memories_refuses_to_overwrite_unimported_changes(
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    memories_dir = tmp_path / "memories-dirty"
+    exported = export_memories(project_repo, memories_dir)
+    exported_path = memories_dir / exported.files_copied[0]
+    comment, _, _ = exported_path.read_text().partition("\n")
+    exported_path.write_text(comment + "\n" + "deploys now run after smoke tests only\n")
+
+    with pytest.raises(RuntimeError, match="unimported changes"):
+        export_memories(project_repo, memories_dir)
+
+
+def test_cli_export_memories_returns_json(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    memories_dir = tmp_path / "cli-memories"
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["export", "--cwd", str(project_dir), "--format", "memories", "--output", str(memories_dir)],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["out_dir"] == str(memories_dir.resolve())
+    assert payload["files_copied"] == ["backup--01TESTFACT0000000000001002.md"]
+
+
+def test_import_memories_round_trip_updates_projection_and_repo(
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    memories_dir = tmp_path / "round-trip-memories"
+    exported = export_memories(project_repo, memories_dir)
+    original_relative = exported.files_copied[0]
+    original_path = memories_dir / original_relative
+    comment, _, _ = original_path.read_text().partition("\n")
+    original_path.write_text(
+        comment + "\n" + "deploys now run after staging verification every business day\n"
+    )
+    new_projection_file = memories_dir / "deploy-window.md"
+    new_projection_file.write_text("deploys pause during incidents\n")
+
+    inspection = inspect_memories_dir(memories_dir, project_repo)
+    assert inspection.files_found == 2
+    assert inspection.changes_found == 2
+
+    imported = import_memories(memories_dir, project_repo)
+    assert set(imported.changed_files) == {original_relative, "deploy-window.md"}
+
+    facts = load_all_facts(project_repo, include_superseded=True, use_cache=False)
+    original = next(fact for fact in facts if fact.fact_id == "01TESTFACT0000000000001002")
+    assert original.superseded_by is not None
+    successor = next(fact for fact in facts if fact.fact_id == original.superseded_by)
+    assert successor.text == "deploys now run after staging verification every business day"
+    assert successor.encoding_strength == 5
+    assert successor.verification == Verification.HUMAN_CONFIRMED
+    assert successor.source_tool == "memories-projection"
+    assert successor.source_session == "manual-edit"
+    created = next(fact for fact in facts if fact.text == "deploys pause during incidents")
+    assert created.topic == "deploy-window"
+    assert created.encoding_strength == 5
+    assert created.verification == Verification.HUMAN_CONFIRMED
+    assert created.source_tool == "memories-projection"
+    assert not original_path.exists()
+    assert (memories_dir / f"backup--{successor.fact_id}.md").exists()
+    assert not new_projection_file.exists()
+    assert (memories_dir / f"deploy-window--{created.fact_id}.md").exists()
+
+
+def test_import_memories_rejects_superseded_fact_references(
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    memories_dir = tmp_path / "stale-superseded-reference"
+    memories_dir.mkdir()
+    (memories_dir / "backup-stale.md").write_text(
+        "<!-- umx-memory: "
+        '{"fact_id": "01TESTFACT0000000000001001", "topic": "backup"}'
+        " -->\n"
+        "deploys now require a canary stage\n"
+    )
+
+    with pytest.raises(RuntimeError, match="references superseded fact 01TESTFACT0000000000001001"):
+        import_memories(memories_dir, project_repo)
+
+
+def test_cli_import_memories_dry_run_reports_changes(
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    _seed_backup_source(project_repo)
+    memories_dir = tmp_path / "cli-import-memories"
+    exported = export_memories(project_repo, memories_dir)
+    exported_path = memories_dir / exported.files_copied[0]
+    comment, _, _ = exported_path.read_text().partition("\n")
+    exported_path.write_text(comment + "\n" + "deploys now run after staging and perf checks\n")
+    (memories_dir / "incident-window.md").write_text("incident mitigations start with traffic drain\n")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        ["import", "--cwd", str(project_dir), "--memories", str(memories_dir), "--dry-run"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["dry_run"] is True
+    assert payload["files_found"] == 2
+    assert payload["changes_found"] == 2
+    assert payload["source_dir"] == str(memories_dir.resolve())
+
+
 def test_import_full_preflights_manifest_files_before_force_clear(
     project_repo: Path,
     umx_home: Path,
@@ -366,4 +538,4 @@ def test_cli_import_requires_exactly_one_source(project_dir: Path) -> None:
     result = runner.invoke(main, ["import", "--cwd", str(project_dir)])
 
     assert result.exit_code != 0
-    assert "Provide exactly one of --adapter or --full." in result.output
+    assert "Provide exactly one of --adapter, --full, or --memories." in result.output

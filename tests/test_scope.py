@@ -145,6 +145,65 @@ def test_generate_lint_findings_reports_directory_anchor_as_missing(project_dir,
     assert {"kind": "stale-reference", "message": f"{fact.fact_id} points to missing path docs"} in findings
 
 
+def test_generate_lint_findings_reports_missing_procedure_triggers(project_dir, project_repo) -> None:
+    procedures_dir = project_repo / "procedures"
+    procedures_dir.mkdir(parents=True, exist_ok=True)
+    (procedures_dir / "deploy.md").write_text(
+        "# Deploy\n\n## Steps\n\n- Ship it\n",
+        encoding="utf-8",
+    )
+
+    findings = generate_lint_findings(
+        [],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {
+        "kind": "procedure-trigger",
+        "message": "procedures/deploy.md is missing required ## Triggers section",
+    } in findings
+
+
+def test_generate_lint_findings_reports_skill_portability_and_unsupported_directives(project_dir, project_repo) -> None:
+    skills_dir = project_repo / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    (skills_dir / "deploy.md").write_text(
+        "\n".join(
+            [
+                "# Deploy Skill",
+                "",
+                "name: deploy",
+                "version: 1",
+                "",
+                "## Retrieval",
+                "",
+                "- query: deployment readiness",
+                "- load: ../secret.md",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    findings = generate_lint_findings(
+        [],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {
+        "kind": "skill-directive",
+        "message": "skills/deploy.md uses unsupported retrieval directive query: deployment readiness",
+    } in findings
+    assert {
+        "kind": "skill-portability",
+        "message": "skills/deploy.md uses non-portable load target ../secret.md",
+    } in findings
+
+
 def test_run_doctor_surfaces_orphaned_scopes(project_dir, project_repo) -> None:
     (project_repo / "files" / "src---missing.py.md").write_text("# missing\n")
 

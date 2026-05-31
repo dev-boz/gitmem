@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from umx.routing import RouteCard, promote_route_card, validate_route_card_l2
+from umx.routing import RouteCard, iter_route_card_files, promote_route_card, validate_route_card_l2
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +149,25 @@ def test_promote_route_card_writes_valid_card(tmp_path):
     assert (tmp_path / "routing").is_dir()
     critical_issues = [i for i in issues if i.startswith("CRITICAL")]
     assert len(critical_issues) == 0
+
+
+def test_promote_route_card_updates_routing_index(tmp_path):
+    card = RouteCard(
+        route_card_id="rc-index",
+        title="Index Card",
+        node_id="planner",
+        task_class="implementation",
+        capability_band="standard",
+        evidence="abcdefghij",
+        summary="A sufficiently long summary for this route card index test.",
+        confidence=0.8,
+    )
+
+    path, _ = promote_route_card(card, tmp_path)
+
+    index_path = tmp_path / "routing" / "ROUTING.md"
+    assert index_path.exists()
+    assert iter_route_card_files(tmp_path) == [path]
+    index_text = index_path.read_text()
+    assert "[rc-index](./rc-index.md)" in index_text
+    assert "| implementation | planner |" in index_text

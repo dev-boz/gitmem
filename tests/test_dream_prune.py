@@ -1,26 +1,14 @@
-"""Tests for the Dream pipeline Prune phase (umx.dream.prune)."""
+"""Tests for the Dream prune compatibility layer."""
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
-
-from umx.dream.prune import (
-    PruneDecision,
-    run_dream_prune,
-    run_prune,
-    should_prune,
-    write_prune_report,
-)
-from umx.models import (
-    ConsolidationStatus,
-    Fact,
-    MemoryType,
-    Scope,
-    SourceType,
-    Verification,
-)
+from umx.config import default_config
+from umx.dream.prune import PruneDecision, run_dream_prune, run_prune, should_prune, write_prune_report
+from umx.memory import read_memory_md
+from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 
 
 def make_fact(
@@ -30,6 +18,8 @@ def make_fact(
     encoding_strength: int = 4,
     superseded_by: str | None = None,
     source_type: SourceType = SourceType.GROUND_TRUTH_CODE,
+    created: datetime | None = None,
+    expires_at: datetime | None = None,
 ) -> Fact:
     return Fact(
         fact_id=fact_id,
@@ -44,50 +34,53 @@ def make_fact(
         source_session="2026-01-01-test",
         consolidation_status=ConsolidationStatus.STABLE,
         superseded_by=superseded_by,
+        created=created or datetime(2026, 1, 1, tzinfo=UTC),
+        expires_at=expires_at,
     )
 
 
-def test_should_prune_fact_with_low_strength() -> None:
-    fact = make_fact("FACT_LOW", encoding_strength=1, superseded_by=None)
-    decision = should_prune(fact)
-    assert decision.fact_id == "FACT_LOW"
+def test_should_prune_expired_active_fact() -> None:
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    fact = make_fact("FACT_EXPIRED", expires_at=now - timedelta(days=1))
+
+    decision = should_prune(fact, now=now)
+
+    assert decision.fact_id == "FACT_EXPIRED"
     assert decision.action == "prune"
-    assert "encoding_strength" in decision.reason
+    assert "expired" in decision.reason
 
 
-def test_should_keep_high_strength_fact() -> None:
-    fact = make_fact("FACT_HIGH", encoding_strength=4, superseded_by=None)
-    decision = should_prune(fact)
-    assert decision.fact_id == "FACT_HIGH"
-    assert decision.action == "keep"
+def test_should_keep_superseded_fact_for_index_compatibility() -> None:
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    fact = make_fact(
+        "FACT_OLD",
+        superseded_by="FACT_NEW",
+        expires_at=now - timedelta(days=1),
+    )
 
+    decision = should_prune(fact, now=now)
 
-def test_should_prune_superseded_fact() -> None:
-    fact = make_fact("FACT_OLD", encoding_strength=4, superseded_by="other-id")
-    decision = should_prune(fact)
     assert decision.fact_id == "FACT_OLD"
-    assert decision.action == "prune"
-    assert "superseded" in decision.reason
+    assert decision.action == "keep"
+    assert "superseded facts are retained" in decision.reason
 
 
 def test_run_prune_dry_run_keeps_all_facts() -> None:
-    prune_worthy = make_fact("FACT_PRUNE", encoding_strength=1)
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    prune_worthy = make_fact("FACT_PRUNE", expires_at=now - timedelta(days=1))
     keeper = make_fact("FACT_KEEP", encoding_strength=5)
-    facts = [prune_worthy, keeper]
 
-    decisions, surviving = run_prune(facts, dry_run=True)
+    decisions, surviving = run_prune([prune_worthy, keeper], dry_run=True, now=now)
 
     assert len(decisions) == 2
-    assert len(surviving) == 2  # dry_run keeps all facts
-    prune_actions = [d.action for d in decisions]
-    assert "prune" in prune_actions
-    assert "keep" in prune_actions
+    assert len(surviving) == 2
+    assert {decision.action for decision in decisions} == {"keep", "prune"}
 
 
 def test_write_prune_report_creates_file(tmp_path: Path) -> None:
     decisions = [
-        PruneDecision(fact_id="F1", action="keep", reason="passes prune threshold"),
-        PruneDecision(fact_id="F2", action="prune", reason="encoding_strength below minimum (S:2)"),
+        PruneDecision(fact_id="F1", action="keep", reason="retained by Dream memory policy"),
+        PruneDecision(fact_id="F2", action="prune", reason="expired retention window reached"),
     ]
     report_path = write_prune_report(tmp_path, decisions)
 
@@ -100,16 +93,22 @@ def test_write_prune_report_creates_file(tmp_path: Path) -> None:
     assert len(data["decisions"]) == 2
 
 
-def test_run_dream_prune_returns_counts(tmp_path: Path) -> None:
+def test_run_dream_prune_rebuilds_memory_index_with_active_facts_only(tmp_path: Path) -> None:
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    (tmp_path / "meta").mkdir(parents=True, exist_ok=True)
     facts = [
-        make_fact("FACT_A", encoding_strength=1),   # will be pruned
-        make_fact("FACT_B", encoding_strength=4),   # will be kept
-        make_fact("FACT_C", encoding_strength=5),   # will be kept
+        make_fact("FACT_A", "expired active fact", expires_at=now - timedelta(days=1)),
+        make_fact("FACT_B", "active fact that stays"),
+        make_fact("FACT_C", "superseded fact is retained", superseded_by="FACT_B"),
     ]
-    result = run_dream_prune(tmp_path, facts)
 
-    assert "pruned" in result
-    assert "kept" in result
+    result = run_dream_prune(tmp_path, facts, now=now, config=default_config())
+
     assert result["pruned"] == 1
     assert result["kept"] == 2
+    assert result["active_indexed"] == 1
     assert Path(result["report_path"]).exists()
+    memory_md = read_memory_md(tmp_path)
+    assert "active fact that stays" in memory_md
+    assert "expired active fact" not in memory_md
+    assert "superseded fact is retained" not in memory_md

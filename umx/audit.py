@@ -22,7 +22,21 @@ from umx.memory import add_fact
 from umx.memory import load_all_facts
 from umx.models import Fact
 from umx.sessions import iter_session_payloads
-from umx.tombstones import forget_fact
+from umx.tombstones import forget_fact, is_suppressed, load_tombstones
+
+
+def filter_suppressed_facts(
+    repo_dir: Path,
+    facts: list[Fact],
+    *,
+    phase: str,
+) -> list[Fact]:
+    tombstones = load_tombstones(repo_dir)
+    return [
+        fact
+        for fact in facts
+        if not is_suppressed(fact, tombstones, phase=phase)
+    ]
 
 
 def rederive_from_sessions(
@@ -35,13 +49,14 @@ def rederive_from_sessions(
     If session_ids is None, re-derive from all sessions.
     Returns newly extracted facts (does not commit — caller decides).
     """
-    return session_records_to_facts(
+    facts = session_records_to_facts(
         repo_dir,
         config,
         include_archived=True,
         session_ids=set(session_ids) if session_ids else None,
         skip_gathered=False,
     )
+    return filter_suppressed_facts(repo_dir, facts, phase="rederive")
 
 
 def compare_derived(existing: list[Fact], rederived: list[Fact]) -> dict:
@@ -164,7 +179,11 @@ def audit_report(repo_dir: Path, config: UMXConfig) -> dict:
 
     Returns report dict with statistics and divergences.
     """
-    existing = load_all_facts(repo_dir, include_superseded=False)
+    existing = filter_suppressed_facts(
+        repo_dir,
+        load_all_facts(repo_dir, include_superseded=False),
+        phase="audit",
+    )
     sessions = list(iter_session_payloads(repo_dir, include_archived=True))
 
     # Source type breakdown

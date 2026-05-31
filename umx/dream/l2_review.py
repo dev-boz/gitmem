@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from umx.config import UMXConfig
 from umx.conventions import ConventionSet
+from umx.dream.lint import schema_lock_in_findings
 from umx.dream.pr_render import assert_governance_pr_body
 from umx.dream.providers import ProviderUnavailableError
 from umx.governance import PRProposal
+from umx.manifest import manifest_path
 from umx.models import Fact
 from umx.providers import anthropic as anthropic_provider
 from umx.providers import claude_cli as claude_cli_provider
 from umx.providers import nvidia as nvidia_provider
+from umx.sessions import iter_session_payloads
 
 
 DEFAULT_ANTHROPIC_L2_MODEL = "claude-opus-4-7"
@@ -23,7 +27,15 @@ L2_CLAUDE_CLI_PROMPT_ID = "claude-cli-l2-review"
 L2_NVIDIA_PROMPT_ID = "nvidia-l2-review"
 REVIEW_COMMENT_MARKER = "<!-- umx:l2-review -->"
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(?P<payload>\{.*\})\s*```", re.DOTALL)
+_SOURCE_SESSIONS_RE = re.compile(r"^\*\*Source sessions:\*\*\s*(?P<value>.+)$", re.MULTILINE)
 _VALID_ACTIONS = frozenset({"approve", "reject", "escalate"})
+_NON_SESSION_SOURCE_IDS = frozenset({"manual", "manual-edit", "cross-project-promotion", "gap", "adapter"})
+_REVIEW_SESSION_LIMIT = 4
+_REVIEW_SESSION_EVENT_LIMIT = 8
+_REVIEW_SESSION_CONTENT_LIMIT = 280
+_REVIEW_SESSION_EXCERPT_LIMIT = 2000
+_MANIFEST_LIST_LIMIT = 10
+_MANIFEST_TOPIC_LIMIT = 20
 
 ANTHROPIC_PROVIDER_ALIASES = frozenset({"anthropic", "anthropic-api", "api"})
 CLAUDE_CLI_PROVIDER_ALIASES = frozenset({"claude-cli", "claude-code", "cli", "oauth"})
@@ -208,8 +220,17 @@ def build_l2_review_context(
     conventions: ConventionSet,
     existing_facts: list[Fact],
     new_facts: list[Fact] | None,
+    *,
+    repo_dir: Path | None = None,
 ) -> dict[str, Any]:
     fact_delta = assert_governance_pr_body(pr.body, allow_legacy=True) if pr.body else None
+    schema_findings = schema_lock_in_findings(list(new_facts or []), conventions=conventions)
+    resolved_repo_dir = repo_dir or _infer_review_repo_dir(existing_facts, new_facts)
+    source_session_ids = _collect_review_source_session_ids(pr, existing_facts, new_facts)
+    source_sessions, missing_source_sessions = _load_source_sessions(
+        resolved_repo_dir,
+        source_session_ids,
+    )
     return {
         "pull_request": {
             "title": pr.title,
@@ -243,9 +264,176 @@ def build_l2_review_context(
             "entity_vocabulary": dict(sorted(conventions.entity_vocabulary.items())),
             "project_conventions": list(conventions.project_conventions),
         },
+        "lint_signals": {
+            "schema_lock_in": schema_findings,
+        },
         "existing_facts": [_fact_payload(fact) for fact in existing_facts],
         "proposed_facts": [_fact_payload(fact) for fact in list(new_facts or [])],
+        "source_sessions": source_sessions,
+        "missing_source_sessions": missing_source_sessions,
+        "manifest": _load_manifest_context(resolved_repo_dir, existing_facts, new_facts),
     }
+
+
+def _infer_review_repo_dir(existing_facts: list[Fact], new_facts: list[Fact] | None) -> Path | None:
+    for fact in [*existing_facts, *(new_facts or [])]:
+        path = fact.file_path
+        if path is None:
+            continue
+        parts = path.parts
+        for index, part in enumerate(parts):
+            if part in {"facts", "episodic", "principles", "meta"}:
+                return Path(*parts[:index]) if index > 0 else Path(".")
+    return None
+
+
+def _collect_review_source_session_ids(
+    pr: PRProposal,
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+) -> list[str]:
+    ordered: list[str] = []
+
+    def remember(value: str | None) -> None:
+        if not isinstance(value, str):
+            return
+        session_id = value.strip()
+        if not session_id or session_id in _NON_SESSION_SOURCE_IDS or session_id in ordered:
+            return
+        ordered.append(session_id)
+
+    if pr.body:
+        match = _SOURCE_SESSIONS_RE.search(pr.body)
+        if match is not None:
+            for item in match.group("value").split(","):
+                remember(item)
+    for fact in [*(new_facts or []), *existing_facts]:
+        remember(fact.source_session)
+        for session_id in fact.provenance.sessions:
+            remember(session_id)
+    return ordered
+
+
+def _load_source_sessions(
+    repo_dir: Path | None,
+    session_ids: list[str],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    if repo_dir is None or not session_ids:
+        return [], list(session_ids)
+    payloads = {
+        session_id: payload
+        for session_id, payload in iter_session_payloads(
+            repo_dir,
+            include_archived=True,
+            session_ids=set(session_ids),
+        )
+    }
+    resolved: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for session_id in session_ids[:_REVIEW_SESSION_LIMIT]:
+        payload = payloads.get(session_id)
+        if payload is None:
+            missing.append(session_id)
+            continue
+        resolved.append(_session_excerpt(session_id, payload))
+    for session_id in session_ids[_REVIEW_SESSION_LIMIT:]:
+        if session_id not in payloads:
+            missing.append(session_id)
+    return resolved, missing
+
+
+def _session_excerpt(session_id: str, payload: list[dict[str, Any]]) -> dict[str, Any]:
+    meta = dict(payload[0].get("_meta", {})) if payload and isinstance(payload[0], dict) else {}
+    lines: list[str] = []
+    truncated = False
+    event_count = 0
+    for index, record in enumerate(payload[1:]):
+        if index >= _REVIEW_SESSION_EVENT_LIMIT:
+            truncated = True
+            break
+        if not isinstance(record, dict):
+            continue
+        content = record.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        event_count += 1
+        role = str(record.get("role") or "unknown")
+        normalized = " ".join(content.split())
+        if len(normalized) > _REVIEW_SESSION_CONTENT_LIMIT:
+            normalized = normalized[: _REVIEW_SESSION_CONTENT_LIMIT - 1].rstrip() + "…"
+            truncated = True
+        lines.append(f"{role}: {normalized}")
+    excerpt = "\n".join(lines)
+    if len(excerpt) > _REVIEW_SESSION_EXCERPT_LIMIT:
+        excerpt = excerpt[: _REVIEW_SESSION_EXCERPT_LIMIT - 1].rstrip() + "…"
+        truncated = True
+    return {
+        "session_id": session_id,
+        "meta": {
+            key: meta[key]
+            for key in ("tool", "source", "started", "ended", "project")
+            if key in meta
+        },
+        "excerpt": excerpt,
+        "event_count": event_count,
+        "truncated": truncated,
+    }
+
+
+def _load_manifest_context(
+    repo_dir: Path | None,
+    existing_facts: list[Fact],
+    new_facts: list[Fact] | None,
+) -> dict[str, Any]:
+    empty = {
+        "topics": {},
+        "modules_seen": [],
+        "uncertainty_hotspots": [],
+        "knowledge_gaps": [],
+        "last_rebuilt": None,
+    }
+    if repo_dir is None:
+        return empty
+    path = manifest_path(repo_dir)
+    if not path.exists():
+        return empty
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"manifest.json is malformed at {path}") from exc
+    topics = payload.get("topics") if isinstance(payload.get("topics"), dict) else {}
+    relevant_topics = sorted({
+        fact.topic
+        for fact in [*existing_facts, *(new_facts or [])]
+        if fact.topic
+    })
+    topic_names = relevant_topics or sorted(topics)[:_MANIFEST_TOPIC_LIMIT]
+    manifest_topics = {
+        topic: dict(topics[topic])
+        for topic in topic_names
+        if isinstance(topics.get(topic), dict)
+    }
+    return {
+        "topics": manifest_topics,
+        "modules_seen": [
+            item
+            for item in list(payload.get("modules_seen", []))[:_MANIFEST_TOPIC_LIMIT]
+            if isinstance(item, str)
+        ],
+        "uncertainty_hotspots": _bounded_manifest_items(payload.get("uncertainty_hotspots")),
+        "knowledge_gaps": _bounded_manifest_items(payload.get("knowledge_gaps")),
+        "last_rebuilt": payload.get("last_rebuilt"),
+    }
+
+
+def _bounded_manifest_items(items: Any) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    return [
+        dict(item)
+        for item in items[:_MANIFEST_LIST_LIMIT]
+        if isinstance(item, dict)
+    ]
 
 
 def parse_l2_review_response(text: str) -> dict[str, object]:
@@ -393,6 +581,7 @@ def _fact_payload(fact: Fact) -> dict[str, Any]:
         "encoding_strength": fact.encoding_strength,
         "source_type": fact.source_type.value,
         "confidence": fact.confidence,
+        "tags": list(fact.tags),
         "superseded_by": fact.superseded_by,
         "supersedes": fact.supersedes,
         "conflicts_with": list(fact.conflicts_with),

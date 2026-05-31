@@ -153,7 +153,7 @@ def iter_route_card_files(repo_dir: Path) -> list[Path]:
     routing_dir = repo_dir / "routing"
     if not routing_dir.exists():
         return []
-    return sorted(routing_dir.glob("*.md"))
+    return sorted(path for path in routing_dir.glob("*.md") if path.name != "ROUTING.md")
 
 
 def load_all_route_cards(repo_dir: Path) -> list[RouteCard]:
@@ -161,6 +161,38 @@ def load_all_route_cards(repo_dir: Path) -> list[RouteCard]:
     for path in iter_route_card_files(repo_dir):
         cards.extend(read_route_card_file(path, repo_dir=repo_dir))
     return [c for c in cards if c.is_active()]
+
+
+def routing_index_path(repo_dir: Path) -> Path:
+    return repo_dir / "routing" / "ROUTING.md"
+
+
+def write_routing_index(repo_dir: Path, cards: list[RouteCard] | None = None) -> Path:
+    routing_dir = repo_dir / "routing"
+    routing_dir.mkdir(parents=True, exist_ok=True)
+    active_cards = cards if cards is not None else load_all_route_cards(repo_dir)
+    lines = [
+        "# UMX Routing Index",
+        "",
+        "| Task class | Node | Route card | Confidence | Capability band |",
+        "| --- | --- | --- | ---: | --- |",
+    ]
+    if not active_cards:
+        lines.append("| - | - | - | 0.0000 | - |")
+    else:
+        for card in sorted(active_cards, key=lambda item: (item.task_class or "", item.node_id or "", item.route_card_id)):
+            slug = re.sub(r"[^a-z0-9-]", "-", card.route_card_id.lower()).strip("-")
+            lines.append(
+                "| "
+                f"{card.task_class or '-'} | "
+                f"{card.node_id or '-'} | "
+                f"[{card.route_card_id}](./{slug}.md) | "
+                f"{card.confidence:.4f} | "
+                f"{card.capability_band or '-'} |"
+            )
+    path = routing_index_path(repo_dir)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
 
 
 def match_route_cards(
@@ -236,6 +268,7 @@ def write_route_card_file(repo_dir: Path, card: RouteCard) -> Path:
         lines.extend(["", "## Triggers", ""] + trigger_lines)
     content = "\n".join(lines) + "\n"
     path.write_text(content, encoding="utf-8")
+    write_routing_index(repo_dir)
     return path
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -13,10 +14,42 @@ from umx.git_ops import git_signing_payload, git_signing_readiness
 from umx.memory import FACT_FILE_SCHEMA_VERSION
 from umx.migrations import inspect_fact_file_schema
 from umx.metrics import compute_metrics, health_flags
+from umx.push_queue import push_queue_summary
 from umx.schema import detect_schema_state, repair_schema
+from umx.search import index_staleness
 from umx.search_semantic import embeddings_available, inspect_embedding_cache_state
 from umx.sessions import quarantine_summary
 from umx.scope import find_orphaned_scoped_memory, find_project_root, get_umx_home, project_memory_dir
+
+
+def _auth_summary() -> dict[str, Any]:
+    try:
+        result = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return {
+            "authenticated": None,
+            "available": False,
+            "issues": ["gh CLI not found"],
+        }
+    output = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+    if result.returncode == 0:
+        return {
+            "authenticated": True,
+            "available": True,
+            "issues": [],
+        }
+    issue = output or "gh auth status failed"
+    return {
+        "authenticated": False,
+        "available": True,
+        "issues": [issue],
+    }
+
 
 def _dream_lock_summary(repo_dir: Path, *, fix: bool) -> tuple[dict[str, Any], list[str]]:
     lock = DreamLock(repo_dir)
@@ -124,6 +157,9 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["dream_lock"] = dream_lock
         result["processing"] = processing
         result["quarantine"] = quarantine_summary(repo_dir)
+        result["auth"] = _auth_summary()
+        result["push_queue"] = push_queue_summary(repo_dir)
+        result["index"] = index_staleness(repo_dir)
         result["embeddings"] = {
             "backend": cfg.search.backend,
             "provider": cfg.search.embedding.provider,
@@ -170,6 +206,20 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
             "last_event": None,
             "last_completed": None,
             "last_failed": None,
+        }
+        result["auth"] = {
+            "authenticated": None,
+            "available": False,
+            "issues": ["gh CLI not checked"],
+        }
+        result["push_queue"] = {"branches": [], "count": 0, "oldest_queued_at": None}
+        result["index"] = {
+            "current_files": 0,
+            "drift": [],
+            "path": "meta/index.sqlite",
+            "present": False,
+            "stale": False,
+            "tracked_files": 0,
         }
         result["quarantine"] = {"count": 0, "files": []}
         result["embeddings"] = {

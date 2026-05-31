@@ -476,6 +476,97 @@ def test_viewer_get_filters_fact_inventory(project_dir: Path, project_repo: Path
     assert excluded.text not in html
 
 
+def test_viewer_surfaces_memory_tree_with_machine_scope(
+    project_dir: Path,
+    project_repo: Path,
+    user_repo: Path,
+) -> None:
+    user_fact = Fact(
+        fact_id="01TESTVIEWTREE000000000001",
+        text="the operator prefers terse release summaries",
+        scope=Scope.USER,
+        topic="operator-defaults",
+        encoding_strength=5,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.HUMAN_CONFIRMED,
+        source_type=SourceType.USER_PROMPT,
+        source_tool="human",
+        source_session="manual-edit",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    machine_fact = Fact(
+        fact_id="01TESTVIEWTREE000000000002",
+        text="workstation-1 uses the arm64 build cache",
+        scope=Scope.MACHINE,
+        topic="workstation-1",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="sess-view-tree",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    project_fact = Fact(
+        fact_id="01TESTVIEWTREE000000000003",
+        text="release PRs must merge through staging first",
+        scope=Scope.PROJECT,
+        topic="release",
+        encoding_strength=4,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.GROUND_TRUTH_CODE,
+        source_tool="codex",
+        source_session="sess-view-tree",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    folder_fact = Fact(
+        fact_id="01TESTVIEWTREE000000000004",
+        text="services live under src-services",
+        scope=Scope.FOLDER,
+        topic="src-services",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="copilot",
+        source_session="sess-view-tree",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    file_fact = Fact(
+        fact_id="01TESTVIEWTREE000000000005",
+        text="src-app-py loads the release config first",
+        scope=Scope.FILE,
+        topic="src-app-py",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="copilot",
+        source_session="sess-view-tree",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(user_repo, user_fact, auto_commit=False)
+    add_fact(project_repo, machine_fact, auto_commit=False)
+    add_fact(project_repo, project_fact, auto_commit=False)
+    add_fact(project_repo, folder_fact, auto_commit=False)
+    add_fact(project_repo, file_fact, auto_commit=False)
+
+    html = _build_html(project_dir)
+
+    assert "Memory Tree" in html
+    assert "User Scope" in html
+    assert "Machine Scope" in html
+    assert "Project Scope" in html
+    assert "Folder Scope" in html
+    assert "File Scope" in html
+    assert "workstation-1" in html
+    assert "src-services" in html
+    assert "src-app-py" in html
+    assert html.index("User Scope") < html.index("Machine Scope") < html.index("Project Scope")
+    assert html.index("Project Scope") < html.index("Folder Scope") < html.index("File Scope")
+
+
 def test_viewer_history_panel_shows_supersession_chain(project_dir: Path, project_repo: Path) -> None:
     older = Fact(
         fact_id="01TESTVIEWHISTORY000000001",
@@ -717,6 +808,11 @@ def test_viewer_surfaces_governance_health_panel(project_dir: Path, project_repo
             "open_governance_prs": 1,
             "reviewer_queue_depth": 1,
             "human_review_queue_depth": 0,
+            "review_decision_count": 4,
+            "rejection_count": 1,
+            "escalation_count": 2,
+            "rejection_rate": 0.25,
+            "escalation_rate": 0.5,
             "stale_branch_count": 1,
             "label_drift_count": 1,
             "stale_branch_days": 7,
@@ -774,6 +870,8 @@ def test_viewer_surfaces_governance_health_panel(project_dir: Path, project_repo
     assert "proposal/old-cleanup" in html
     assert "missing impact label" in html
     assert "2026-04-18T12:00:00Z" in html
+    assert "25.0% (1/4)" in html
+    assert "50.0% (2/4)" in html
     assert "governance PR body is missing the required fact-delta block" in html
 
 
