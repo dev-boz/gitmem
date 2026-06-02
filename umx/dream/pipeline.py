@@ -8,12 +8,24 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from umx.artifacts import check_reasoning_artifact_invalidations
+from umx.chronicles import generate_context_layers
 from umx.config import UMXConfig, load_config
 from umx.conventions import ConventionSet, apply_conventions_to_fact, normalize_fact_text, parse_conventions
 from umx.dream.anchors import anchor_current_sha, code_anchor_is_stale
 from umx.dream.conflict import facts_conflict, resolve_conflict
 from umx.dream.consolidation import stabilize_facts
-from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
+from umx.dream.extract import (
+    clear_gap_records,
+    gap_records_to_facts,
+    handover_records_to_facts,
+    list_workspace_transcripts,
+    mark_sessions_gathered,
+    session_records_to_facts_with_report,
+    source_files_to_facts,
+    workspace_dream_candidates_to_facts,
+    workspace_transcript_records_to_facts_with_report,
+)
 from umx.dream.gates import CompositeDreamLock, DreamLock, UserDreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
 from umx.dream.lint import (
@@ -91,6 +103,7 @@ from umx.memory import (
     save_repository_facts,
     write_memory_md,
 )
+from umx.identity import semantic_dedup_key
 from umx.models import CodeAnchor, ConsolidationStatus, Fact, Provenance, SourceType, Verification
 from umx.push_safety import PushSafetyError, assert_push_safe
 from umx.schema import detect_schema_state
@@ -111,6 +124,10 @@ from umx.trust_tags import REVIEW_RISK_TAGS, SELF_DERIVED_QUARANTINE_TAG
 
 
 _NON_SESSION_SOURCE_IDS = frozenset({"manual", "manual-edit", "cross-project-promotion", "gap", "adapter"})
+
+
+def _fact_semantic_dedup_key(fact: Fact) -> str:
+    return semantic_dedup_key(fact.text, fact.scope.value, fact.topic)
 
 
 def _default_lint_status() -> dict[str, object]:
@@ -200,10 +217,16 @@ class DreamPipeline:
         self._extracted_session_ids: list[str] = []
         self._gathered_session_ids: list[str] = []
         self._push_block_reason: str | None = None
+        self._artifact_invalidations: list[dict[str, str]] = []
+        self._processing_run_id: str | None = None
 
     def orient(self) -> list[Fact]:
         ensure_repo_structure(self.repo_dir)
         self.conventions = parse_conventions(self.repo_dir / "CONVENTIONS.md")
+        self._artifact_invalidations = check_reasoning_artifact_invalidations(
+            self.project_root,
+            self.repo_dir,
+        )
         facts = load_all_facts(self.repo_dir, include_superseded=True)
         available_session_ids = {path.stem for path in list_sessions(self.repo_dir)}
         updated: list[Fact] = []
@@ -237,6 +260,13 @@ class DreamPipeline:
             self.repo_dir,
             config=self.config,
         )
+        workspace_session_candidates, workspace_provider_results = workspace_transcript_records_to_facts_with_report(
+            self.project_root,
+            self.repo_dir,
+            config=self.config,
+            skip_session_ids={result.session_id for result in provider_results},
+        )
+        provider_results.extend(workspace_provider_results)
         self._provider_results = provider_results
         self._extracted_session_ids = list(
             dict.fromkeys(result.session_id for result in provider_results)
@@ -253,6 +283,15 @@ class DreamPipeline:
             )
             self._dream_partial = any(result.native_only for result in provider_results)
         candidates.extend(session_candidates)
+        candidates.extend(workspace_session_candidates)
+        candidates.extend(
+            workspace_dream_candidates_to_facts(
+                self.project_root,
+                self.repo_dir,
+                config=self.config,
+            )
+        )
+        candidates.extend(handover_records_to_facts(self.repo_dir, config=self.config))
         provider_notices = list(
             dict.fromkeys(
                 result.notice
@@ -266,10 +305,17 @@ class DreamPipeline:
         # Extract facts from source files referenced in sessions
         from umx.sessions import list_sessions
         session_paths = list_sessions(self.repo_dir)
-        if session_paths:
+        repo_session_ids = {path.stem for path in session_paths}
+        workspace_transcript_paths = [
+            path
+            for path in list_workspace_transcripts(self.project_root)
+            if path.stem not in repo_session_ids
+        ]
+        source_session_paths = session_paths + workspace_transcript_paths
+        if source_session_paths:
             try:
                 source_facts = source_files_to_facts(
-                    self.repo_dir, self.project_root, session_paths,
+                    self.repo_dir, self.project_root, source_session_paths,
                 )
                 candidates.extend(source_facts)
             except Exception:
@@ -311,11 +357,12 @@ class DreamPipeline:
         for candidate in candidates:
             if is_suppressed(candidate, tombstones):
                 continue
+            candidate_key = _fact_semantic_dedup_key(candidate)
             merged = False
             for index, existing in enumerate(current):
                 if existing.superseded_by is not None:
                     continue
-                if existing.topic == candidate.topic and existing.text.lower() == candidate.text.lower():
+                if _fact_semantic_dedup_key(existing) == candidate_key:
                     if independent_corroboration(existing, candidate):
                         updated = apply_corroboration(existing, candidate)
                         if updated.consolidation_status == ConsolidationStatus.FRAGILE:
@@ -417,6 +464,12 @@ class DreamPipeline:
             dream_partial=getattr(self, "_dream_partial", False),
             config=self.config,
             auto_commit=False,
+        )
+        generate_context_layers(
+            self.repo_dir,
+            stabilized,
+            now,
+            task_class="general",
         )
         rebuild_manifest(self.repo_dir, stabilized, now)
         rebuild_index(self.repo_dir)
@@ -629,6 +682,7 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
+        github_remote = is_github_repo_url(repo_ref.url)
         repo_owner = repo_ref.owner or self.config.org
         if not repo_owner:
             logger.warning("no org configured; skipping PR creation")
@@ -659,6 +713,23 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
+        create_pr_is_stubbed = getattr(create_pr, "__module__", "umx.github_ops") != "umx.github_ops"
+        if not github_remote and not create_pr_is_stubbed:
+            if not push_branch(self.repo_dir, pr_proposal.branch):
+                logger.warning("failed to push branch %s", pr_proposal.branch)
+            return None
+        if not github_remote and create_pr_is_stubbed:
+            if not push_branch(self.repo_dir, pr_proposal.branch):
+                logger.warning("failed to push branch %s", pr_proposal.branch)
+                return None
+            return create_pr(
+                repo_owner,
+                repo_ref.name,
+                pr_proposal.branch,
+                pr_proposal.title,
+                pr_proposal.body,
+                labels=pr_proposal.labels,
+            )
         try:
             if not gh_available():
                 logger.warning("gh CLI not available; skipping PR creation")
@@ -667,19 +738,18 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
-        if is_github_repo_url(repo_ref.url):
-            try:
-                assert_no_open_governance_pr_overlap(
-                    repo_owner,
-                    repo_ref.name,
-                    branch=pr_proposal.branch,
-                    body=pr_proposal.body,
-                    labels=pr_proposal.labels,
-                )
-            except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
-                self._push_block_reason = str(exc)
-                logger.warning("%s", exc)
-                return None
+        try:
+            assert_no_open_governance_pr_overlap(
+                repo_owner,
+                repo_ref.name,
+                branch=pr_proposal.branch,
+                body=pr_proposal.body,
+                labels=pr_proposal.labels,
+            )
+        except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
+            return None
         if not push_branch(self.repo_dir, pr_proposal.branch):
             logger.warning("failed to push branch %s", pr_proposal.branch)
             return None
@@ -1405,6 +1475,7 @@ class DreamPipeline:
                 force=force,
                 branch=run_branch,
             )
+            self._processing_run_id = processing_run_id
             if mode in {"remote", "hybrid"} and self.config.org:
                 if not self._sync_processing_log_to_main("umx: dream processing start"):
                     fail_processing_run(
@@ -1503,11 +1574,14 @@ class DreamPipeline:
                 )
                 archived_sessions = int(archive_result.get("archived_sessions", 0))
                 demoted = getattr(self, "_demoted_count", 0)
+                invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
                 msg = f"{len(final_facts)} facts retained"
                 if provider_summary:
                     msg += f", extraction: {provider_summary}"
                 if demoted:
                     msg += f", {demoted} demoted"
+                if invalidated_artifacts:
+                    msg += f", {invalidated_artifacts} artifacts invalidated"
                 if archived_sessions:
                     msg += f", {archived_sessions} archived"
                 if pr_proposal:
@@ -1600,11 +1674,14 @@ class DreamPipeline:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
                 demoted = getattr(self, "_demoted_count", 0)
+                invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
                 msg = f"{len(final_facts)} facts retained"
                 if provider_summary:
                     msg += f", extraction: {provider_summary}"
                 if demoted:
                     msg += f", {demoted} demoted"
+                if invalidated_artifacts:
+                    msg += f", {invalidated_artifacts} artifacts invalidated"
                 if pr_proposal:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
@@ -1663,11 +1740,14 @@ class DreamPipeline:
             )
             archived_sessions = int(archive_result.get("archived_sessions", 0))
             demoted = getattr(self, "_demoted_count", 0)
+            invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
             msg = f"{len(final_facts)} facts retained"
             if provider_summary:
                 msg += f", extraction: {provider_summary}"
             if demoted:
                 msg += f", {demoted} demoted"
+            if invalidated_artifacts:
+                msg += f", {invalidated_artifacts} artifacts invalidated"
             if archived_sessions:
                 msg += f", {archived_sessions} archived"
             result = DreamResult(

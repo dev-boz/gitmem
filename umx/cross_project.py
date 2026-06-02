@@ -23,6 +23,7 @@ from umx.models import (
     isoformat_z,
     utcnow,
 )
+from umx.strength import SOURCE_TYPE_WEIGHTS
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -349,6 +350,15 @@ def build_cross_project_promotion_fact(report: dict[str, Any]) -> Fact:
         raise ValueError("cross-project proposal target topic is not resolved")
     if not occurrences:
         raise ValueError("cross-project proposal candidate has no supporting occurrences")
+    source_weights: list[float] = []
+    for occurrence in occurrences:
+        source_type = occurrence.get("source_type")
+        if not isinstance(source_type, str):
+            continue
+        try:
+            source_weights.append(SOURCE_TYPE_WEIGHTS[SourceType(source_type)])
+        except (KeyError, ValueError):
+            continue
     return Fact(
         fact_id=generate_fact_id(),
         text=candidate["text"],
@@ -369,6 +379,7 @@ def build_cross_project_promotion_fact(report: dict[str, Any]) -> Fact:
             "cross_project_candidate_key": candidate["key"],
             "cross_project_repos": list(candidate["repos"]),
             "cross_project_occurrences": occurrences,
+            "corroborating_source_weights": source_weights,
         },
     )
 

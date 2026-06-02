@@ -15,3 +15,10 @@ def test_semantic_dedup_key_stable() -> None:
     other = semantic_dedup_key("postgres runs on 5432", "project", "devenv")
     assert left == right
     assert left != other
+
+
+def test_semantic_dedup_key_includes_scope() -> None:
+    project = semantic_dedup_key("postgres runs on 5433", "project", "devenv")
+    user = semantic_dedup_key("postgres runs on 5433", "user", "devenv")
+
+    assert project != user

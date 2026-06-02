@@ -306,6 +306,64 @@ def test_gap_fact_stays_fragile_first_cycle_then_stabilizes(project_dir: Path, p
     assert fact.consolidation_status.value == "stable"
 
 
+def test_consolidate_merges_same_text_scope_topic(project_dir: Path) -> None:
+    existing = Fact(
+        fact_id="01TESTDREAMMERGE0000000001",
+        text="postgres runs on 5433 in dev",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="sess-project",
+        consolidation_status=ConsolidationStatus.FRAGILE,
+    )
+    # Identical text+scope+topic, different tool+session → independent corroboration.
+    candidate = existing.clone(
+        fact_id="01TESTDREAMMERGE0000000002",
+        source_tool="copilot",
+        source_session="sess-other",
+    )
+
+    consolidated = DreamPipeline(project_dir).consolidate([existing], [candidate])
+
+    active = [fact for fact in consolidated if fact.superseded_by is None]
+    assert len(active) == 1
+    assert active[0].fact_id == existing.fact_id
+    assert "copilot" in active[0].corroborated_by_tools
+    assert candidate.fact_id in active[0].corroborated_by_facts
+    assert active[0].consolidation_status == ConsolidationStatus.STABLE
+
+
+def test_consolidate_keeps_same_text_in_different_scopes(project_dir: Path) -> None:
+    existing = Fact(
+        fact_id="01TESTDREAMSCOPE0000000001",
+        text="postgres runs on 5433 in dev",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="sess-project",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    candidate = existing.clone(
+        fact_id="01TESTDREAMSCOPE0000000002",
+        scope=Scope.USER,
+        source_tool="copilot",
+        source_session="sess-user",
+    )
+
+    consolidated = DreamPipeline(project_dir).consolidate([existing], [candidate])
+
+    assert len([fact for fact in consolidated if fact.superseded_by is None]) == 2
+    assert all(not fact.corroborated_by_facts for fact in consolidated)
+
+
 def test_tombstone_suppresses_gap_resurrection(project_dir: Path, project_repo: Path) -> None:
     emit_gap_signal(
         project_repo,

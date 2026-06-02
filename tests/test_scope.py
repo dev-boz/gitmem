@@ -204,6 +204,40 @@ def test_generate_lint_findings_reports_skill_portability_and_unsupported_direct
     } in findings
 
 
+def test_generate_lint_findings_reports_tag_drift(project_dir, project_repo) -> None:
+    def tagged_fact(fact_id: str, tag: str) -> Fact:
+        return Fact(
+            fact_id=fact_id,
+            text=f"{tag} configuration matters in this repo",
+            scope=Scope.PROJECT,
+            topic="devenv",
+            encoding_strength=3,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
+            verification=Verification.SELF_REPORTED,
+            source_type=SourceType.TOOL_OUTPUT,
+            source_tool="codex",
+            source_session=f"2026-04-22-{fact_id.lower()}",
+            consolidation_status=ConsolidationStatus.FRAGILE,
+            tags=[tag],
+        )
+
+    findings = generate_lint_findings(
+        [
+            tagged_fact("01TESTSCOPELINTTAG000001", "db"),
+            tagged_fact("01TESTSCOPELINTTAG000002", "database"),
+            tagged_fact("01TESTSCOPELINTTAG000003", "postgres"),
+        ],
+        conventions=ConventionSet(),
+        repo_dir=project_repo,
+        project_root=project_dir,
+    )
+
+    assert {
+        "kind": "tag-drift",
+        "message": "tags database, db, postgres drift across active facts; use canonical tag 'database'",
+    } in findings
+
+
 def test_run_doctor_surfaces_orphaned_scopes(project_dir, project_repo) -> None:
     (project_repo / "files" / "src---missing.py.md").write_text("# missing\n")
 

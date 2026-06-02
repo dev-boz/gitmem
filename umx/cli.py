@@ -1095,6 +1095,68 @@ def gaps_cmd(
     click.echo(path.read_text() if path.exists() else "", nl=False)
 
 
+@main.group("diary")
+def diary_group() -> None:
+    """Append/read local diary entries."""
+
+
+@diary_group.command("append")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.argument("entry", nargs=-1, required=True)
+def diary_append_cmd(cwd: Path, entry: tuple[str, ...]) -> None:
+    from umx.continuity import append_diary_entry
+
+    repo = project_memory_dir(cwd)
+    path = append_diary_entry(repo, " ".join(entry))
+    click.echo(str(path))
+
+
+@diary_group.command("read")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+def diary_read_cmd(cwd: Path) -> None:
+    from umx.continuity import read_diary
+
+    click.echo(read_diary(project_memory_dir(cwd)), nl=False)
+
+
+@main.group("handover")
+def handover_group() -> None:
+    """Write/read local session handover notes."""
+
+
+@handover_group.command("write")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option("--file", "source_file", type=click.Path(path_type=Path), default=None)
+@click.argument("text", nargs=-1, required=False)
+def handover_write_cmd(cwd: Path, source_file: Path | None, text: tuple[str, ...]) -> None:
+    from umx.continuity import write_handover
+
+    if source_file is not None:
+        body = source_file.read_text(encoding="utf-8")
+    else:
+        body = " ".join(text).strip()
+    if not body:
+        raise click.ClickException("handover text must not be empty")
+    result = write_handover(project_memory_dir(cwd), body)
+    click.echo(
+        json.dumps(
+            {
+                "latest": str(result.latest_path),
+                "archive": str(result.archive_path),
+            },
+            sort_keys=True,
+        )
+    )
+
+
+@handover_group.command("read")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+def handover_read_cmd(cwd: Path) -> None:
+    from umx.continuity import read_handover
+
+    click.echo(read_handover(project_memory_dir(cwd)), nl=False)
+
+
 @main.command("forget")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 @click.option("--fact", "fact_id", default=None)

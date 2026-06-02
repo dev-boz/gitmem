@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from umx.cross_project import build_cross_project_promotion_fact
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
-from umx.strength import independent_corroboration, trust_score
+from umx.strength import apply_corroboration, independent_corroboration, source_type_weight, trust_score
 
 
 def _fact(
@@ -69,7 +69,12 @@ def test_trust_score_uses_cross_project_source_types() -> None:
     without_sources = promoted.clone(encoding_context={})
 
     assert promoted.encoding_context["cross_project_occurrences"][0]["source_type"] == SourceType.GROUND_TRUTH_CODE.value
+    assert promoted.encoding_context["corroborating_source_weights"] == [1.5, 0.5]
     assert trust_score(promoted) > trust_score(without_sources)
+
+
+def test_dream_consolidation_weight_uses_positive_floor() -> None:
+    assert source_type_weight(SourceType.DREAM_CONSOLIDATION, [0.0, 0.5]) == 0.5
 
 
 def test_independent_corroboration_requires_time_gap_for_same_tool() -> None:
@@ -91,6 +96,19 @@ def test_independent_corroboration_requires_time_gap_for_same_tool() -> None:
     assert independent_corroboration(base, later)
 
 
+def test_independent_corroboration_for_different_tool_ignores_time_gap() -> None:
+    base = _fact("01TESTSTRENGTH000000000010", source_tool="copilot", source_session="sess-a")
+    other_tool = _fact(
+        "01TESTSTRENGTH000000000011",
+        source_tool="codex",
+        source_session="sess-b",
+        created=base.created + timedelta(minutes=5),
+    )
+
+    # Different source_tool (and session) is independent even within 24h.
+    assert independent_corroboration(base, other_tool)
+
+
 def test_sota_reviewed_verification_bonus_increases_trust_score() -> None:
     self_reported = _fact("01TESTSTRENGTHSOTA0000001").clone(
         verification=Verification.SELF_REPORTED,
@@ -98,3 +116,23 @@ def test_sota_reviewed_verification_bonus_increases_trust_score() -> None:
     sota_reviewed = self_reported.clone(verification=Verification.SOTA_REVIEWED)
 
     assert trust_score(sota_reviewed) > trust_score(self_reported)
+
+
+def test_apply_corroboration_records_source_weights_for_dream_consolidation() -> None:
+    existing = _fact(
+        "01TESTSTRENGTHDREAM000001",
+        source_tool="dream",
+        source_session="dream-1",
+        source_type=SourceType.DREAM_CONSOLIDATION,
+    ).clone(encoding_context={"corroborating_source_weights": [0.5]})
+    incoming = _fact(
+        "01TESTSTRENGTHDREAM000002",
+        source_tool="manual",
+        source_session="sess-2",
+        source_type=SourceType.GROUND_TRUTH_CODE,
+    )
+
+    updated = apply_corroboration(existing, incoming)
+
+    assert updated.encoding_context["corroborating_source_weights"] == [0.5, 1.5]
+    assert trust_score(updated) > trust_score(existing)

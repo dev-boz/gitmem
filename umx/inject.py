@@ -7,7 +7,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from umx.artifacts import ReasoningArtifact, artifact_relative_path, load_reasoning_artifacts
 from umx.budget import BudgetDecision, enforce_budget, estimate_tokens
+from umx.chronicles import ContextLayer, infer_task_class, select_context_layers
 from umx.config import load_config
 from umx.conventions import summarize_conventions
 from umx.memory import iter_fact_files, load_all_facts, read_fact_file, read_memory_md
@@ -370,6 +372,84 @@ def _render_procedure(procedure: Procedure) -> list[str]:
 
 def _procedure_token_cost(procedure: Procedure) -> int:
     return estimate_tokens("\n".join(_render_procedure(procedure)))
+
+
+def _artifact_terms(artifact: ReasoningArtifact) -> set[str]:
+    text = " ".join([artifact.conclusion, *artifact.evidence])
+    return {
+        match.group(0).lower()
+        for match in WORD_RE.finditer(text)
+        if len(match.group(0)) > 2
+    }
+
+
+def _artifact_score(artifact: ReasoningArtifact, keywords: set[str]) -> float:
+    terms = _artifact_terms(artifact)
+    if not terms or not keywords:
+        return 0.0
+    overlap = terms & keywords
+    if not overlap:
+        return 0.0
+    return len(overlap) / max(1, len(keywords)) + float(artifact.confidence)
+
+
+def _render_reasoning_artifact(artifact: ReasoningArtifact, repo_dir: Path) -> list[str]:
+    lines = [
+        f"### {artifact.artifact_id}",
+        f"- Conclusion: {artifact.conclusion}",
+    ]
+    if artifact.evidence:
+        lines.append("- Evidence:")
+        lines.extend(f"  - {item}" for item in artifact.evidence[:5])
+    lines.append(
+        f"- Source: {artifact_relative_path(repo_dir, artifact)} "
+        f"[confidence:{artifact.confidence:.2f}]"
+    )
+    return lines
+
+
+def _artifact_token_cost(artifact: ReasoningArtifact, repo_dir: Path) -> int:
+    return estimate_tokens("\n".join(_render_reasoning_artifact(artifact, repo_dir)))
+
+
+def _select_reasoning_artifacts(
+    repo_dir: Path,
+    *,
+    keywords: set[str],
+    budget: int,
+    max_items: int = 3,
+) -> tuple[list[ReasoningArtifact], int]:
+    if budget <= 0 or not keywords:
+        return [], 0
+    scored = [
+        (score, artifact)
+        for artifact in load_reasoning_artifacts(repo_dir, active_only=True)
+        if (score := _artifact_score(artifact, keywords)) > 0
+    ]
+    scored.sort(key=lambda item: (item[0], item[1].created_at or datetime.min.replace(tzinfo=UTC)), reverse=True)
+    selected: list[ReasoningArtifact] = []
+    used_tokens = 0
+    for _, artifact in scored:
+        if len(selected) >= max_items:
+            break
+        cost = _artifact_token_cost(artifact, repo_dir)
+        if used_tokens + cost > budget:
+            continue
+        selected.append(artifact)
+        used_tokens += cost
+    return selected, used_tokens
+
+
+def _render_context_layer(layer: ContextLayer, project_repo: Path) -> list[str]:
+    try:
+        source = layer.path.relative_to(project_repo).as_posix()
+    except ValueError:
+        source = layer.path.as_posix()
+    return [
+        f"### {layer.name}",
+        f"<!-- context_layer: {layer.name} source: {source} -->",
+        layer.content.strip(),
+    ]
 
 
 def _attention_refresh_ids(
@@ -839,6 +919,7 @@ def build_injection_block(
     user_repo = user_memory_dir()
     cfg = load_config(config_path())
     keywords = _keywords(prompt, file_paths, extra_parts=[tool or "", command_text or ""])
+    task_class = infer_task_class(tool, prompt, command_text, " ".join(file_paths or []))
     target_scope = Scope.FILE if file_paths else Scope.PROJECT
     facts, convention_summary, scoped_fact_ids, project_fact_fingerprint = collect_facts_for_injection(
         cwd,
@@ -1021,6 +1102,19 @@ def build_injection_block(
         selected_procedures, procedure_tokens = [], 0
     non_secret_facts = [fact for fact in facts if fact.scope != Scope.PROJECT_SECRET]
     remaining_after_sections = max(0, max_tokens - reserved_tokens - procedure_tokens - hot_summary_cost)
+    selected_layers = select_context_layers(
+        project_repo,
+        task_class=task_class,
+        budget=remaining_after_sections,
+    )
+    layer_tokens = sum(layer.token_count for layer in selected_layers)
+    remaining_after_sections = max(0, remaining_after_sections - layer_tokens)
+    selected_artifacts, artifact_tokens = _select_reasoning_artifacts(
+        project_repo,
+        keywords=keywords,
+        budget=remaining_after_sections,
+    )
+    remaining_after_sections = max(0, remaining_after_sections - artifact_tokens)
     hint_budget = min(
         _SKILL_HINT_MAX_TOKENS,
         int(remaining_after_sections * _SKILL_HINT_BUDGET_RATIO),
@@ -1097,6 +1191,46 @@ def build_injection_block(
                     "parent_session_id": parent_session_id,
                     "token_count": _procedure_token_cost(procedure),
                     "item_kind": "procedure",
+                }
+            )
+    if selected_layers:
+        lines.append("")
+        lines.append("## Context Layers")
+        for layer in selected_layers:
+            lines.extend(_render_context_layer(layer, project_repo))
+            pending_injections.setdefault(project_repo, []).append(
+                {
+                    "fact_id": f"context_layer:{layer.path.parent.name}/{layer.name}",
+                    "session_id": session_id,
+                    "turn_index": int(session_state["turn_index"]) if session_state else None,
+                    "session_tokens": int(session_state["estimated_tokens"]) if session_state else None,
+                    "injection_point": injection_point,
+                    "disclosure_level": "digest" if layer.name == "digest" else "l2",
+                    "tool": tool,
+                    "parent_session_id": parent_session_id,
+                    "token_count": layer.token_count,
+                    "item_kind": "context_layer",
+                }
+            )
+    if selected_artifacts:
+        lines.append("")
+        lines.append("## Reasoning Artifacts")
+        for artifact in selected_artifacts:
+            lines.extend(_render_reasoning_artifact(artifact, project_repo))
+            pending_injections.setdefault(project_repo, []).append(
+                {
+                    "fact_id": f"artifact:{artifact.artifact_id}",
+                    "session_id": session_id,
+                    "turn_index": int(session_state["turn_index"]) if session_state else None,
+                    "session_tokens": int(session_state["estimated_tokens"]) if session_state else None,
+                    "injection_point": injection_point,
+                    "disclosure_level": "l2",
+                    "tool": tool,
+                    "parent_session_id": parent_session_id,
+                    "token_count": _artifact_token_cost(artifact, project_repo),
+                    "item_kind": "reasoning_artifact",
+                    "reason": "keyword:reasoning-artifact",
+                    "source_path": artifact_relative_path(project_repo, artifact),
                 }
             )
     if selected_skill_hints:

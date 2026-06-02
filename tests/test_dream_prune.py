@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from umx.config import default_config
+from umx.dream.consolidation import stabilize_facts
 from umx.dream.prune import PruneDecision, run_dream_prune, run_prune, should_prune, write_prune_report
 from umx.memory import read_memory_md
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
@@ -112,3 +113,34 @@ def test_run_dream_prune_rebuilds_memory_index_with_active_facts_only(tmp_path: 
     assert "active fact that stays" in memory_md
     assert "expired active fact" not in memory_md
     assert "superseded fact is retained" not in memory_md
+
+
+def test_stabilize_facts_rule_two_promotes_newly_corroborated_fragile_fact() -> None:
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    fact = make_fact("FACT_RULE_TWO")
+    fact.consolidation_status = ConsolidationStatus.FRAGILE
+    fact.corroborated_by_tools.append("copilot")
+
+    stabilized = stabilize_facts([fact], {"FACT_RULE_TWO"}, now)
+
+    assert stabilized[0].consolidation_status == ConsolidationStatus.STABLE
+
+
+def test_stabilize_facts_rule_two_isolated_from_survive_one_cycle() -> None:
+    """Rule 2 (independent corroboration) promotes a fragile fact even when
+    rule 1 (survive-one-cycle) cannot apply because the fact is new this cycle."""
+    now = datetime(2026, 1, 10, tzinfo=UTC)
+    uncorroborated = make_fact("FACT_NEW_FRAGILE")
+    uncorroborated.consolidation_status = ConsolidationStatus.FRAGILE
+    corroborated = make_fact("FACT_NEW_CORROBORATED")
+    corroborated.consolidation_status = ConsolidationStatus.FRAGILE
+    corroborated.corroborated_by_facts.append("FACT_SOURCE")
+
+    new_ids = {"FACT_NEW_FRAGILE", "FACT_NEW_CORROBORATED"}
+    stabilized = stabilize_facts([uncorroborated, corroborated], new_ids, now)
+    by_id = {fact.fact_id: fact for fact in stabilized}
+
+    # Both are new this cycle, so rule 1 is unavailable; only recorded
+    # corroboration (rule 2) promotes the second fact.
+    assert by_id["FACT_NEW_FRAGILE"].consolidation_status == ConsolidationStatus.FRAGILE
+    assert by_id["FACT_NEW_CORROBORATED"].consolidation_status == ConsolidationStatus.STABLE

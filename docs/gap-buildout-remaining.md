@@ -1,18 +1,28 @@
 # gitmem spec gap build-out — remaining work (handoff)
 
-**As of:** 2026-06-01 · **Branch:** `spec-v0_10-unified-update` (local == remote == `1bf2d9d`)
+**As of:** 2026-06-01 · **Branch:** `spec-v0_10-unified-update`
 **Source plan:** `docs/spec-gap-buildout.md` · **Verification:** `docs/gap-verification-2026-05-31.md`
 
 ## State of play
 
-- The full gap build-out (≈29 of 47 tasks) plus **GAP-01 (blob store, the only Critical)**
-  is **committed and pushed**. Nothing is left uncommitted.
-- **Test suite: 1017 passing** via `.venv/bin/python -m pytest -q --ignore=tests/test_tui.py`.
-- **Known environment issue (not a regression):** `tests/test_tui.py` fails at *collection*
-  because the `textual` package isn't installed in `.venv`. It fails identically on older
-  commits — it is purely a missing optional dep. Either `pip install 'textual>=0.63,<1'`
-  into `.venv`, or keep using `--ignore=tests/test_tui.py`. Resolve this first so the next
-  person gets a clean full-suite run.
+- The original handoff slice plus the follow-up completion work for GAP-11, GAP-16, GAP-37,
+  and the remaining GAP-34 floor behavior are implemented in the current working tree.
+- **Independent audit (2026-06-02):** all 9 of the latest-batch gaps (06, 08, 11, 16, 20,
+  21, 34, 36, 37) were re-audited against their spec "Done when" criteria. Implementations
+  satisfy acceptance. Three gaps were missing the *dedicated test assertion* the acceptance
+  text requires; those were added this session:
+  - **GAP-06:** `tests/test_dream.py::test_consolidate_merges_same_text_scope_topic`
+    (positive merge path) + made `semantic_dedup_key` spec-faithful (dropped the `.strip()`,
+    lowercase the full payload per §5 ~L413).
+  - **GAP-08:** `tests/test_dream_prune.py::test_stabilize_facts_rule_two_isolated_from_survive_one_cycle`
+    (rule-2 promotion isolated from rule-1).
+  - **GAP-35:** `tests/test_strength.py::test_independent_corroboration_for_different_tool_ignores_time_gap`.
+- **Full-suite baseline:** **1044 passing** via `.venv/bin/python -m pytest -q` (textual 0.89.1
+  is installed in `.venv`, so `tests/test_tui.py` and `tests/test_viewer.py` now run — no ignore needed).
+- ⚠️ **The entire latest gap batch (~1357 insertions across 23 modified files + 5 untracked
+  modules: `umx/{artifacts,chronicles,continuity}.py`, `umx/adapters/gemini.py`, and
+  `tests/test_continuity_artifacts_chronicles.py`) is still UNCOMMITTED** on top of
+  `5a6cacd`. Commit it before any branch switch to avoid losing the work.
 
 ### How to run things
 - Tests: `.venv/bin/python -m pytest -q --ignore=tests/test_tui.py` (system `python` is absent;
@@ -21,39 +31,33 @@
 
 ## Remaining tasks
 
-### ❌ NOT DONE — larger Bucket-B features
+As of the current working tree, all gaps listed in this handoff have implementation and focused
+regression coverage. The file is retained as the historical handoff source.
 
-| GAP | Effort | What's needed | Spec ref |
-|---|---|---|---|
-| **11** MEMORY CHRONICLES layers | L | Dream sub-phase writes `context/layers/{task_class}-{date}/{numeric,temporal,narrative,digest}.md`; injection selects digest by default, richer layers as budget allows. None of this exists in code (only in the spec commit). | §16 ~L1899 |
-| **16** Reasoning artifacts | L | `memory/artifacts/` store, SQLite index, injection on conclusion/evidence match, `invalidates_when` checked by Dream Orient. Zero code today. *Option: demote §3b to roadmap instead of building.* | §3b ~L298 |
-| **20** workspace/ ingest into Orient | M | Dream Orient should read `workspace/dream-candidates/` and `workspace/transcripts/{session_id}.jsonl` as session sources (optionally `workspace/tasks/*/audit.jsonl`, `workspace/status/HEARTBEAT-*.md`). Today only telemetry `*_to_dream_candidates` helpers exist; the real dirs are never read. *Option: demote these §30 lines to roadmap.* | §30 ~L3071 |
-| **37** Diary + Session Handover (§8a) | M–L | `local/diary.md` (append-only log) + `local/handover.md` / `local/handovers/YYYY-MM-DD.md`; read/append helpers, CLI surface, optional Dream ingest of handovers at S:3. Whole feature absent. *Option: formally mark §8a as future.* | §8a ~L860 |
+### ✅ COMPLETED — larger Bucket-B features
 
-### ❌ NOT DONE — small correctness fixes (good warm-ups)
+| GAP | Completion |
+|---|---|
+| **11** MEMORY CHRONICLES layers | Dream writes `context/layers/{task_class}-{date}/{numeric,temporal,narrative,digest}.md`; injection includes digest by default and optional richer layers as budget permits. |
+| **16** Reasoning artifacts | `memory/artifacts/*.md` parsing, SQLite indexing, injection on conclusion/evidence keyword match, and Orient invalidation via `invalidates_when` are implemented. |
+| **20** workspace/ ingest into Orient | Dream Gather reads `workspace/transcripts/*.jsonl` and `workspace/dream-candidates/`; malformed `.json`/`.jsonl` candidates are skipped without aborting ingest. |
+| **37** Diary + Session Handover (§8a) | `local/diary.md`, `local/handover.md`, dated handover archives, CLI read/write surfaces, and S:3 handover Dream ingest are implemented. |
 
-| GAP | Effort | What's needed | Spec ref |
-|---|---|---|---|
-| **06** Wire `semantic_dedup_key` | M | `identity.py:28` `semantic_dedup_key(text, scope, topic)` has **zero call sites**. `consolidate()` (`umx/dream/pipeline.py:318`) still matches on `topic + text.lower()`, ignoring `scope`. Route merge/corroboration detection through the key so same-text/different-scope pairs are NOT merged. Add a test. | §5 ~L413 |
-| **21** Tag-drift lint | S–M | Add a tag-clustering/canonicalisation finding to `umx/dream/lint.py` `generate_lint_findings` (e.g. `db`/`database`/`postgres` → propose one canonical tag, `type: lint`). Add a test. | §11 ~L1495 |
-| **34** `dream_consolidation` weight floor | S | `umx/strength.py:97` returns a plain mean `sum/len` (no floor) AND nothing populates `corroborating_source_weights` (zero callers) — so the whole `DREAM_CONSOLIDATION` branch is inert. Apply floor-of-avg AND make consolidation extraction supply the input weights. Add a test. | §5 ~L466, §6 ~L575 |
-| **36** Native adapters read real stores | M | `umx/adapters/claude_code.py:32,37` globs `CLAUDE.md` only (not the JSONL transcripts); Copilot path is `.github/copilot-instructions.md` vs `~/.copilot/`; no `GeminiAdapter`. Parse the real native stores OR reconcile §10 to document the capture-module split (HYG-06 already partly did docs). | §10 ~L1364 |
+### ✅ COMPLETED — correctness fixes
 
-### ⚠️ PARTIAL — optional polish (low risk, matches plan's original finding)
+| GAP | Completion |
+|---|---|
+| **06** Wire `semantic_dedup_key` | Consolidate dedup/corroboration now uses the scope-aware semantic key so same text in different scopes remains distinct. |
+| **08** fragile→stable Rule #2 in Prune | Prune-time stabilization now promotes fragile facts that already have independent corroboration recorded from a prior cycle. |
+| **21** Tag-drift lint | Lint reports canonical tag drift clusters such as `db`/`database`/`postgres`. |
+| **34** `dream_consolidation` weight floor | Consolidation facts carry corroborating source weights and use a positive source-weight floor when averaging inputs. |
+| **36** Native adapters read real stores | Claude, Copilot, and Gemini adapters read their native real session stores while retaining markdown import paths. |
 
-| GAP | Effort | What's needed |
-|---|---|---|
-| **08** fragile→stable Rule #2 in Prune | S–M | `stabilize_facts` (`pipeline.py:398`) only stabilises facts not touched this cycle; Rule-2 corroboration is applied inline in Consolidate (`pipeline.py:319-322`) only when corroboration arrives the same pass. Add a distinct Prune-time pass that re-stabilises a fragile fact whose independent corroboration (`corroborated_by_*`) landed in a *prior* cycle. |
+## Suggested next verification
 
-## Suggested order for a fresh session
-
-1. **Fix the venv:** install `textual` so the full suite (incl. `test_tui.py`) runs clean.
-2. **Warm-ups (small, self-contained):** GAP-34 → GAP-06 → GAP-21. Each is a focused change + one test.
-3. **GAP-36** (or just reconcile §10 docs if not parsing real stores).
-4. **GAP-08** polish if desired.
-5. **Decide build-vs-demote** for the big four (GAP-11, 16, 20, 37). 16/20/37 each have a
-   legitimate "mark as roadmap" option in the plan — confirm with the user before building,
-   since they're multi-day each.
+1. Run the focused suite used for this closure.
+2. Run `.venv/bin/python -m pytest -q --ignore=tests/test_tui.py`.
+3. If `textual` is installed in the active venv, run the full suite without the `test_tui.py` ignore.
 
 ## Working agreement / lessons from last session
 

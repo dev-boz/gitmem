@@ -26,5 +26,6 @@ def generate_fact_id() -> str:
 
 
 def semantic_dedup_key(text: str, scope: str, topic: str) -> str:
-    payload = f"{text.strip().lower()}\x00{scope}\x00{topic}"
+    # Spec §5 ~L413: SHA-256(lowercase(text + "\x00" + scope + "\x00" + topic))[:16]
+    payload = f"{text}\x00{scope}\x00{topic}".lower()
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

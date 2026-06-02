@@ -94,7 +94,9 @@ def corroborating_source_weights(fact: Fact) -> list[float]:
 
 def source_type_weight(value: SourceType, corroborating_source_weights: list[float] | None = None) -> float:
     if value == SourceType.DREAM_CONSOLIDATION and corroborating_source_weights:
-        return sum(corroborating_source_weights) / len(corroborating_source_weights)
+        average = sum(corroborating_source_weights) / len(corroborating_source_weights)
+        positive_floor = min((weight for weight in corroborating_source_weights if weight > 0.0), default=0.0)
+        return max(average, positive_floor)
     return SOURCE_TYPE_WEIGHTS[value]
 
 
@@ -188,6 +190,12 @@ def apply_corroboration(existing: Fact, incoming: Fact) -> Fact:
         updated.corroborated_by_tools.append(incoming.source_tool)
     if incoming.fact_id not in updated.corroborated_by_facts:
         updated.corroborated_by_facts.append(incoming.fact_id)
+    if updated.source_type == SourceType.DREAM_CONSOLIDATION:
+        source_weights = corroborating_source_weights(updated)
+        source_weights.append(
+            source_type_weight(incoming.source_type, corroborating_source_weights(incoming))
+        )
+        updated.encoding_context["corroborating_source_weights"] = source_weights
     anchored = (
         existing.source_type == SourceType.GROUND_TRUTH_CODE
         or incoming.source_type == SourceType.GROUND_TRUTH_CODE

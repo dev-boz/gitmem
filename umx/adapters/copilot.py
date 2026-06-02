@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from umx.adapters.generic import NativeMemoryAdapter
+from umx.copilot_capture import list_copilot_sessions, parse_copilot_session
 from umx.models import Fact
 
 
@@ -12,8 +13,8 @@ class CopilotAdapter(NativeMemoryAdapter):
     def read_native_memory(self, project_root: Path) -> list[Fact]:
         """Read facts from GitHub Copilot's memory files.
 
-        Copilot stores instructions in .github/copilot-instructions.md
-        and the project root copilot-instructions.md.
+        Copilot stores project guidance in copilot-instructions markdown files
+        and session-state logs under ~/.copilot/session-state/.
         """
         facts: list[Fact] = []
         candidates = [
@@ -23,6 +24,19 @@ class CopilotAdapter(NativeMemoryAdapter):
         for path in candidates:
             if path.exists():
                 facts.extend(self._parse_instructions(path))
+
+        for session_path in list_copilot_sessions():
+            transcript = parse_copilot_session(session_path)
+            if not transcript.events or not self._path_matches_project(transcript.cwd, project_root):
+                continue
+            facts.extend(
+                self._facts_from_transcript_events(
+                    project_root,
+                    session=transcript.umx_session_id,
+                    events=transcript.events,
+                    encoding_context={"native_store_path": str(session_path)},
+                )
+            )
         return facts
 
     def _parse_instructions(self, path: Path) -> list[Fact]:
