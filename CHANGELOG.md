@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Provider-agnostic, headless **CLI-backed L1 dream extraction** (`umx/dream/extract_llm.py`). The native heuristic was previously the *only* extractor that ever ran — `SESSION_PROVIDER_EXTRACTORS` was empty in production, so no LLM extraction happened despite provider config. You can now set `dream.extract_provider` (e.g. `opencode`) + `dream.extract_model` (e.g. `opencode/deepseek-v4-flash-free`) via `gitmem config set`, and Dream drives that CLI (opencode/gemini/claude/codex) to turn transcripts into facts using the CLI's own auth — no API key required. Swapping providers (opencode → antigravity later) is a config change. Falls back to the native heuristic when the CLI is unavailable.
 - `ensure_repo_structure` now scaffolds the `routing/` and `local/context/` directories on init, matching the spec §3 architecture (route cards and durable continuity context were previously created lazily or not at all).
 - Dream Gather now ingests `workspace/tasks/{id}/audit.jsonl` records as secondary S:1 candidates once a task's `plan.yaml` signals completion (spec §30), skipping in-progress tasks.
 - Lint now emits a schema-lock-in finding when >80% of a cycle's new candidates land in existing convention buckets (spec §22 taxonomy-saturation signal), in addition to the existing unknown-topic novelty check.

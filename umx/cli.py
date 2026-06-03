@@ -2226,6 +2226,10 @@ def config_set_cmd(key: str, value: str) -> None:
         cfg.sessions.redaction_patterns = _parse_redaction_patterns_value(value)
     elif key == "telemetry.enabled":
         cfg.telemetry.enabled = _parse_bool_value(value)
+    elif key == "dream.extract_provider":
+        cfg.dream.extract_provider = value or None
+    elif key == "dream.extract_model":
+        cfg.dream.extract_model = value or None
     else:
         raise click.ClickException(f"unsupported config key: {key}")
     save_config(config_path(), cfg)

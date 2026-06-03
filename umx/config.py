@@ -32,6 +32,11 @@ class DreamConfig:
     local_model: str | None = None
     paid_provider: str | None = None
     paid_api_key: str | None = None
+    # Headless CLI-backed L1 extraction (provider-agnostic). When set, the named
+    # CLI provider (e.g. "opencode") drives transcript->facts extraction via its
+    # own auth, no API key required. `extract_model` is the provider/model id.
+    extract_provider: str | None = None
+    extract_model: str | None = None
     l2_model: str = "claude-opus-4-7"
     lint_interval: str = "weekly"
     untrusted_strength_ceiling: int = 3

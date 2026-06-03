@@ -108,10 +108,15 @@ def resolve_provider_plan(
     *,
     env: Mapping[str, str] | None = None,
     extractors: Mapping[str, SessionProviderExtractor] | None = None,
+    primary: str | None = None,
 ) -> list[str]:
     active_env = env or os.environ
     available_extractors = extractors or SESSION_PROVIDER_EXTRACTORS
     plan: list[str] = []
+    # A configured headless extractor (e.g. opencode) is tried first; it needs
+    # no env key, only a registered extractor entry.
+    if primary and primary in available_extractors:
+        plan.append(primary)
     if config.dream.paid_provider and (
         _provider_key(config.dream.paid_provider, config, active_env)
         or config.dream.paid_provider in available_extractors
@@ -151,6 +156,26 @@ def provider_execution_notice(result: ProviderExtractionResult) -> str | None:
     return available_provider_notice()
 
 
+def _default_extractors(config: UMXConfig) -> Mapping[str, SessionProviderExtractor]:
+    """Registry augmented with the configured headless CLI extractor, if any."""
+    registry = dict(SESSION_PROVIDER_EXTRACTORS)
+    provider = config.dream.extract_provider
+    if not provider or provider in registry:
+        return registry
+    from umx.dream.extract_llm import (
+        cli_extractor_available,
+        is_cli_provider,
+        make_cli_extractor,
+        resolve_extract_model,
+    )
+
+    if is_cli_provider(provider) and cli_extractor_available(provider):
+        model = resolve_extract_model(provider, config)
+        if model:
+            registry[provider] = make_cli_extractor(provider, model)
+    return registry
+
+
 def run_session_provider_extraction(
     repo_dir: Path,
     session_id: str,
@@ -163,9 +188,10 @@ def run_session_provider_extraction(
 ) -> ProviderExtractionResult:
     cfg = config or UMXConfig()
     active_env = env or os.environ
-    registered = extractors or SESSION_PROVIDER_EXTRACTORS
+    registered = extractors if extractors is not None else _default_extractors(cfg)
+    primary = cfg.dream.extract_provider
     attempts: list[ProviderAttempt] = []
-    for provider in resolve_provider_plan(cfg, env=active_env, extractors=registered):
+    for provider in resolve_provider_plan(cfg, env=active_env, extractors=registered, primary=primary):
         extractor = registered.get(provider)
         model = cfg.dream.local_model if provider == PROVIDER_LOCAL else provider
         if extractor is None:
@@ -178,7 +204,11 @@ def run_session_provider_extraction(
                 )
             )
             continue
-        if provider != PROVIDER_LOCAL and not _provider_key(provider, cfg, active_env):
+        # HTTP/API providers require an env key; headless CLI providers (and the
+        # paid provider) authenticate via the CLI/config, so only gate on a key
+        # when one is actually expected.
+        needs_key = provider in PROVIDER_API_ENV_VARS or provider == cfg.dream.paid_provider
+        if provider != PROVIDER_LOCAL and needs_key and not _provider_key(provider, cfg, active_env):
             attempts.append(
                 ProviderAttempt(
                     provider=provider,
