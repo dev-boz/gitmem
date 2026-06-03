@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ensure_repo_structure` now scaffolds the `routing/` and `local/context/` directories on init, matching the spec §3 architecture (route cards and durable continuity context were previously created lazily or not at all).
 - Dream Gather now ingests IMX dream triggers from `~/.imx/state/dream-triggers.jsonl` (`query_gap`, `route_failure`, `context_saturation`, `large_task_completion`, `entrenchment_risk`, `policy_drift`) and runs local entrenchment detection over procedures and route cards (spec §11.7/§30). Both feed the normal Consolidate/L1 governance path as fragile S:1 candidates via the new `dream_candidate_dicts_to_facts` helper; `procedure_regression` continues to use its dedicated draft-PR path.
 - `gitmem eval l2-review --provider claude-cli` runs the L2 reviewer through the Claude Code CLI in headless `-p` mode, using the operator's existing OAuth session instead of an `ANTHROPIC_API_KEY`. New `umx/providers/claude_cli.py` subprocess wrapper, `claude_cli_l2_reviewer`, and `select_l2_reviewer` selector keep the existing Anthropic API path as the default.
 - Cross-scope promotion to `user`, `project`, and `principle` memory via `umx promote --to ...`
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PR-only supply-chain CI with `pip-audit` and CycloneDX SBOM artifact upload
 
 ### Changed
+- Reasoning-artifact injection now routes through the SQLite FTS index (`query_reasoning_artifacts`) with a full active-artifact scan as fallback, so the maintained index is actually used for retrieval per spec §3b instead of a pure file scan.
 - README now documents live Claude hooks, manual collect, Amp/Gemini/OpenCode capture, cross-project governance commands, signed commits, richer viewer surfaces, `aip-mem`, and the current experimental status of remote/hybrid governance
 - Remote-mode auth docs now correctly point to authenticated `gh` CLI usage; plaintext PAT config/env wiring remains reserved, not active
 - Generated remote review/dream workflows now install gitmem from the source repo instead of an unpinned package-index `umx`

@@ -13,6 +13,29 @@ from umx.models import CodeAnchor, ConsolidationStatus, Fact, MemoryType, Scope,
 from umx.scope import find_orphaned_scoped_memory
 
 
+def test_ensure_repo_structure_scaffolds_canonical_directories(project_repo) -> None:
+    # project_repo runs init_project_memory -> ensure_repo_structure.
+    for relative in [
+        "sessions",
+        "facts/topics",
+        "principles/topics",
+        "procedures",
+        "skills",
+        "codebase",
+        "context/layers",
+        "memory/artifacts",
+        "routing",
+        "local/private",
+        "local/secret",
+        "local/quarantine",
+        "local/blobs",
+        "local/handovers",
+        "local/context",
+        "meta",
+    ]:
+        assert (project_repo / relative).is_dir(), f"missing scaffolded dir: {relative}"
+
+
 def test_find_orphaned_scoped_memory_reports_missing_paths(project_dir, project_repo) -> None:
     (project_dir / "src").mkdir()
     (project_dir / "src" / "live.py").write_text("print('ok')\n")
