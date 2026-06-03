@@ -1187,6 +1187,11 @@
 <td>Restore a full project backup</td>
 <td><code>--cwd</code>, <code>--full</code>, <code>--force</code>, <code>--dry-run</code></td>
 </tr>
+<tr>
+<td><code>gitmem import --memories ...</code></td>
+<td>Ingest a <code>/memories</code> projection back into canonical facts</td>
+<td><code>--cwd</code>, <code>--memories</code>, <code>--dry-run</code></td>
+</tr>
 </tbody>
 </table>
 <h2 id="retrieval-and-review">Retrieval and review<a class="headerlink" href="#retrieval-and-review" title="Permanent link">&para;</a></h2>
@@ -1221,7 +1226,7 @@
 </tr>
 <tr>
 <td><code>gitmem tui</code></td>
-<td>Launch the local viewer</td>
+<td>Launch the terminal TUI</td>
 <td><code>--cwd</code></td>
 </tr>
 <tr>
@@ -1485,8 +1490,8 @@
 </tr>
 <tr>
 <td><code>gitmem export</code></td>
-<td>Create a full project backup bundle</td>
-<td><code>--cwd</code>, <code>--out</code></td>
+<td>Create a full backup bundle or a <code>/memories</code> projection</td>
+<td><code>--cwd</code>, <code>--format</code>, <code>--out</code>/<code>--output</code></td>
 </tr>
 </tbody>
 </table>

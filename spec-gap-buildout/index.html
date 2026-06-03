@@ -1,0 +1,2487 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Git-native shared memory and MCP server for AI coding agents.">
+      
+      
+      
+        <link rel="canonical" href="https://dev-boz.github.io/gitmem/spec-gap-buildout/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>gitmem — Spec Gap Build-Out Plan - gitmem</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#gitmem-spec-gap-build-out-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="gitmem" class="md-header__button md-logo" aria-label="gitmem" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            gitmem
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              gitmem — Spec Gap Build-Out Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/dev-boz/gitmem" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dev-boz/gitmem
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="gitmem" class="md-nav__button md-logo" aria-label="gitmem" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    gitmem
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/dev-boz/gitmem" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    dev-boz/gitmem
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ops-runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operations runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../launch-checklist/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Launch checklist
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../governance-tutorial/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Governance tutorial
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    umx.config
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    umx.models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/mcp-server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    umx.mcp_server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../config/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy and telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../upgrade-0.9-to-1.0/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrade guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../spec-parity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI spec parity audit
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#how-to-use-this-doc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to use this doc
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#status-snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Status snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#master-index" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Master index
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#suggested-milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggested milestones
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#detailed-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Detailed tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Detailed tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#blob-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Blob store
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Blob store">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-01-content-addressed-blob-store" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-01 — Content-addressed blob store
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#governance-the-trust-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Governance &amp; the trust loop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Governance &amp; the trust loop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-02-l2-approval-promotes-fact-to-s4-sota-reviewed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-02 — L2 approval promotes fact to S:4 / sota-reviewed
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-03-l2-reviewer-context-source-sessions-manifestjson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-03 — L2 reviewer context: source sessions + manifest.json
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-04-enforce-hallucinated-principle-promotion-bar" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-04 — Enforce hallucinated-principle promotion bar
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-05-user-level-singleton-dream-lock" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-05 — User-level singleton Dream lock
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-41-surface-schema-lock-in-in-l2-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-41 — Surface schema-lock-in in L2 (also)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dream-pipeline-memory-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dream pipeline &amp; memory model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dream pipeline &amp; memory model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-06-use-semantic_dedup_key-in-consolidate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-06 — Use semantic_dedup_key in Consolidate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-07-retirefix-divergent-dreamprunepy-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-07 — Retire/fix divergent dream/prune.py ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-08-apply-fragilestable-rule-2-in-prune" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-08 — Apply fragile→stable rule #2 in Prune
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-21-tag-drift-detection-in-lint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-21 — Tag-drift detection in Lint
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-22-lint-error-on-procedure-missing-triggers-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-22 — Lint error on procedure missing ## Triggers ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-23-lint-skill-non-portability-unsupported-directives-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-23 — Lint skill non-portability + unsupported directives ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-30-stage-5-requeue-native-only-sessions-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-30 — Stage-5: requeue native-only sessions ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-31-dedicated-gap-fill-pr-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-31 — Dedicated gap-fill PR ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-32-orient-quarantine-self-derived-llm_inference-facts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-32 — Orient: quarantine self-derived llm_inference facts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-33-untrusted_sourcecontamination_risk-propagation-l2-block" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-33 — untrusted_source/contamination_risk propagation + L2 block
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#injection-context-budget-retrieval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Injection, context budget &amp; retrieval
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Injection, context budget &amp; retrieval">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-09-tool-adapter-context-budget-inference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-09 — Tool-adapter context-budget inference
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-10-emit-retrieval-fidelity-tags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-10 — Emit retrieval-fidelity tags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-11-memory-chronicles-layered-context-blocks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-11 — MEMORY CHRONICLES layered context blocks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-24-injection-auditjsonl-with-reasonrelevance_scorededup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-24 — injection-audit.jsonl with reason/relevance_score/dedup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-25-min_facts-under-budget-warning-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-25 — min_facts under-budget warning ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessions-git-strategy-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sessions, git strategy &amp; safety
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sessions, git strategy &amp; safety">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-12-binarymedia-pre-ingest-interception-quarantine" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-12 — Binary/media pre-ingest interception + quarantine
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-13-honor-tombstone-suppress_from-rederiveaudit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-13 — Honor tombstone suppress_from rederive/audit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-14-18-same-fact_id-mergequarantine-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-14 — §18 same-fact_id merge/quarantine rule
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-15-async-push-queue-non-ff-retrybackoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-15 — Async push queue + non-ff retry/backoff
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-26-startup-safety-sweep-should-push-remotehybrid-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-26 — Startup safety-sweep should push (remote/hybrid) ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-37-diary-session-handover-8a" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-37 — Diary + Session Handover (§8a)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redaction-privacy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redaction &amp; privacy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Redaction &amp; privacy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-27-surface-high-entropy-redactions-in-umx-status-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-27 — Surface high-entropy redactions in umx status ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-28-add-gcp-stripe-builtin-redaction-patterns-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-28 — Add GCP + Stripe builtin redaction patterns ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#diagnostics-viewer-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Diagnostics, viewer &amp; architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Diagnostics, viewer &amp; architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-17-doctor-add-auth-push-queue-index-staleness-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-17 — doctor: add auth, push-queue, index-staleness checks
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-18-viewer-pipeline-health-rejection-escalation-rates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-18 — Viewer pipeline-health: rejection + escalation rates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-29-hierarchical-memory-tree-machine-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-29 — Hierarchical memory tree + machine scope
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-16-reasoning-artifacts-memoryartifacts-invalidates_when" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-16 — Reasoning artifacts (memory/artifacts/, invalidates_when)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#adapters-interop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adapters &amp; interop
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Adapters &amp; interop">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-19-fix-native-adapter-memory_typesource_type" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-19 — Fix native-adapter memory_type/source_type
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-20-wire-aip-workspace-ingest-into-dream-orient" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-20 — Wire AIP workspace/ ingest into Dream Orient
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-36-native-adapters-read-real-stores" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-36 — Native adapters read real stores
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-38-umx-export-format-memories-memories-projection-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-38 — umx export --format memories (/memories projection) ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-39-routingroutingmd-index-generator-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-39 — routing/ROUTING.md index generator ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-40-umx-import-tool-alias-for-adapter-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-40 — umx import --tool alias for --adapter ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#strength-scoring-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strength / scoring details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Strength / scoring details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gap-34-dream_consolidation-source-weight-floor-of-avg-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-34 — dream_consolidation source weight = floor of avg ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#gap-35-corroboration-independence-keys-on-source_tool-ew" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GAP-35 — Corroboration independence keys on source_tool ✅EW
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#easy-wins-do-these-first" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Easy wins (do these first)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#doc-spec-hygiene" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Doc / spec hygiene
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-do-not-build-spec-declared-deferrals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope — do NOT build (spec-declared deferrals)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verification-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="gitmem-spec-gap-build-out-plan">gitmem — Spec Gap Build-Out Plan<a class="headerlink" href="#gitmem-spec-gap-build-out-plan" title="Permanent link">&para;</a></h1>
+<p><strong>Generated:</strong> 2026-05-29 · <strong>Branch:</strong> <code>spec-v0_10-unified-update</code> (7 commits ahead of <code>main</code>, in sync with origin) · <strong>Spec audited:</strong> <code>gitmem-spec-v0_9.md</code> · <strong>Tests:</strong> 787 passing.</p>
+<p>This document is a <strong>hand-off task list</strong> to bring the <code>umx/</code> implementation to full parity with the spec, plus the roadmap items worth doing now. Every task was derived by reading a spec section and verifying the corresponding code (file:line evidence inline). The narrow CLI-flag matrix in <code>docs/spec-parity.md</code> is complementary; this plan covers <strong>behavior, components, and data-model fidelity</strong> that the flag matrix explicitly does not.</p>
+<h2 id="how-to-use-this-doc">How to use this doc<a class="headerlink" href="#how-to-use-this-doc" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Tasks are <code>GAP-NN</code> (parity gaps) and <code>HYG-NN</code> (doc/spec hygiene). Reference them in commits/PRs/issues.</li>
+<li>Each task has <strong>Sev / Effort / Bucket / Area</strong>, the <strong>spec ref</strong>, the <strong>current state</strong> (with file:line), <strong>what to build</strong>, and <strong>acceptance criteria</strong>.</li>
+<li><strong>Bucket A</strong> = code is missing a normative (MUST/SHOULD) behavior the spec describes as shipped → <em>build it</em>.</li>
+<li><strong>Bucket B</strong> = the spec over-claims (describes something as shipped that is really roadmap/optional) → <em>build it, OR demote the spec text to roadmap</em>. The README is honest about alpha status; the spec is the optimistic document. Since the goal is to fully build out, the default action is <strong>build</strong>; "cut from spec" is noted where it's a legitimate option.</li>
+<li><strong>Effort:</strong> <code>S</code> ≈ &lt;½ day · <code>M</code> ≈ ½–2 days · <code>L</code> ≈ multi-day.</li>
+<li><strong>✅EW</strong> marks an easy win (small + self-contained + clear value). All ✅EW items are collected in <a href="#easy-wins-do-these-first">Easy Wins</a>.</li>
+</ul>
+<blockquote>
+<p>Scope caveat: this is thorough across all 31 spec sections, but not a line-by-line audit of all ~120 modules. The six underlying area reports contain additional file:line detail if a task needs more.</p>
+</blockquote>
+<hr />
+<h2 id="status-snapshot">Status snapshot<a class="headerlink" href="#status-snapshot" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>State</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>On latest?</td>
+<td>✅ Yes — <code>spec-v0_10-unified-update</code>, ahead of <code>main</code>, synced with its remote.</td>
+</tr>
+<tr>
+<td>Spec file vs branch</td>
+<td>⚠️ Spec still named <code>gitmem-spec-v0_9.md</code> while branch is "v0_10" (see HYG-04).</td>
+</tr>
+<tr>
+<td>Untracked file</td>
+<td><code>README.local-before-github-merge.md</code> — decide commit/delete (HYG-05).</td>
+</tr>
+<tr>
+<td>Core machinery</td>
+<td>✅ Faithful: scope/strength/scoring model, FTS5 + incremental rebuild, semantic re-rank, budget packing + L0/L1/L2 disclosure, session JSONL/<code>_meta</code>, tombstone format, backup export/import, signed commits, MCP tools, captures, 5-phase Dream + three-gate triggers.</td>
+</tr>
+<tr>
+<td>Gaps</td>
+<td>41 build tasks + 6 hygiene tasks below.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="master-index">Master index<a class="headerlink" href="#master-index" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Area</th>
+<th>Title</th>
+<th>Sev</th>
+<th>Effort</th>
+<th>Bucket</th>
+<th style="text-align: center;">EW</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>GAP-01</td>
+<td>Blob</td>
+<td>Content-addressed blob store (<code>blobs.py</code> + <code>umx blob</code> + doctor)</td>
+<td>Critical</td>
+<td>M</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-02</td>
+<td>Governance</td>
+<td>L2 approval promotes fact to S:4 / <code>sota-reviewed</code></td>
+<td>Critical</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-03</td>
+<td>Governance</td>
+<td>L2 reviewer context: include source sessions + <code>manifest.json</code></td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-04</td>
+<td>Governance</td>
+<td>Enforce hallucinated-principle promotion bar</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-05</td>
+<td>Dream</td>
+<td>User-level singleton lock <code>~/.gitmem/state/dream.lock</code></td>
+<td>Major</td>
+<td>S–M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-06</td>
+<td>Dream</td>
+<td>Route Consolidate dedup/corroboration through <code>semantic_dedup_key</code></td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-07</td>
+<td>Dream</td>
+<td>Retire/fix divergent <code>dream/prune.py</code></td>
+<td>Major</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-08</td>
+<td>Dream</td>
+<td>Apply fragile→stable rule #2 in Prune</td>
+<td>Major</td>
+<td>S–M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-09</td>
+<td>Injection</td>
+<td>Tool-adapter context-budget inference</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-10</td>
+<td>Injection</td>
+<td>Emit retrieval-fidelity tags</td>
+<td>Major</td>
+<td>M</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-11</td>
+<td>Injection</td>
+<td>MEMORY CHRONICLES layered context blocks</td>
+<td>Major</td>
+<td>L</td>
+<td>B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-12</td>
+<td>Sessions</td>
+<td>Binary/media pre-ingest interception + quarantine</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-13</td>
+<td>Tombstones</td>
+<td>Honor <code>suppress_from</code> <code>rederive</code>/<code>audit</code> phases</td>
+<td>Major</td>
+<td>S–M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-14</td>
+<td>Sessions</td>
+<td>§18 same-<code>fact_id</code> merge/quarantine rule</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-15</td>
+<td>Sessions</td>
+<td>Async push queue + non-ff retry/backoff</td>
+<td>Major</td>
+<td>M–L</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-16</td>
+<td>Architecture</td>
+<td>Reasoning artifacts (<code>memory/artifacts/</code>, <code>invalidates_when</code>)</td>
+<td>Major</td>
+<td>L</td>
+<td>B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-17</td>
+<td>Diagnostics</td>
+<td><code>doctor</code>: add auth, push-queue, index-staleness checks</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-18</td>
+<td>Viewer</td>
+<td>Pipeline-health: L1 rejection rate + escalation rate</td>
+<td>Major</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-19</td>
+<td>Adapters</td>
+<td>Fix native-adapter <code>memory_type</code>/<code>source_type</code> (+ tests)</td>
+<td>Major</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-20</td>
+<td>Interop</td>
+<td>Wire AIP <code>workspace/</code> ingest into Dream Orient</td>
+<td>Major</td>
+<td>M</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-21</td>
+<td>Lint</td>
+<td>Tag-drift detection</td>
+<td>Minor</td>
+<td>S–M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-22</td>
+<td>Lint</td>
+<td>Error on procedure missing <code>## Triggers</code></td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-23</td>
+<td>Lint</td>
+<td>Skill non-portability + unsupported-directive checks</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-24</td>
+<td>Injection</td>
+<td><code>injection-audit.jsonl</code> w/ <code>reason</code>/<code>relevance_score</code>/<code>dedup</code></td>
+<td>Minor</td>
+<td>M</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-25</td>
+<td>Injection</td>
+<td><code>min_facts</code> under-budget warning</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-26</td>
+<td>Sessions</td>
+<td>Startup safety-sweep should push (remote/hybrid)</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-27</td>
+<td>Redaction</td>
+<td>Surface high-entropy redactions in <code>umx status</code></td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-28</td>
+<td>Redaction</td>
+<td>Add GCP + Stripe builtin patterns</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-29</td>
+<td>Viewer</td>
+<td>Hierarchical memory tree + machine scope</td>
+<td>Minor</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-30</td>
+<td>Dream</td>
+<td>Stage-5: requeue native-only sessions (don't mark gathered)</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-31</td>
+<td>Dream</td>
+<td>Dedicated gap-fill PR</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-32</td>
+<td>Dream</td>
+<td>Orient: quarantine self-derived <code>llm_inference</code> facts</td>
+<td>Minor</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-33</td>
+<td>Dream</td>
+<td><code>untrusted_source</code>/<code>contamination_risk</code> propagation + L2 block</td>
+<td>Minor</td>
+<td>M</td>
+<td>A</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-34</td>
+<td>Strength</td>
+<td><code>dream_consolidation</code> source weight = floor of avg</td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-35</td>
+<td>Strength</td>
+<td>Corroboration independence keys on <code>source_tool</code></td>
+<td>Minor</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-36</td>
+<td>Adapters</td>
+<td>Native adapters read real stores (Claude JSONL / Copilot / Gemini)</td>
+<td>Minor</td>
+<td>M</td>
+<td>A/B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-37</td>
+<td>Sessions</td>
+<td>Diary + Session Handover (§8a) read/append/ingest</td>
+<td>Major*</td>
+<td>M–L</td>
+<td>B</td>
+<td style="text-align: center;"></td>
+</tr>
+<tr>
+<td>GAP-38</td>
+<td>Interop</td>
+<td><code>umx export --format memories</code> (<code>/memories</code> projection)</td>
+<td>Minor</td>
+<td>M</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-39</td>
+<td>Interop</td>
+<td><code>routing/ROUTING.md</code> index generator</td>
+<td>Minor</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-40</td>
+<td>Interop</td>
+<td><code>umx import --tool</code> alias for <code>--adapter</code></td>
+<td>Trivial</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>GAP-41</td>
+<td>Governance</td>
+<td>Surface schema-lock-in in L2 (also)</td>
+<td>Note</td>
+<td>S</td>
+<td>A</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-01</td>
+<td>Docs</td>
+<td>Document <code>git.*</code>/<code>telemetry.*</code>/etc. in §27; soften <code>org</code></td>
+<td>—</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-02</td>
+<td>Docs</td>
+<td>Decide build-vs-cut for <code>blobs.py</code> in §25</td>
+<td>—</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-03</td>
+<td>Docs</td>
+<td>Reconcile §26 viewer feature table with shipped reality</td>
+<td>—</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-04</td>
+<td>Docs</td>
+<td>Rename spec <code>v0_9</code>→<code>v0_10</code>; bump <code>spec_version</code></td>
+<td>—</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-05</td>
+<td>Repo</td>
+<td>Commit or delete <code>README.local-before-github-merge.md</code></td>
+<td>—</td>
+<td>S</td>
+<td>—</td>
+<td style="text-align: center;">✅</td>
+</tr>
+<tr>
+<td>HYG-06</td>
+<td>Docs</td>
+<td>Reconcile §10 native paths + §28 <code>import --tool</code> example</td>
+<td>—</td>
+<td>S</td>
+<td>B</td>
+<td style="text-align: center;">✅</td>
+</tr>
+</tbody>
+</table>
+<p>* GAP-37 is a whole spec feature (§8a) currently absent; severity depends on whether you treat diary/handover continuity as core or future.</p>
+<hr />
+<h2 id="suggested-milestones">Suggested milestones<a class="headerlink" href="#suggested-milestones" title="Permanent link">&para;</a></h2>
+<p><strong>M0 — Quick wins (≈1–2 days total):</strong> GAP-07, 22, 23, 25, 26, 27, 28, 30, 31, 34, 35, 39, 40, 41 + HYG-01, 04, 05.</p>
+<p><strong>M1 — Governance &amp; the trust loop (the project thesis):</strong> GAP-02, 03, 04, 05, 13, 19, 32, 33.</p>
+<p><strong>M2 — Memory-model correctness:</strong> GAP-06, 08, 21.</p>
+<p><strong>M3 — Safety &amp; robustness:</strong> GAP-12, 14, 15, 17.</p>
+<p><strong>M4 — Injection / retrieval depth:</strong> GAP-09, 10, 24, 11, 16.</p>
+<p><strong>M5 — Interop &amp; UX:</strong> GAP-20, 36, 38, 18, 29, 37, 01.</p>
+<hr />
+<h2 id="detailed-tasks">Detailed tasks<a class="headerlink" href="#detailed-tasks" title="Permanent link">&para;</a></h2>
+<h3 id="blob-store">Blob store<a class="headerlink" href="#blob-store" title="Permanent link">&para;</a></h3>
+<h4 id="gap-01-content-addressed-blob-store">GAP-01 — Content-addressed blob store<a class="headerlink" href="#gap-01-content-addressed-blob-store" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Critical · <strong>Effort:</strong> M · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Blob</li>
+<li><strong>Spec:</strong> §25 ~L2780 lists <code>umx/blobs.py</code> ("content-addressed blob store: <code>umx blob store/get/list/purge</code>"); §25 ~L2782 lists a <code>doctor</code> "stale blobs" check; §19 ~L2203 routes small text-safe screenshots to <code>local/blobs/</code>.</li>
+<li><strong>Now:</strong> Missing — <code>umx/blobs.py</code> does not exist; no <code>@main.group("blob")</code> in <code>cli.py</code> (only git-plumbing <code>git_blob_sha</code>); README makes no blob claim, so only the spec asserts this.</li>
+<li><strong>Build:</strong> Create <code>umx/blobs.py</code> with <code>store(path|bytes)→sha</code>, <code>get(sha)</code>, <code>list()</code>, <code>purge(unreferenced)</code> against <code>local/blobs/&lt;sha&gt;</code>; add a <code>umx blob</code> Click group; add a "stale blobs" check to <code>doctor.run_doctor</code> (orphans not referenced by any fact/session). Coordinate with GAP-12 (binary interception writes here).</li>
+<li><strong>Done when:</strong> <code>umx blob store/get/list/purge</code> round-trips a file by content hash; <code>doctor</code> reports unreferenced blobs; tests cover store/get/purge + doctor staleness.</li>
+<li><strong>Deps:</strong> Pairs with GAP-12. Alternatively HYG-02 (cut from spec if you decide blobs are out of scope).</li>
+</ul>
+<h3 id="governance-the-trust-loop">Governance &amp; the trust loop<a class="headerlink" href="#governance-the-trust-loop" title="Permanent link">&para;</a></h3>
+<h4 id="gap-02-l2-approval-promotes-fact-to-s4-sota-reviewed">GAP-02 — L2 approval promotes fact to S:4 / <code>sota-reviewed</code><a class="headerlink" href="#gap-02-l2-approval-promotes-fact-to-s4-sota-reviewed" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Critical · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Governance</li>
+<li><strong>Spec:</strong> §5 ~L400 &amp; §6 ~L586 — L2 (SotA) approval promotes to S:4 with <code>verification: sota-reviewed</code> (a +1.0 verification bonus); L3 confirmation elevates to S:5.</li>
+<li><strong>Now:</strong> Missing — <code>Verification.SOTA_REVIEWED</code> is <strong>only</strong> referenced in <code>models.py:57</code> (enum), <code>strength.py:31</code> (weight), <code>memory.py:33</code> (short-code); it is never <em>assigned</em>. The production review path (<code>dream/l2_review.py:26</code> <code>run_l2_review_with_providers</code>) yields approve/reject/escalate, and the pipeline only mutates strength <strong>downward</strong> (<code>dream/pipeline.py:324</code>). The governance→strength feedback loop is open.</li>
+<li><strong>Build:</strong> In the L2 review-apply step, on an <code>approve</code> verdict set <code>verification=SOTA_REVIEWED</code> and raise <code>encoding_strength</code> to ≥4; on L3 human confirmation, raise to S:5 (the <code>umx confirm</code> path already exists at <code>fact_actions.py:783</code> — verify it sets S:5).</li>
+<li><strong>Done when:</strong> A fact carried through an <code>approve</code> L2 verdict ends with <code>encoding_strength&gt;=4</code> and <code>verification=="sota-reviewed"</code>; a test asserts the promotion and the resulting verification bonus in scoring.</li>
+<li><strong>Deps:</strong> GAP-03 (reviewer needs proper context to approve responsibly).</li>
+</ul>
+<h4 id="gap-03-l2-reviewer-context-source-sessions-manifestjson">GAP-03 — L2 reviewer context: source sessions + <code>manifest.json</code><a class="headerlink" href="#gap-03-l2-reviewer-context-source-sessions-manifestjson" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Governance</li>
+<li><strong>Spec:</strong> §12 ~L1610–1613 — the L2 prompt MUST include the source session(s), <code>CONVENTIONS.md</code>, the existing facts being superseded/contradicted, AND <code>meta/manifest.json</code>. §12 ~L1564: L2 "reviews diffs against source sessions."</li>
+<li><strong>Now:</strong> Partial — <code>dream/l2_review.py:206</code> <code>build_l2_review_context</code> includes only conventions, <code>existing_facts</code>, <code>proposed_facts</code>. No source-session text, no manifest. L2 therefore cannot verify extraction fidelity against source.</li>
+<li><strong>Build:</strong> Load the referenced raw sessions and <code>meta/manifest.json</code>; add both to the L2 context payload (bounded/truncated as needed).</li>
+<li><strong>Done when:</strong> The L2 context dict contains source-session excerpts and manifest topics/hotspots; an eval case shows the reviewer rejecting a fact unsupported by its cited session.</li>
+</ul>
+<h4 id="gap-04-enforce-hallucinated-principle-promotion-bar">GAP-04 — Enforce hallucinated-principle promotion bar<a class="headerlink" href="#gap-04-enforce-hallucinated-principle-promotion-bar" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Governance</li>
+<li><strong>Spec:</strong> §22 ~L2617 — principles require ≥3 sessions + S:≥4 sustained for 14 days + L3 gate.</li>
+<li><strong>Now:</strong> Partial — the L3 escalation label fires for any PR touching <code>principles/</code> (<code>governance.py:771,794</code>), but no code checks the quantitative evidence bar before a fact lands in <code>principles/topics/</code>.</li>
+<li><strong>Build:</strong> In the promotion path (<code>umx promote --to principle</code> and any Dream principle-promotion), gate on session-count ≥3, strength ≥4, and age ≥14 days in addition to the L3 label.</li>
+<li><strong>Done when:</strong> A fact failing any threshold is rejected/escalated rather than promoted; tests cover each threshold boundary.</li>
+</ul>
+<h4 id="gap-05-user-level-singleton-dream-lock">GAP-05 — User-level singleton Dream lock<a class="headerlink" href="#gap-05-user-level-singleton-dream-lock" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> S–M · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §11 ~L1453 — a Dream run MUST acquire a singleton lock at <code>~/.gitmem/state/dream.lock</code> before reading inputs (prevents two Dream processes racing across repos/shells on one machine).</li>
+<li><strong>Now:</strong> Missing — <code>dream/gates.py:44</code> <code>DreamLock</code> manages only the repo-local <code>meta/dream.lock</code>; no <code>~/.gitmem/state</code> lock (grep: no matches). Repo-local lock gives per-clone protection only.</li>
+<li><strong>Build:</strong> Add a user-level lock (acquire / heartbeat / stale-reclaim) at <code>~/.gitmem/state/dream.lock</code>, acquired in <code>run()</code> before orient/gather, released in <code>finally</code>.</li>
+<li><strong>Done when:</strong> A second concurrent <code>umx dream</code> on a different repo of the same machine refuses to run while the first holds the lock; stale locks (dead PID/expired heartbeat) are reclaimed; test simulates contention.</li>
+</ul>
+<h4 id="gap-41-surface-schema-lock-in-in-l2-also">GAP-41 — Surface schema-lock-in in L2 (also)<a class="headerlink" href="#gap-41-surface-schema-lock-in-in-l2-also" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Note · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Governance · ✅EW</li>
+<li><strong>Spec:</strong> §22 ~L2602 — L2 reviewer SHOULD flag cycles where &gt;80% of new candidates fall into existing convention buckets.</li>
+<li><strong>Now:</strong> Present in Lint (<code>dream/pipeline.py:275</code> <code>schema_lock_in_findings</code>, surfaced via lint PR), but not in the L2 reviewer context.</li>
+<li><strong>Build:</strong> Pass the schema-lock-in ratio into the L2 context so the reviewer can also weigh it. (Optional; current Lint placement already reaches a human.)</li>
+<li><strong>Done when:</strong> L2 context includes the lock-in ratio; or close as won't-do with a note that Lint covers the SHOULD.</li>
+</ul>
+<h3 id="dream-pipeline-memory-model">Dream pipeline &amp; memory model<a class="headerlink" href="#dream-pipeline-memory-model" title="Permanent link">&para;</a></h3>
+<h4 id="gap-06-use-semantic_dedup_key-in-consolidate">GAP-06 — Use <code>semantic_dedup_key</code> in Consolidate<a class="headerlink" href="#gap-06-use-semantic_dedup_key-in-consolidate" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §5 ~L413 — dedup key = <code>SHA-256(lowercase(text + "\x00" + scope + "\x00" + topic))[:16]</code>; same-key facts are merge/corroboration candidates.</li>
+<li><strong>Now:</strong> Stubbed — <code>identity.py:28</code> defines <code>semantic_dedup_key</code> with <strong>zero call sites</strong>; Consolidate matches on <code>existing.topic == candidate.topic and existing.text.lower() == candidate.text.lower()</code> (<code>dream/pipeline.py:243</code>), ignoring <code>scope</code>. Also the impl adds a <code>.strip()</code> not in the spec formula.</li>
+<li><strong>Build:</strong> Route Consolidate merge/corroboration candidate detection through <code>semantic_dedup_key(text, scope, topic)</code>; remove the <code>.strip()</code> (or amend the spec); ensure corroboration/conflict paths consider scope.</li>
+<li><strong>Done when:</strong> Two facts identical in text+scope+topic are detected as merge candidates while a same-text/different-scope pair is not; tests cover the key and the new candidate detection.</li>
+</ul>
+<h4 id="gap-07-retirefix-divergent-dreamprunepy-ew">GAP-07 — Retire/fix divergent <code>dream/prune.py</code> ✅EW<a class="headerlink" href="#gap-07-retirefix-divergent-dreamprunepy-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §5 ~L402 prune threshold default 2 on <code>retention_score</code>; §6 retention formula; §9 ~L978 MEMORY.md scored by <code>relevance_score</code>.</li>
+<li><strong>Now:</strong> Divergent dead code — <code>dream/prune.py:20</code> <code>should_prune</code> ignores <code>retention_score</code>/recency/usage and hard-codes <code>encoding_strength&lt;2</code>→prune, <code>==2 &amp; llm_inference</code>→"archive" (a state <code>models.py</code> doesn't define); <code>dream/prune.py:95</code> sorts MEMORY.md by <code>(encoding_strength, created)</code>. The live pipeline correctly uses <code>strength.should_prune</code> (<code>pipeline.py:339</code>) and <code>memory.write_memory_md</code> (relevance-scored). <code>dream/prune.py</code> appears to be an unused parallel implementation contradicting the spec.</li>
+<li><strong>Build:</strong> Delete <code>dream/prune.py</code>, or rewrite it to delegate to <code>strength.should_prune</code> / <code>memory.write_memory_md</code>. Confirm no imports rely on it first.</li>
+<li><strong>Done when:</strong> No module contradicts the spec retention model; grep shows no live import of the divergent functions; tests green.</li>
+</ul>
+<h4 id="gap-08-apply-fragilestable-rule-2-in-prune">GAP-08 — Apply fragile→stable rule #2 in Prune<a class="headerlink" href="#gap-08-apply-fragilestable-rule-2-in-prune" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> S–M · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §14 ~L1772–1778 — three fragile→stable rules; "Prune applies rules 1 and 2 automatically every cycle." Rule 2 = independent corroboration (different tool, or same tool ≥24h later).</li>
+<li><strong>Now:</strong> Partial — Rule 1 (survive-one-cycle) via <code>stabilize_facts</code> (<code>dream/consolidation.py:8</code>, <code>pipeline.py:343</code>); Rule 3 (<code>umx confirm</code>) via <code>fact_actions.py:783</code>. Rule 2 only stabilizes when corroboration arrives in the same Consolidate pass (<code>pipeline.py:246</code>); an already-stored fragile fact independently corroborated in a prior cycle isn't re-checked distinctly.</li>
+<li><strong>Build:</strong> In Prune, additionally stabilize fragile facts that already record independent corroboration (<code>corroborated_by_*</code>), independent of the survive-one-cycle rule.</li>
+<li><strong>Done when:</strong> A fragile fact with recorded independent corroboration is promoted to stable in the next Prune even if it didn't gain new corroboration that cycle; test covers it.</li>
+</ul>
+<h4 id="gap-21-tag-drift-detection-in-lint">GAP-21 — Tag-drift detection in Lint<a class="headerlink" href="#gap-21-tag-drift-detection-in-lint" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S–M · <strong>Bucket:</strong> A · <strong>Area:</strong> Lint</li>
+<li><strong>Spec:</strong> §11 ~L1495 &amp; §12 ~L1598 — Lint flags tag drift (<code>database</code>/<code>db</code>/<code>postgres</code>) and proposes canonicalisation (<code>type: lint</code>).</li>
+<li><strong>Now:</strong> Missing — <code>dream/lint.py:108</code> <code>generate_lint_findings</code> covers orphans, stale refs, convention violations, contradictions, reverify, orphaned scope — but no tag-drift check. <code>Fact.tags</code> exists (<code>models.py:239</code>).</li>
+<li><strong>Build:</strong> Add a tag-clustering/normalisation finding (e.g., near-duplicate tags by edit distance / known synonym map) to <code>generate_lint_findings</code>.</li>
+<li><strong>Done when:</strong> A corpus with <code>db</code>/<code>database</code> produces a lint finding proposing one canonical tag; test covers it.</li>
+</ul>
+<h4 id="gap-22-lint-error-on-procedure-missing-triggers-ew">GAP-22 — Lint error on procedure missing <code>## Triggers</code> ✅EW<a class="headerlink" href="#gap-22-lint-error-on-procedure-missing-triggers-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Lint</li>
+<li><strong>Spec:</strong> §9a ~L1101 — <code>## Triggers</code> is required; a procedure without triggers is a lint error.</li>
+<li><strong>Now:</strong> Missing — <code>procedures.py:91</code> <code>read_procedure_file</code> parses triggers but never flags absence; no procedure check in <code>dream/lint.py</code>.</li>
+<li><strong>Build:</strong> Emit a lint finding when a parsed procedure has zero triggers.</li>
+<li><strong>Done when:</strong> A trigger-less procedure file yields a lint finding; test covers it.</li>
+</ul>
+<h4 id="gap-23-lint-skill-non-portability-unsupported-directives-ew">GAP-23 — Lint skill non-portability + unsupported directives ✅EW<a class="headerlink" href="#gap-23-lint-skill-non-portability-unsupported-directives-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Lint</li>
+<li><strong>Spec:</strong> §9c ~L1184–1185, ~L1291 — <code>query:</code>/<code>link:</code> SHOULD be reported as unsupported; skills referencing paths outside skills-adjacent namespaces are flagged non-portable by <code>umx lint</code>.</li>
+<li><strong>Now:</strong> Partial — <code>skills.py:367,371</code> <code>resolve_skill</code> collects <code>unsupported_directives</code>/<code>blocked_paths</code> at runtime, but <code>dream/lint.py</code> does no skill linting; the runtime collection isn't surfaced through lint.</li>
+<li><strong>Build:</strong> Add skill checks to <code>generate_lint_findings</code> for unsupported directives and non-portable <code>load:</code> targets, reusing the <code>resolve_skill</code> collectors.</li>
+<li><strong>Done when:</strong> A skill with a <code>query:</code> directive or out-of-namespace <code>load:</code> produces lint findings; test covers it.</li>
+</ul>
+<h4 id="gap-30-stage-5-requeue-native-only-sessions-ew">GAP-30 — Stage-5: requeue native-only sessions ✅EW<a class="headerlink" href="#gap-30-stage-5-requeue-native-only-sessions-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §11 ~L1543 — graceful degradation Stage 5: native-only ran → mark <code>partial</code> in MEMORY.md AND queue a full dream next trigger.</li>
+<li><strong>Now:</strong> Partial — <code>dream_status: partial</code> is written (<code>memory.py:674</code>), but <code>pipeline.py:1434</code> calls <code>mark_sessions_gathered</code> for ALL gathered sessions including native-only ones, and <code>extract.py:340</code> skips already-gathered next run (<code>skip_gathered=True</code>), so native-only sessions are never LLM-re-extracted.</li>
+<li><strong>Build:</strong> Don't mark native-only sessions as gathered (or track them separately) so the next provider-available run re-extracts them.</li>
+<li><strong>Done when:</strong> After a native-only run, the next full Dream re-processes those sessions; test covers the requeue.</li>
+</ul>
+<h4 id="gap-31-dedicated-gap-fill-pr-ew">GAP-31 — Dedicated gap-fill PR ✅EW<a class="headerlink" href="#gap-31-dedicated-gap-fill-pr-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §11 ~L1446 — gap facts batched into a dedicated PR: <code>[dream/l1] Gap-fill proposals from session &lt;id&gt;</code>.</li>
+<li><strong>Now:</strong> Divergent — gap facts are created correctly (S:1, <code>llm_inference</code>, fragile — <code>dream/extract.py:386</code>) with <code>type: gap-fill</code> label (<code>governance.py:319</code>) but merged into the single L1 snapshot PR.</li>
+<li><strong>Build:</strong> Emit a separate gap-fill PR when gap candidates exist (or document the batching as an intentional simplification).</li>
+<li><strong>Done when:</strong> A run with gap candidates opens a distinct gap-fill PR; test covers the title/labeling.</li>
+</ul>
+<h4 id="gap-32-orient-quarantine-self-derived-llm_inference-facts">GAP-32 — Orient: quarantine self-derived <code>llm_inference</code> facts<a class="headerlink" href="#gap-32-orient-quarantine-self-derived-llm_inference-facts" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §22 ~L2632 — Orient traces provenance chains; <code>llm_inference</code> facts with no session anchor that originate from a previous Dream PR are quarantined (anti self-modifying-memory loop).</li>
+<li><strong>Now:</strong> Partial — <code>pipeline.py:141</code> <code>orient()</code> handles only code-anchor staleness; a per-hop confidence decay helper exists (<code>dream/decay.py:23</code>) but is a different mechanism; no quarantine of self-derived facts.</li>
+<li><strong>Build:</strong> In Orient, detect <code>llm_inference</code> facts whose provenance traces to a prior Dream PR (not a raw session) and quarantine them.</li>
+<li><strong>Done when:</strong> A fact whose only provenance is a Dream-authored commit is quarantined in Orient; test covers it.</li>
+</ul>
+<h4 id="gap-33-untrusted_sourcecontamination_risk-propagation-l2-block">GAP-33 — <code>untrusted_source</code>/<code>contamination_risk</code> propagation + L2 block<a class="headerlink" href="#gap-33-untrusted_sourcecontamination_risk-propagation-l2-block" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Dream</li>
+<li><strong>Spec:</strong> §22 ~L2631 — <code>untrusted_source</code> propagates through extraction; handoff content carries <code>contamination_risk</code>; L2 blocks high-strength promotion of untrusted-provenance facts.</li>
+<li><strong>Now:</strong> Partial — the primary defense (<code>llm_inference</code> needs corroboration to reach S:3) exists, but <code>untrusted_source</code>/<code>contamination_risk</code> appear nowhere (grep: no matches).</li>
+<li><strong>Build:</strong> Add the two tags on handoff/external-derived facts and have L2 block high-strength promotion when present.</li>
+<li><strong>Done when:</strong> A fact tagged <code>untrusted_source</code> cannot be promoted past the configured strength ceiling via L2; test covers it.</li>
+</ul>
+<h3 id="injection-context-budget-retrieval">Injection, context budget &amp; retrieval<a class="headerlink" href="#injection-context-budget-retrieval" title="Permanent link">&para;</a></h3>
+<h4 id="gap-09-tool-adapter-context-budget-inference">GAP-09 — Tool-adapter context-budget inference<a class="headerlink" href="#gap-09-tool-adapter-context-budget-inference" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Injection</li>
+<li><strong>Spec:</strong> §17 ~L1996 — if <code>--max-tokens</code> is unset, umx infers the budget from the tool adapter's known limit.</li>
+<li><strong>Now:</strong> Missing — <code>cli.py:662</code> hardcodes <code>--max-tokens</code> default <code>4000</code> regardless of <code>--tool</code>; <code>InjectConfig</code> (<code>config.py:99–110</code>) has no token-limit field; adapters have no limit attribute. Tool name flows only into matching, never budget.</li>
+<li><strong>Build:</strong> Add a per-tool context-limit map (or adapter attribute); have <code>inject_for_tool</code> fall back to it when <code>max_tokens</code> is unset, with a sane default.</li>
+<li><strong>Done when:</strong> <code>umx inject --tool X</code> (no <code>--max-tokens</code>) uses X's limit; test asserts per-tool budgets.</li>
+</ul>
+<h4 id="gap-10-emit-retrieval-fidelity-tags">GAP-10 — Emit retrieval-fidelity tags<a class="headerlink" href="#gap-10-emit-retrieval-fidelity-tags" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Injection</li>
+<li><strong>Spec:</strong> §20 ~L2282–2303 — each injected block SHOULD carry a <code>retrieval_fidelity</code> tag (<code>exact|lexical|semantic|fallback|expired</code>); IMX routing SHOULD gate on <code>exact</code>/<code>lexical</code>.</li>
+<li><strong>Now:</strong> Missing — no matches anywhere; <code>_render_fact</code> (<code>inject.py:195–211</code>) emits only <code>[id S verification src]</code>; block headers carry no fidelity comment, though the pipeline knows which retrieval path produced each fact.</li>
+<li><strong>Build:</strong> Emit <code>&lt;!-- retrieval_fidelity: &lt;level&gt; source: &lt;path&gt; --&gt;</code> on each injected block, deriving the level from FTS vs semantic re-rank vs recency fallback.</li>
+<li><strong>Done when:</strong> Injected output carries fidelity tags reflecting the actual retrieval path; test asserts levels for exact/lexical/semantic/fallback cases.</li>
+</ul>
+<h4 id="gap-11-memory-chronicles-layered-context-blocks">GAP-11 — MEMORY CHRONICLES layered context blocks<a class="headerlink" href="#gap-11-memory-chronicles-layered-context-blocks" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> L · <strong>Bucket:</strong> B · <strong>Area:</strong> Injection</li>
+<li><strong>Spec:</strong> §16 ~L1899–1918 — Dream SHOULD emit <code>context/layers/{task_class}-{date}/{numeric,temporal,narrative,digest}.md</code>; the digest is always injected, others optional per budget; generated once per dream cycle.</li>
+<li><strong>Now:</strong> Missing — no matches for <code>context/layers</code>, <code>numeric.md</code>, <code>narrative.md</code>, <code>digest.md</code>; no dream sub-phase produces layers; injection has no layer-selection logic.</li>
+<li><strong>Build:</strong> Add a Dream layer-generation sub-phase writing the four files per task class; add a budget-aware layer selector in injection (digest default, others as budget allows).</li>
+<li><strong>Done when:</strong> A dream cycle produces the four layer files; injection includes the digest and optionally upgrades to richer layers under budget; tests cover generation + selection.</li>
+</ul>
+<h4 id="gap-24-injection-auditjsonl-with-reasonrelevance_scorededup">GAP-24 — <code>injection-audit.jsonl</code> with <code>reason</code>/<code>relevance_score</code>/<code>dedup</code><a class="headerlink" href="#gap-24-injection-auditjsonl-with-reasonrelevance_scorededup" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Injection</li>
+<li><strong>Spec:</strong> §16 ~L1919–1938 — append-only <code>local/injection-audit.jsonl</code> per-event with <code>reason</code> (e.g. <code>scope:…,keyword:…</code>), <code>relevance_score</code>, and <code>dedup: already_injected_this_session</code>.</li>
+<li><strong>Now:</strong> Divergent — no <code>injection-audit</code> artifact; injection events go to SQLite <code>usage_events</code> in <code>meta/usage.sqlite</code> (<code>search.py:284–300</code>, <code>_record_injection_event</code> 894–965) capturing <code>injection_point</code>/<code>disclosure_level</code>/<code>token_count</code>/<code>used_in_output</code> but not <code>reason</code>/<code>relevance_score</code>; dedup is enforced via suppression, not a logged field.</li>
+<li><strong>Build:</strong> Either emit the spec JSONL artifact, or add <code>reason</code>/<code>relevance_score</code> columns + a <code>dedup</code> marker to the SQLite events and document the substitution in §16.</li>
+<li><strong>Done when:</strong> Per-injection <code>reason</code> + <code>relevance_score</code> are recorded and a dedup signal is logged; test asserts the fields.</li>
+</ul>
+<h4 id="gap-25-min_facts-under-budget-warning-ew">GAP-25 — <code>min_facts</code> under-budget warning ✅EW<a class="headerlink" href="#gap-25-min_facts-under-budget-warning-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Injection</li>
+<li><strong>Spec:</strong> §17 ~L2023 — if packing yields fewer than <code>inject.min_facts</code> (default 3), SHOULD warn the budget may be too small.</li>
+<li><strong>Now:</strong> Stubbed — <code>budget.py:93–95</code> checks <code>len(selected) &lt; cfg.inject.min_facts</code> but both branches return the identical <code>BudgetDecision</code>; no warning channel.</li>
+<li><strong>Build:</strong> Surface a warning (return flag / log) when selected count &lt; <code>min_facts</code>.</li>
+<li><strong>Done when:</strong> A tiny budget yields a visible "budget may be too small" warning; test covers it.</li>
+</ul>
+<h3 id="sessions-git-strategy-safety">Sessions, git strategy &amp; safety<a class="headerlink" href="#sessions-git-strategy-safety" title="Permanent link">&para;</a></h3>
+<h4 id="gap-12-binarymedia-pre-ingest-interception-quarantine">GAP-12 — Binary/media pre-ingest interception + quarantine<a class="headerlink" href="#gap-12-binarymedia-pre-ingest-interception-quarantine" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Sessions</li>
+<li><strong>Spec:</strong> §19 ~L2203 — recognized binary types (<code>.png/.jpg/.mp4/.wav</code>, magic-byte detected) MUST be intercepted before reaching <code>sessions/</code>; large/opaque binaries MUST be quarantined; small text-safe screenshots MAY go to <code>local/blobs/</code> (default 100KB cap).</li>
+<li><strong>Now:</strong> Missing — no magic-byte / extension / size-cap sniffing in <code>sessions.py</code>, <code>collect.py</code>, or <code>session_runtime.py</code>; <code>write_session</code> runs text redaction only; binary payloads pass straight through.</li>
+<li><strong>Build:</strong> Add a magic-byte + size-cap pre-ingest check in the write/collect path that routes recognized binaries to <code>local/blobs/</code> (GAP-01) or <code>local/quarantine/</code>.</li>
+<li><strong>Done when:</strong> A PNG/large binary in a session payload is intercepted (blob or quarantine), never written to <code>sessions/</code>; tests cover interception + size cap.</li>
+<li><strong>Deps:</strong> GAP-01 (blob destination).</li>
+</ul>
+<h4 id="gap-13-honor-tombstone-suppress_from-rederiveaudit">GAP-13 — Honor tombstone <code>suppress_from</code> <code>rederive</code>/<code>audit</code><a class="headerlink" href="#gap-13-honor-tombstone-suppress_from-rederiveaudit" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> S–M · <strong>Bucket:</strong> A · <strong>Area:</strong> Tombstones</li>
+<li><strong>Spec:</strong> §21 ~L2567 — tombstones checked during Gather, re-derivation, AND audit (<code>suppress_from:["gather","rederive","audit"]</code>).</li>
+<li><strong>Now:</strong> Partial — <code>is_suppressed(...phase="gather")</code> only; all call sites pass/default <code>"gather"</code> (<code>inject.py:164,190</code>; <code>dream/pipeline.py:237,334</code>); <code>audit.py</code> never calls <code>is_suppressed</code>. A fact tombstoned only from <code>audit</code>/<code>rederive</code> is never suppressed.</li>
+<li><strong>Build:</strong> Pass the active phase from the audit/re-derive paths to <code>is_suppressed</code>, or collapse <code>suppress_from</code> to a single flag and update §21.</li>
+<li><strong>Done when:</strong> A fact tombstoned with <code>suppress_from:["audit"]</code> is suppressed during <code>umx audit</code>; test covers each phase.</li>
+</ul>
+<h4 id="gap-14-18-same-fact_id-mergequarantine-rule">GAP-14 — §18 same-<code>fact_id</code> merge/quarantine rule<a class="headerlink" href="#gap-14-18-same-fact_id-mergequarantine-rule" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Sessions</li>
+<li><strong>Spec:</strong> §18 ~L2080–2085 — identical <code>fact_id</code> → merge metadata (take higher trust); conflicting text with same id → data-integrity error → quarantine; never silently overwrite a higher-strength fact.</li>
+<li><strong>Now:</strong> Missing — <code>merge.py</code> only resolves semantic conflicts between <em>different</em> fact_ids via supersession; <code>collect.py</code> has no fact_id-collision logic; <code>fact_actions.py:976</code> "umx: merge conflicts" is the commit for the pair-resolver, not this rule.</li>
+<li><strong>Build:</strong> Add an ingest/merge guard: same id + identical text → merge metadata (max trust); same id + divergent text → quarantine as data-integrity error; never overwrite higher strength.</li>
+<li><strong>Done when:</strong> Two same-id facts with divergent text are quarantined and a metadata-merge occurs for identical text; tests cover both.</li>
+</ul>
+<h4 id="gap-15-async-push-queue-non-ff-retrybackoff">GAP-15 — Async push queue + non-ff retry/backoff<a class="headerlink" href="#gap-15-async-push-queue-non-ff-retrybackoff" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M–L · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Sessions</li>
+<li><strong>Spec:</strong> §18 ~L2066, L2074 — write path ends in a push queue (async, retried on failure); remote mode retries non-fast-forward via fetch/rebase/backoff.</li>
+<li><strong>Now:</strong> Missing — <code>git_ops.py:550</code> <code>git_push</code> is a single synchronous push; <code>cli.py</code> sync does fetch→pull --rebase→push once then raises on failure. No queue/retry/backoff for git push (retry exists only for <code>gh</code> API in <code>github_ops.py</code>). Mitigated: local commit is durable, next sync re-pushes.</li>
+<li><strong>Build:</strong> Wrap push in retry-with-backoff that re-runs fetch/rebase on non-ff, or add a persistent local push queue drained on next command.</li>
+<li><strong>Done when:</strong> A simulated non-ff push retries (rebase + backoff) and succeeds without data loss; test covers the retry path.</li>
+</ul>
+<h4 id="gap-26-startup-safety-sweep-should-push-remotehybrid-ew">GAP-26 — Startup safety-sweep should push (remote/hybrid) ✅EW<a class="headerlink" href="#gap-26-startup-safety-sweep-should-push-remotehybrid-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Sessions</li>
+<li><strong>Spec:</strong> §19 ~L2205 — uncommitted sessions from crashed runs MUST be committed AND pushed before proceeding.</li>
+<li><strong>Now:</strong> Partial — <code>git_ops.py:834</code> <code>safety_sweep</code> only commits; <code>hooks/session_start.py:33</code> runs it before the pull and never pushes the swept commit.</li>
+<li><strong>Build:</strong> After <code>safety_sweep</code> commits in remote/hybrid mode, push (or enqueue via GAP-15) the swept commits before continuing.</li>
+<li><strong>Done when:</strong> A swept commit is pushed/enqueued before the session proceeds; test covers it.</li>
+</ul>
+<h4 id="gap-37-diary-session-handover-8a">GAP-37 — Diary + Session Handover (§8a)<a class="headerlink" href="#gap-37-diary-session-handover-8a" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major<em> · </em><em>Effort:</em><em> M–L · </em><em>Bucket:</em><em> B · </em><em>Area:</em>* Sessions</li>
+<li><strong>Spec:</strong> §8a ~L860–894 — <code>local/diary.md</code> (append-only observation log) and <code>local/handover.md</code> + <code>local/handovers/YYYY-MM-DD.md</code> (structured handover notes); Dream ingest MAY extract facts from handovers at S:3.</li>
+<li><strong>Now:</strong> Missing — no <code>diary</code>/<code>handover</code> references anywhere; no read/write/ingest support. A whole spec feature is absent.</li>
+<li><strong>Build:</strong> Implement diary/handover append+read helpers, CLI surface, and optional Gather ingestion of handovers at S:3; or formally mark §8a as future.</li>
+<li><strong>Done when:</strong> <code>umx</code> can append/read diary + handover entries and (optionally) Dream ingests handovers at S:3; tests cover read/append/ingest.</li>
+</ul>
+<h3 id="redaction-privacy">Redaction &amp; privacy<a class="headerlink" href="#redaction-privacy" title="Permanent link">&para;</a></h3>
+<h4 id="gap-27-surface-high-entropy-redactions-in-umx-status-ew">GAP-27 — Surface high-entropy redactions in <code>umx status</code> ✅EW<a class="headerlink" href="#gap-27-surface-high-entropy-redactions-in-umx-status-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Redaction</li>
+<li><strong>Spec:</strong> §19 ~L2185 — entropy-flagged strings tagged <code>[REDACTED:high-entropy]</code> are surfaced in <code>umx status</code> for human review without a pattern match.</li>
+<li><strong>Now:</strong> Missing — <code>redaction.py:159</code> masks high-entropy hits in place; <code>status.py</code> surfaces quarantine counts only; <code>docs/threat-model.md:67</code> itself notes detections are masked in place, not routed to review.</li>
+<li><strong>Build:</strong> Record high-entropy/redaction-hit counts at write time (session meta or a local index) and surface them in <code>umx status</code>.</li>
+<li><strong>Done when:</strong> <code>umx status</code> reports a high-entropy-redaction review count; test covers it.</li>
+</ul>
+<h4 id="gap-28-add-gcp-stripe-builtin-redaction-patterns-ew">GAP-28 — Add GCP + Stripe builtin redaction patterns ✅EW<a class="headerlink" href="#gap-28-add-gcp-stripe-builtin-redaction-patterns-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Redaction</li>
+<li><strong>Spec:</strong> §19 ~L2158 — API keys (AWS, GCP, Anthropic, OpenAI, Stripe, etc.).</li>
+<li><strong>Now:</strong> Partial — <code>redaction.py:13–27</code> has AWS (<code>AKIA…</code>), OpenAI (<code>sk-…</code>), Anthropic (<code>sk-ant-…</code>), bearer, JWT, private-key, connection-string; no GCP (<code>AIza…</code>) or Stripe (<code>sk_live_…</code>).</li>
+<li><strong>Build:</strong> Add <code>gcp-key</code> <code>AIza[0-9A-Za-z_-]{35}</code> and <code>stripe-key</code> <code>(sk|rk)_(live|test)_[0-9A-Za-z]{24,}</code> to <code>BUILTIN_PATTERNS</code>.</li>
+<li><strong>Done when:</strong> Synthetic GCP/Stripe keys are redacted; fixtures added to the secret corpus.</li>
+</ul>
+<h3 id="diagnostics-viewer-architecture">Diagnostics, viewer &amp; architecture<a class="headerlink" href="#diagnostics-viewer-architecture" title="Permanent link">&para;</a></h3>
+<h4 id="gap-17-doctor-add-auth-push-queue-index-staleness-checks">GAP-17 — <code>doctor</code>: add auth, push-queue, index-staleness checks<a class="headerlink" href="#gap-17-doctor-add-auth-push-queue-index-staleness-checks" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Diagnostics</li>
+<li><strong>Spec:</strong> §25 ~L2782 — <code>doctor</code> covers auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embedding availability, stale blobs.</li>
+<li><strong>Now:</strong> Partial — <code>doctor.py:58</code> <code>run_doctor</code> covers schema, locks, orphans, quarantine, embeddings, hot-tier, conventions, git-signing. Missing: <code>auth</code> (<code>gh auth</code>), <code>push_queue</code>, <code>index staleness</code>. (Stale-blobs follows GAP-01.)</li>
+<li><strong>Build:</strong> Add auth (gh/remote reachability), push-queue depth (GAP-15), and FTS index-staleness (compare <code>_meta.file_hashes</code> vs on-disk) checks.</li>
+<li><strong>Done when:</strong> <code>umx doctor</code> reports all three; tests cover a stale index and a missing-auth case.</li>
+</ul>
+<h4 id="gap-18-viewer-pipeline-health-rejection-escalation-rates">GAP-18 — Viewer pipeline-health: rejection + escalation rates<a class="headerlink" href="#gap-18-viewer-pipeline-health-rejection-escalation-rates" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Viewer</li>
+<li><strong>Spec:</strong> §26 ~L2865 — Pipeline health = L1 rejection rate, escalation rate, stale PR count.</li>
+<li><strong>Now:</strong> Divergent — <code>governance_health.py:229</code> returns <code>reviewer_queue_depth</code>, <code>human_review_queue_depth</code>, <code>stale_branch_count</code>, <code>label_drift_count</code>; no rejection/escalation rate (only a TUI "not wired yet" string at <code>tui/app.py:358</code>).</li>
+<li><strong>Build:</strong> Compute L1 rejection rate and escalation rate (from PR/label history) and surface them in the viewer + governance health; either add stale-PR count or relabel to stale-branch.</li>
+<li><strong>Done when:</strong> Viewer shows rejection + escalation rates; tests cover the computations.</li>
+<li><strong>Deps:</strong> Coordinate with HYG-03.</li>
+</ul>
+<h4 id="gap-29-hierarchical-memory-tree-machine-scope">GAP-29 — Hierarchical memory tree + machine scope<a class="headerlink" href="#gap-29-hierarchical-memory-tree-machine-scope" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> A · <strong>Area:</strong> Viewer</li>
+<li><strong>Spec:</strong> §26 ~L2850 — Memory tree shows the full hierarchy user → machine → project → folder → file.</li>
+<li><strong>Now:</strong> Partial — <code>viewer/server.py</code> renders project+user repos as a flat "Fact Inventory" with a file-path column (<code>_display_path</code>, line 328); no tree widget, no machine scope.</li>
+<li><strong>Build:</strong> Add a nested scope-tree view including the machine level.</li>
+<li><strong>Done when:</strong> The viewer renders a collapsible user→machine→project→folder→file tree; covered by a viewer test.</li>
+</ul>
+<h4 id="gap-16-reasoning-artifacts-memoryartifacts-invalidates_when">GAP-16 — Reasoning artifacts (<code>memory/artifacts/</code>, <code>invalidates_when</code>)<a class="headerlink" href="#gap-16-reasoning-artifacts-memoryartifacts-invalidates_when" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> L · <strong>Bucket:</strong> B · <strong>Area:</strong> Architecture</li>
+<li><strong>Spec:</strong> §3b ~L298–322 — reasoning artifacts stored in <code>memory/artifacts/</code>, indexed in SQLite, injected on <code>conclusion</code>/<code>evidence</code> match, with <code>invalidates_when</code> conditions checked by Dream during Orient.</li>
+<li><strong>Now:</strong> Missing — no matches for <code>invalidates_when</code>, <code>reasoning_artifact</code>, <code>memory/artifacts</code>; README dir list omits <code>artifacts/</code>; no viewer panel.</li>
+<li><strong>Build:</strong> Implement artifact parse/index/inject + Orient invalidation, or mark §3b reasoning artifacts as roadmap.</li>
+<li><strong>Done when:</strong> Artifacts are stored, indexed, injected on match, and invalidated by Dream when <code>invalidates_when</code> fires; tests cover the lifecycle. (Or §3b is demoted to roadmap with a note — see HYG.)</li>
+</ul>
+<h3 id="adapters-interop">Adapters &amp; interop<a class="headerlink" href="#adapters-interop" title="Permanent link">&para;</a></h3>
+<h4 id="gap-19-fix-native-adapter-memory_typesource_type">GAP-19 — Fix native-adapter <code>memory_type</code>/<code>source_type</code><a class="headerlink" href="#gap-19-fix-native-adapter-memory_typesource_type" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Adapters</li>
+<li><strong>Spec:</strong> §10 ~L1394 — adapters MUST normalise native memory to <code>memory_type: explicit_semantic</code>, <code>verification: self-reported</code>, <code>encoding_strength: 3</code>.</li>
+<li><strong>Now:</strong> Divergent — <code>adapters/generic.py:41</code> sets <code>MemoryType.IMPLICIT</code>, <code>:43</code> <code>SourceType.TOOL_OUTPUT</code> (only strength=3 + self-reported match); the wrong values are locked in by <code>tests/test_adapters_gitignore.py:37,39,80</code>. (<code>bridge.py:148</code> already uses <code>EXPLICIT_SEMANTIC</code>, so the enum is used correctly elsewhere.)</li>
+<li><strong>Build:</strong> Change adapter <code>_make_fact</code> to <code>memory_type=MemoryType.EXPLICIT_SEMANTIC</code>; update the test expectations; decide whether <code>source_type</code> stays <code>TOOL_OUTPUT</code> or aligns to spec.</li>
+<li><strong>Done when:</strong> Adapter output is <code>explicit_semantic</code> + <code>self-reported</code> + S:3; updated tests pass.</li>
+</ul>
+<h4 id="gap-20-wire-aip-workspace-ingest-into-dream-orient">GAP-20 — Wire AIP <code>workspace/</code> ingest into Dream Orient<a class="headerlink" href="#gap-20-wire-aip-workspace-ingest-into-dream-orient" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Major · <strong>Effort:</strong> M · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Interop</li>
+<li><strong>Spec:</strong> §30 ~L3071–3074 — Dream Orient reads <code>workspace/dream-candidates/</code>; <code>workspace/transcripts/{session_id}.jsonl</code> is a normalised extraction input; <code>workspace/tasks/{task_id}/audit.jsonl</code> and <code>workspace/status/HEARTBEAT-{agent}.md</code> are Orient ingest candidates.</li>
+<li><strong>Now:</strong> Partial — only <code>workspace/events.jsonl</code> is consumed, and only as a manual <code>umx collect</code> stdin fallback (<code>cli.py:825</code>); no matches for <code>dream-candidates</code>, <code>workspace/transcripts</code>, <code>HEARTBEAT</code>, <code>workspace/tasks</code>.</li>
+<li><strong>Build:</strong> Wire Dream Orient to read <code>workspace/dream-candidates/</code> and <code>workspace/transcripts/</code> as session sources (and optionally tasks/heartbeat), or demote these §30 lines to roadmap.</li>
+<li><strong>Done when:</strong> A populated <code>workspace/dream-candidates/</code> is ingested by <code>umx dream</code>; test covers ingestion.</li>
+</ul>
+<h4 id="gap-36-native-adapters-read-real-stores">GAP-36 — Native adapters read real stores<a class="headerlink" href="#gap-36-native-adapters-read-real-stores" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> A/B · <strong>Area:</strong> Adapters</li>
+<li><strong>Spec:</strong> §10 ~L1364, L1389–1392 — Claude Code native memory at <code>~/.claude/projects/&lt;path&gt;/</code> (JSONL store); Copilot <code>~/.config/copilot/</code>; Gemini <code>~/.gemini/</code> (Format TBD).</li>
+<li><strong>Now:</strong> Partial/divergent — <code>adapters/claude_code.py:24–40</code> globs only <code>CLAUDE.md</code> (not the JSONL transcripts; those are handled by <code>claude_code_capture.py</code>); <code>adapters/copilot.py:20</code> reads <code>.github/copilot-instructions.md</code> (capture targets <code>~/.copilot/…</code>); no <code>GeminiAdapter</code> in <code>adapters/__init__.py:8–12</code>.</li>
+<li><strong>Build:</strong> Parse the actual native stores in the adapters (or document in §10 that transcript ingest is delegated to capture modules); add <code>GeminiAdapter</code> once the <code>~/.gemini/</code> format is known. Reconcile the <code>~/.config/copilot/</code> vs <code>~/.copilot/</code> path.</li>
+<li><strong>Done when:</strong> Adapters cover the native stores §10 lists (or §10 is reconciled to the capture-module split); tests/fixtures cover any new parsing.</li>
+<li><strong>Deps:</strong> Coordinate with HYG-06.</li>
+</ul>
+<h4 id="gap-38-umx-export-format-memories-memories-projection-ew">GAP-38 — <code>umx export --format memories</code> (<code>/memories</code> projection) ✅EW<a class="headerlink" href="#gap-38-umx-export-format-memories-memories-projection-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> M · <strong>Bucket:</strong> B · <strong>Area:</strong> Interop</li>
+<li><strong>Spec:</strong> §30b ~L3138–3144 — umx MAY generate <code>local/memories/</code> via <code>umx export --format memories --output local/memories/</code>; writes treated as S:5 ingest candidates.</li>
+<li><strong>Now:</strong> Missing — <code>umx export</code> (<code>cli.py:2383</code>) only calls <code>export_full</code>; no <code>--format</code>/<code>--output</code>; <code>backup.py</code> has no <code>memories</code> format.</li>
+<li><strong>Build:</strong> Add <code>--format memories --output &lt;dir&gt;</code> to <code>export</code> (project facts → <code>/memories</code>-style files) plus an optional write-back ingest path at S:5.</li>
+<li><strong>Done when:</strong> <code>umx export --format memories</code> produces a <code>local/memories/</code> tree; round-trip ingest test passes. (MAY-level; optional but high interop value.)</li>
+</ul>
+<h4 id="gap-39-routingroutingmd-index-generator-ew">GAP-39 — <code>routing/ROUTING.md</code> index generator ✅EW<a class="headerlink" href="#gap-39-routingroutingmd-index-generator-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> B · <strong>Area:</strong> Interop</li>
+<li><strong>Spec:</strong> §30a ~L3108 — <code>routing/</code> SHOULD contain a <code>routing/ROUTING.md</code> index analogous to <code>meta/MEMORY.md</code>.</li>
+<li><strong>Now:</strong> Missing — route card read/write/promote/L2-validate is implemented (<code>routing.py</code>), but no <code>ROUTING.md</code> generator (no matches).</li>
+<li><strong>Build:</strong> Mirror <code>meta/MEMORY.md</code> generation to produce <code>routing/ROUTING.md</code> listing active route cards by task class.</li>
+<li><strong>Done when:</strong> A repo with route cards gets a generated <code>ROUTING.md</code>; test covers it.</li>
+</ul>
+<h4 id="gap-40-umx-import-tool-alias-for-adapter-ew">GAP-40 — <code>umx import --tool</code> alias for <code>--adapter</code> ✅EW<a class="headerlink" href="#gap-40-umx-import-tool-alias-for-adapter-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Trivial · <strong>Effort:</strong> S · <strong>Bucket:</strong> B · <strong>Area:</strong> Interop</li>
+<li><strong>Spec:</strong> §28 Phase 3 ~L3037 — bulk import example <code>umx import --tool claude-code</code>.</li>
+<li><strong>Now:</strong> Divergent (cosmetic) — <code>umx import</code> (<code>cli.py:2397</code>) exposes <code>--adapter</code>, not <code>--tool</code>.</li>
+<li><strong>Build:</strong> Add <code>--tool</code> as a hidden alias of <code>--adapter</code> (or update the spec example — HYG-06).</li>
+<li><strong>Done when:</strong> <code>umx import --tool claude-code</code> works identically to <code>--adapter</code>.</li>
+</ul>
+<h3 id="strength-scoring-details">Strength / scoring details<a class="headerlink" href="#strength-scoring-details" title="Permanent link">&para;</a></h3>
+<h4 id="gap-34-dream_consolidation-source-weight-floor-of-avg-ew">GAP-34 — <code>dream_consolidation</code> source weight = floor of avg ✅EW<a class="headerlink" href="#gap-34-dream_consolidation-source-weight-floor-of-avg-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Strength</li>
+<li><strong>Spec:</strong> §5 ~L466 &amp; §6 ~L575 — <code>dream_consolidation</code> inherits "floor of avg source strength".</li>
+<li><strong>Now:</strong> Divergent — <code>strength.py:68–71</code> <code>source_type_weight</code> computes a plain mean of <code>corroborating_source_weights</code> (no floor) and falls back to <code>0.0</code> with no inputs; no extraction site passes those weights, so consolidation facts get weight 0.0.</li>
+<li><strong>Build:</strong> Apply a floor (e.g., <code>max(min_input, avg)</code>) and ensure consolidation extraction supplies the input weights (or amend the spec wording).</li>
+<li><strong>Done when:</strong> A consolidation fact's source weight reflects the floor-of-avg of its inputs; test covers it.</li>
+</ul>
+<h4 id="gap-35-corroboration-independence-keys-on-source_tool-ew">GAP-35 — Corroboration independence keys on <code>source_tool</code> ✅EW<a class="headerlink" href="#gap-35-corroboration-independence-keys-on-source_tool-ew" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>Sev:</strong> Minor · <strong>Effort:</strong> S · <strong>Bucket:</strong> A · <strong>Area:</strong> Strength</li>
+<li><strong>Spec:</strong> §5 ~L396 — independent iff different <code>source_session</code> AND different <code>source_tool</code> (or same tool ≥24h apart).</li>
+<li><strong>Now:</strong> Divergent (low impact) — <code>strength.py:143–147</code> <code>independent_corroboration</code> early-outs on same <code>source_session</code> AND same <code>source_type</code> (wrong field; net behavior partly salvaged by a later different-session clause).</li>
+<li><strong>Build:</strong> Compare <code>source_tool</code> (drop the <code>source_type</code> comparison) for spec fidelity.</li>
+<li><strong>Done when:</strong> Independence is decided by session+tool per §5; test covers same-tool-≥24h and different-tool cases.</li>
+</ul>
+<hr />
+<h2 id="easy-wins-do-these-first">Easy wins (do these first)<a class="headerlink" href="#easy-wins-do-these-first" title="Permanent link">&para;</a></h2>
+<p>Small, self-contained, clear value — good warm-up PRs:</p>
+<p><code>GAP-07</code> retire dead <code>prune.py</code> · <code>GAP-22</code> procedure-triggers lint · <code>GAP-23</code> skill-portability lint · <code>GAP-25</code> min_facts warning · <code>GAP-26</code> sweep-push · <code>GAP-27</code> high-entropy in status · <code>GAP-28</code> GCP/Stripe patterns · <code>GAP-30</code> native-only requeue · <code>GAP-31</code> dedicated gap-fill PR · <code>GAP-34</code> source-weight floor · <code>GAP-35</code> corroboration source_tool · <code>GAP-39</code> ROUTING.md · <code>GAP-40</code> <code>--tool</code> alias · <code>GAP-41</code> schema-lock-in in L2 · plus all <code>HYG-*</code>.</p>
+<p><strong>Roadmap easy-wins</strong> (from §28/§30): <code>GAP-38</code> <code>/memories</code> projection · <code>GAP-39</code> ROUTING.md index · <code>GAP-40</code> <code>--tool</code> alias. (The rest of §28 phases 0–8 are already substantially shipped; phase 9's semantic re-rank is implemented.)</p>
+<hr />
+<h2 id="doc-spec-hygiene">Doc / spec hygiene<a class="headerlink" href="#doc-spec-hygiene" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>HYG-01 ✅</strong> — §27 Config Reference: document the keys used in code but undocumented: <code>git.sign_commits</code>/<code>git.require_signed_commits</code> (<code>config.py:147</code>), the <code>telemetry:</code> section (<code>config.py:152</code>), <code>dream.l2_model</code> (<code>config.py:35</code>), <code>sessions.archive_interval</code> (<code>config.py:82</code>), and the <code>.cursorrules</code> bridge default (<code>config.py:139</code>). Soften <code>org</code> from "required" to "required for remote/hybrid" (<code>config.py:207</code> makes it optional).</li>
+<li><strong>HYG-02 ✅</strong> — Decide build-vs-cut for <code>blobs.py</code> in §25 (ties to GAP-01). README doesn't claim it; if blobs are out of scope, remove the module + <code>umx blob</code> CLI + "stale blobs" doctor line from §25.</li>
+<li><strong>HYG-03 ✅</strong> — Reconcile §26 viewer feature table with shipped reality (ties to GAP-18/29): either build the missing metrics/tree or update the table.</li>
+<li><strong>HYG-04 ✅</strong> — Rename <code>gitmem-spec-v0_9.md</code> → <code>gitmem-spec-v0_10.md</code> to match the branch and bump the declared <code>spec_version</code>. Also note <code>type: extraction</code> is a real default label (<code>governance.py:29</code>) missing from the §12 label enum — add it.</li>
+<li><strong>HYG-05 ✅</strong> — Commit or delete the untracked <code>README.local-before-github-merge.md</code>.</li>
+<li><strong>HYG-06 ✅</strong> — Reconcile §10 native-memory paths with the capture-module split (ties to GAP-36) and the §28 <code>import --tool</code> example with the shipped <code>--adapter</code> (ties to GAP-40).</li>
+</ul>
+<hr />
+<h2 id="out-of-scope-do-not-build-spec-declared-deferrals">Out of scope — do NOT build (spec-declared deferrals)<a class="headerlink" href="#out-of-scope-do-not-build-spec-declared-deferrals" title="Permanent link">&para;</a></h2>
+<p>Per §28 roadmap / §29 non-goals / Appendix C — absent ≠ broken:</p>
+<ul>
+<li><strong>Non-goals:</strong> memory in project repos; cloud-only sync; auto-commit to <code>main</code> in remote/hybrid; multi-user/team memory (v1); cross-machine secret syncing; vector search by default; pane-read mid-stream injection; narrative merging in storage; persistent daemons; multi-language normalisation (v1).</li>
+<li><strong>Deferred (Appendix C):</strong> knowledge graph / <code>related_to</code>; CRDT / append-only event model; encryption at rest (delegated to GitHub private repos + disk encryption); <code>.umx/</code> inside project repos; VS Code extension/marketplace; multimodal (images/audio/video); EU AI Act compliance.</li>
+<li><strong>Experimental by design:</strong> remote/hybrid PR governance, branch protection, approval gating (README already flags these), deeper <code>aip mem</code> runtime integration. The arbitrator agent for raw git-conflict markers (§18) is MAY/tool-specific.</li>
+</ul>
+<hr />
+<h2 id="verification-notes">Verification notes<a class="headerlink" href="#verification-notes" title="Permanent link">&para;</a></h2>
+<p>Headline claims were re-verified against source before writing (2026-05-29): <code>SOTA_REVIEWED</code> never assigned (only enum/weight/short-code); <code>semantic_dedup_key</code> zero call sites; <code>adapters/generic.py:41,43</code> <code>IMPLICIT</code>/<code>TOOL_OUTPUT</code>; zero matches for <code>retrieval_fidelity</code>, <code>invalidates_when</code>/<code>memory/artifacts</code>, <code>~/.gitmem/state</code> lock, MEMORY CHRONICLES layers, binary pre-ingest sniff, <code>injection-audit.jsonl</code>; <code>is_suppressed</code> only ever called with <code>phase="gather"</code>; redaction has AWS/OpenAI/Anthropic but no GCP/Stripe; <code>blobs.py</code> absent and no <code>umx blob</code> group.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.expand", "content.code.copy", "search.highlight", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -10,10 +10,8 @@
       
       
       
-        <link rel="canonical" href="https://dev-boz.github.io/gitmem/spec-parity/">
+        <link rel="canonical" href="https://dev-boz.github.io/gitmem/gap-buildout-remaining/">
       
-      
-        <link rel="prev" href="../upgrade-0.9-to-1.0/">
       
       
       
@@ -25,7 +23,7 @@
     
     
       
-        <title>CLI spec parity audit - gitmem</title>
+        <title>gitmem spec gap build-out — remaining work (handoff) - gitmem</title>
       
     
     
@@ -68,7 +66,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#cli-spec-parity-audit" class="md-skip">
+        <a href="#gitmem-spec-gap-build-out-remaining-work-handoff" class="md-skip">
           Skip to content
         </a>
       
@@ -104,7 +102,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              CLI spec parity audit
+              gitmem spec gap build-out — remaining work (handoff)
             
           </span>
         </div>
@@ -612,8 +610,6 @@
       
   
   
-    
-  
   
   
     
@@ -626,11 +622,13 @@
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" checked>
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
         
           
           <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
@@ -651,7 +649,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_10">
             <span class="md-nav__icon md-icon"></span>
             
@@ -778,37 +776,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    CLI spec parity audit
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../spec-parity/" class="md-nav__link">
         
   
   
@@ -824,70 +795,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#core-commands" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Core commands
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#auxiliary-command-groups" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Auxiliary command groups
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#resolved-draft-mismatches" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resolved draft mismatches
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#known-broader-spec-gaps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Known broader spec gaps
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -927,10 +834,77 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#core-commands" class="md-nav__link">
+  <a href="#state-of-play" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Core commands
+        State of play
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="State of play">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-to-run-things" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How to run things
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remaining-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remaining tasks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Remaining tasks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#completed-larger-bucket-b-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ✅ COMPLETED — larger Bucket-B features
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#completed-correctness-fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ✅ COMPLETED — correctness fixes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#suggested-next-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suggested next verification
       
     </span>
   </a>
@@ -938,32 +912,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#auxiliary-command-groups" class="md-nav__link">
+  <a href="#working-agreement-lessons-from-last-session" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Auxiliary command groups
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#resolved-draft-mismatches" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Resolved draft mismatches
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#known-broader-spec-gaps" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Known broader spec gaps
+        Working agreement / lessons from last session
       
     </span>
   </a>
@@ -990,344 +942,113 @@
   
 
 
-<h1 id="cli-spec-parity-audit">CLI spec parity audit<a class="headerlink" href="#cli-spec-parity-audit" title="Permanent link">&para;</a></h1>
-<p>This matrix records the v0.9.2 CLI-surface parity pass between <code>gitmem-spec-v0_9.md</code> §25 and <code>umx/cli.py</code>. Status legend:</p>
+<h1 id="gitmem-spec-gap-build-out-remaining-work-handoff">gitmem spec gap build-out — remaining work (handoff)<a class="headerlink" href="#gitmem-spec-gap-build-out-remaining-work-handoff" title="Permanent link">&para;</a></h1>
+<p><strong>As of:</strong> 2026-06-01 · <strong>Branch:</strong> <code>spec-v0_10-unified-update</code>
+<strong>Source plan:</strong> <code>docs/spec-gap-buildout.md</code> · <strong>Verification:</strong> <code>docs/gap-verification-2026-05-31.md</code></p>
+<h2 id="state-of-play">State of play<a class="headerlink" href="#state-of-play" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Match</strong> — spec and code agree for the shipped surface.</li>
-<li><strong>Documented</strong> — auxiliary shipped surface is referenced in the spec and enumerated here.</li>
+<li>The original handoff slice plus the follow-up completion work for GAP-11, GAP-16, GAP-37,
+  and the remaining GAP-34 floor behavior are implemented in the current working tree.</li>
+<li><strong>Independent audit (2026-06-02):</strong> all 9 of the latest-batch gaps (06, 08, 11, 16, 20,
+  21, 34, 36, 37) were re-audited against their spec "Done when" criteria. Implementations
+  satisfy acceptance. Three gaps were missing the <em>dedicated test assertion</em> the acceptance
+  text requires; those were added this session:</li>
+<li><strong>GAP-06:</strong> <code>tests/test_dream.py::test_consolidate_merges_same_text_scope_topic</code>
+    (positive merge path) + made <code>semantic_dedup_key</code> spec-faithful (dropped the <code>.strip()</code>,
+    lowercase the full payload per §5 ~L413).</li>
+<li><strong>GAP-08:</strong> <code>tests/test_dream_prune.py::test_stabilize_facts_rule_two_isolated_from_survive_one_cycle</code>
+    (rule-2 promotion isolated from rule-1).</li>
+<li><strong>GAP-35:</strong> <code>tests/test_strength.py::test_independent_corroboration_for_different_tool_ignores_time_gap</code>.</li>
+<li><strong>Full-suite baseline:</strong> <strong>1044 passing</strong> via <code>.venv/bin/python -m pytest -q</code> (textual 0.89.1
+  is installed in <code>.venv</code>, so <code>tests/test_tui.py</code> and <code>tests/test_viewer.py</code> now run — no ignore needed).</li>
+<li>⚠️ <strong>The entire latest gap batch (~1357 insertions across 23 modified files + 5 untracked
+  modules: <code>umx/{artifacts,chronicles,continuity}.py</code>, <code>umx/adapters/gemini.py</code>, and
+  <code>tests/test_continuity_artifacts_chronicles.py</code>) is still UNCOMMITTED</strong> on top of
+  <code>5a6cacd</code>. Commit it before any branch switch to avoid losing the work.</li>
 </ul>
-<p>Within the audited CLI surface below, there are no unresolved command/flag divergences in this snapshot. This page does <strong>not</strong> claim full runtime/spec parity for broader Dream-governance behavior; those larger gaps still live in the main spec and implementation docs.</p>
-<h2 id="core-commands">Core commands<a class="headerlink" href="#core-commands" title="Permanent link">&para;</a></h2>
+<h3 id="how-to-run-things">How to run things<a class="headerlink" href="#how-to-run-things" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Tests: <code>.venv/bin/python -m pytest -q --ignore=tests/test_tui.py</code> (system <code>python</code> is absent;
+  use <code>.venv/bin/python</code> or <code>python3</code>).</li>
+<li>The repo's spec lives at <code>gitmem-spec-v0_9.md</code> (repo root). Gap line refs below point there.</li>
+</ul>
+<h2 id="remaining-tasks">Remaining tasks<a class="headerlink" href="#remaining-tasks" title="Permanent link">&para;</a></h2>
+<p>As of the current working tree, all gaps listed in this handoff have implementation and focused
+regression coverage. The file is retained as the historical handoff source.</p>
+<h3 id="completed-larger-bucket-b-features">✅ COMPLETED — larger Bucket-B features<a class="headerlink" href="#completed-larger-bucket-b-features" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Command</th>
-<th>Shipped flags / surface</th>
-<th>Code location</th>
-<th>Status</th>
-<th>Notes</th>
+<th>GAP</th>
+<th>Completion</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>init</code></td>
-<td><code>--owner</code> (<code>--org</code> alias), <code>--mode local\|remote\|hybrid</code></td>
-<td><code>umx/cli.py:136-173</code></td>
-<td>Match</td>
-<td>Spec updated to include owner-first wording while keeping the legacy alias.</td>
+<td><strong>11</strong> MEMORY CHRONICLES layers</td>
+<td>Dream writes <code>context/layers/{task_class}-{date}/{numeric,temporal,narrative,digest}.md</code>; injection includes digest by default and optional richer layers as budget permits.</td>
 </tr>
 <tr>
-<td><code>init-project</code></td>
-<td><code>--cwd</code>, <code>--slug</code>, <code>--yes</code></td>
-<td><code>umx/cli.py:176-230</code></td>
-<td>Match</td>
-<td><code>--slug</code> bypasses prompting; <code>--yes</code> auto-suffixes collisions.</td>
+<td><strong>16</strong> Reasoning artifacts</td>
+<td><code>memory/artifacts/*.md</code> parsing, SQLite indexing, injection on conclusion/evidence keyword match, and Orient invalidation via <code>invalidates_when</code> are implemented.</td>
 </tr>
 <tr>
-<td><code>inject</code></td>
-<td><code>--cwd</code>, <code>--tool</code>, <code>--prompt</code>, <code>--command</code>, <code>--session</code>, <code>--context-window</code>, <code>--expand-fact ...</code>, <code>--file ...</code>, <code>--max-tokens</code></td>
-<td><code>umx/cli.py:233-289</code></td>
-<td>Match</td>
-<td>Spec now mirrors the actual injection surface.</td>
+<td><strong>20</strong> workspace/ ingest into Orient</td>
+<td>Dream Gather reads <code>workspace/transcripts/*.jsonl</code> and <code>workspace/dream-candidates/</code>; malformed <code>.json</code>/<code>.jsonl</code> candidates are skipped without aborting ingest.</td>
 </tr>
 <tr>
-<td><code>collect</code></td>
-<td><code>--cwd</code>, <code>--tool</code>, <code>--file</code>, <code>--format</code>, <code>--role</code>, <code>--session-id</code>, <code>--meta ...</code>, <code>--dry-run</code></td>
-<td><code>umx/cli.py:292-376</code></td>
-<td>Match</td>
-<td>Spec updated from the earlier shorthand.</td>
-</tr>
-<tr>
-<td><code>dream</code></td>
-<td><code>--cwd</code>, <code>--force</code>, <code>--force-reason</code>, <code>--force-lint</code>, <code>--mode</code>, <code>--tier</code>, <code>--pr</code>, <code>--head-sha</code>, <code>--provider</code></td>
-<td><code>umx/cli.py:779-845</code></td>
-<td>Match</td>
-<td><code>--force-lint</code> and <code>--force-reason</code> document the shipped governance override surface; <code>--provider</code> documents L2 reviewer selection.</td>
-</tr>
-<tr>
-<td><code>view</code></td>
-<td><code>--cwd</code>, <code>--fact</code>, <code>--list</code>, <code>--min-strength</code></td>
-<td><code>umx/cli.py:432-465</code></td>
-<td>Match</td>
-<td>Replaced stale draft <code>--scope</code> surface.</td>
-</tr>
-<tr>
-<td><code>tui</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:468-478</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>status</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:916-919</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>health</code></td>
-<td><code>--cwd</code>, <code>--governance</code>, <code>--format json\|human</code></td>
-<td><code>umx/cli.py:923-949</code></td>
-<td>Match</td>
-<td>Governance health adds a richer repo-policy audit surface; <code>--format human</code> is only valid with <code>--governance</code>.</td>
-</tr>
-<tr>
-<td><code>conflicts</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:509-515</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>gaps</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:518-520</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>forget</code></td>
-<td><code>--cwd</code>, <code>--fact</code>, <code>--topic</code>, <code>--governed</code></td>
-<td><code>umx/cli.py:802-840</code></td>
-<td>Match</td>
-<td>Governing a forget now routes fact or topic tombstones through proposal PR branches instead of direct writes.</td>
-</tr>
-<tr>
-<td><code>rollback</code></td>
-<td><code>--cwd</code>, <code>--pr</code></td>
-<td><code>umx/cli.py:843-852</code></td>
-<td>Documented</td>
-<td>Governed reverse-PR maintenance surface for restoring facts removed by a prior tombstone PR.</td>
-</tr>
-<tr>
-<td><code>promote</code></td>
-<td><code>--cwd</code>, <code>--fact</code>, <code>--to user\|project\|principle</code></td>
-<td><code>umx/cli.py:539-555</code></td>
-<td>Match</td>
-<td>Spec updated from <code>--to user</code> only.</td>
-</tr>
-<tr>
-<td><code>confirm</code></td>
-<td><code>--cwd</code>, <code>--fact</code></td>
-<td><code>umx/cli.py:557-566</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>history</code></td>
-<td><code>--cwd</code>, <code>--fact</code></td>
-<td><code>umx/cli.py:569-575</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>resume</code></td>
-<td><code>--cwd</code>, <code>--include-abandoned</code></td>
-<td><code>umx/cli.py:578-587</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>meta</code></td>
-<td><code>--cwd</code>, <code>--topic</code></td>
-<td><code>umx/cli.py:590-596</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>merge</code></td>
-<td><code>--cwd</code>, <code>--dry-run</code></td>
-<td><code>umx/cli.py:599-608</code></td>
-<td>Match</td>
-<td>Spec updated to document the dry-run switch.</td>
-</tr>
-<tr>
-<td><code>audit</code></td>
-<td><code>--cwd</code>, <code>--rederive</code>, <code>--cross-project</code>, <code>--proposal-key</code>, <code>--session ...</code></td>
-<td><code>umx/cli.py:611-663</code></td>
-<td>Match</td>
-<td>Replaced stale draft <code>--all</code> / <code>--model</code> with the shipped cross-project surface.</td>
-</tr>
-<tr>
-<td><code>propose</code></td>
-<td><code>--cwd</code>, <code>--cross-project</code>, <code>--proposal-key</code>, <code>--push</code>, <code>--open-pr</code></td>
-<td><code>umx/cli.py:665-717</code></td>
-<td>Match</td>
-<td>Canonical promotion proposal surface.</td>
-</tr>
-<tr>
-<td><code>sync</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:728-802</code></td>
-<td>Match</td>
-<td>Replaced stale draft <code>--all</code>; sync is project-scoped via <code>--cwd</code>.</td>
-</tr>
-<tr>
-<td><code>setup-remote</code></td>
-<td><code>--cwd</code>, <code>--mode remote\|hybrid</code></td>
-<td><code>umx/cli.py:805-844</code></td>
-<td>Match</td>
-<td>Added to spec to reflect the shipped bootstrap workflow.</td>
-</tr>
-<tr>
-<td><code>purge</code></td>
-<td><code>--cwd</code>, <code>--session</code>, <code>--dry-run</code></td>
-<td><code>umx/cli.py:847-875</code></td>
-<td>Match</td>
-<td>Spec updated to include <code>--cwd</code> and dry-run mode.</td>
-</tr>
-<tr>
-<td><code>rebuild-index</code></td>
-<td><code>--cwd</code>, <code>--embeddings</code></td>
-<td><code>umx/cli.py:878-884</code></td>
-<td>Match</td>
-<td>Replaced stale draft <code>--force</code>.</td>
-</tr>
-<tr>
-<td><code>archive-sessions</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:887-896</code></td>
-<td>Match</td>
-<td>Added to spec to reflect the shipped archive operation.</td>
-</tr>
-<tr>
-<td><code>init-actions</code></td>
-<td><code>--dir</code></td>
-<td><code>umx/cli.py:899-905</code></td>
-<td>Match</td>
-<td>Added to spec to reflect workflow-template scaffolding.</td>
-</tr>
-<tr>
-<td><code>migrate-scope</code></td>
-<td><code>--cwd</code>, <code>--from</code>, <code>--to</code></td>
-<td><code>umx/cli.py:908-919</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>doctor</code></td>
-<td><code>--cwd</code>, <code>--fix</code></td>
-<td><code>umx/cli.py:1416-1420</code></td>
-<td>Match</td>
-<td>Spec updated to include <code>--cwd</code>.</td>
-</tr>
-<tr>
-<td><code>migrate</code></td>
-<td><code>--cwd</code></td>
-<td><code>umx/cli.py:1423-1434</code></td>
-<td>Match</td>
-<td>Added to spec to reflect the shipped fact-file migration command.</td>
-</tr>
-<tr>
-<td><code>export</code></td>
-<td><code>--cwd</code>, <code>--format</code>, <code>--out</code>/<code>--output</code></td>
-<td><code>umx/cli.py</code></td>
-<td>Match</td>
-<td><code>umx export</code> now ships both the original full-backup flow and the <code>/memories</code> compatibility projection.</td>
-</tr>
-<tr>
-<td><code>config</code></td>
-<td><code>set redaction.patterns &lt;value&gt;</code></td>
-<td><code>umx/cli.py:951-966</code></td>
-<td>Match</td>
-<td>Validates a regex string or JSON array of regex strings and stores them under <code>sessions.redaction_patterns</code>.</td>
-</tr>
-<tr>
-<td><code>secret</code></td>
-<td><code>get &lt;key&gt;</code>, <code>set &lt;key&gt; &lt;value&gt;</code></td>
-<td><code>umx/cli.py:1138-1165</code></td>
-<td>Match</td>
-<td>No flag divergence.</td>
-</tr>
-<tr>
-<td><code>import</code></td>
-<td><code>--cwd</code>, <code>--adapter</code>, <code>--full</code>, <code>--memories</code>, <code>--force</code>, <code>--dry-run</code></td>
-<td><code>umx/cli.py</code></td>
-<td>Match</td>
-<td><code>umx import</code> now covers native adapters, full backup restore, and <code>/memories</code> projection ingest.</td>
-</tr>
-<tr>
-<td><code>mcp</code></td>
-<td>no flags</td>
-<td><code>umx/cli.py:1198-1203</code></td>
-<td>Match</td>
-<td>Added to spec to reflect the shipped MCP server entrypoint.</td>
-</tr>
-<tr>
-<td><code>search</code></td>
-<td><code>--cwd</code>, <code>--raw</code> (<code>--all</code> alias)</td>
-<td><code>umx/cli.py:2852-2875</code></td>
-<td>Match</td>
-<td>Spec updated so the cold-tier search example can use the shipped raw-session alias without diverging from the canonical <code>--raw</code> wording.</td>
+<td><strong>37</strong> Diary + Session Handover (§8a)</td>
+<td><code>local/diary.md</code>, <code>local/handover.md</code>, dated handover archives, CLI read/write surfaces, and S:3 handover Dream ingest are implemented.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="auxiliary-command-groups">Auxiliary command groups<a class="headerlink" href="#auxiliary-command-groups" title="Permanent link">&para;</a></h2>
+<h3 id="completed-correctness-fixes">✅ COMPLETED — correctness fixes<a class="headerlink" href="#completed-correctness-fixes" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Family</th>
-<th>Shipped subcommands / flags</th>
-<th>Code location</th>
-<th>Status</th>
-<th>Notes</th>
+<th>GAP</th>
+<th>Completion</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>capture</code></td>
-<td><code>codex(--cwd,--file,--source-root,--dry-run)</code>, <code>copilot(--cwd,--file,--source-root,--dry-run)</code>, <code>claude-code(--cwd,--file,--source-root,--all,--dry-run)</code>, <code>gemini(--cwd,--file,--source-root,--all,--dry-run)</code>, <code>opencode(--cwd,--db,--session-id,--all,--dry-run)</code>, <code>amp(--cwd,--file,--source-root,--thread-id,--all,--dry-run)</code></td>
-<td><code>umx/cli.py:1206-1635</code></td>
-<td>Documented</td>
-<td>Auxiliary transcript-import surfaces referenced in the spec and enumerated here.</td>
+<td><strong>06</strong> Wire <code>semantic_dedup_key</code></td>
+<td>Consolidate dedup/corroboration now uses the scope-aware semantic key so same text in different scopes remains distinct.</td>
 </tr>
 <tr>
-<td><code>eval</code></td>
-<td><code>l2-review(--cases,--case,--min-pass-rate,--provider)</code>, <code>inject(--cases,--case,--min-pass-rate,--disclosure-slack-pct)</code>, <code>long-memory(--cases,--case,--min-pass-rate,--search-limit)</code>, <code>longmemeval(--cases,--out-dir,--provider,--model,...)</code>, <code>locomo(--cases,--out-dir,--provider,--model,...)</code>, <code>convomem(--cases,--out-dir,--provider,--model,...)</code>, <code>longbench-v2(--cases,--out-dir,--provider,--model,...)</code>, <code>ruler(--cases,--out-dir,--provider,--model,...)</code>, <code>beir(--cases,--min-ndcg-at-10,--min-recall-at-10)</code>, <code>retrieval(--cases,--case,--min-pass-rate,--top-k)</code>, <code>compare(&lt;baseline&gt; &lt;candidate&gt;)</code>, <code>release-gate(...)</code></td>
-<td><code>umx/cli.py:1489-2017</code></td>
-<td>Documented</td>
-<td>On-demand eval harnesses now cover governance review, native inject drift, long-memory retrieval, benchmark-backed provider runs, offline retrieval comparison, and bundled release-gate capture flows. <code>l2-review --provider</code> selects between Anthropic API, NVIDIA API, and Claude Code CLI (OAuth) reviewers.</td>
+<td><strong>08</strong> fragile→stable Rule #2 in Prune</td>
+<td>Prune-time stabilization now promotes fragile facts that already have independent corroboration recorded from a prior cycle.</td>
 </tr>
 <tr>
-<td><code>hooks claude-code</code></td>
-<td><code>print(--command)</code>, <code>install(--cwd,--scope,--command)</code>, <code>session-start(--payload-file)</code>, <code>pre-tool-use(--payload-file)</code>, <code>pre-compact(--payload-file)</code>, <code>session-end(--payload-file)</code></td>
-<td><code>umx/cli.py:937-1022</code></td>
-<td>Documented</td>
-<td>Hook-install and hook-dispatch helpers for Claude Code.</td>
+<td><strong>21</strong> Tag-drift lint</td>
+<td>Lint reports canonical tag drift clusters such as <code>db</code>/<code>database</code>/<code>postgres</code>.</td>
 </tr>
 <tr>
-<td><code>bridge</code></td>
-<td><code>sync(--cwd,--target ...)</code>, <code>remove(--cwd,--target ...)</code>, <code>import(--cwd,--target ...,--topic,--dry-run)</code></td>
-<td><code>umx/cli.py:1025-1078</code></td>
-<td>Documented</td>
-<td>Legacy compatibility surface for project-repo bridge files.</td>
+<td><strong>34</strong> <code>dream_consolidation</code> weight floor</td>
+<td>Consolidation facts carry corroborating source weights and use a positive source-weight floor when averaging inputs.</td>
 </tr>
 <tr>
-<td><code>shim</code></td>
-<td><code>aider(--cwd,--output,--max-tokens)</code>, <code>generic(--cwd,--tool,--output,--max-tokens)</code>, <code>amp(--cwd,--output,--max-tokens)</code>, <code>cursor(--cwd,--output,--max-tokens)</code>, <code>jules(--cwd,--output,--max-tokens)</code>, <code>qodo(--cwd,--output,--max-tokens)</code></td>
-<td><code>umx/cli.py:1081-1135</code></td>
-<td>Documented</td>
-<td>Wrapper/shim helpers for tool integration.</td>
+<td><strong>36</strong> Native adapters read real stores</td>
+<td>Claude, Copilot, and Gemini adapters read their native real session stores while retaining markdown import paths.</td>
 </tr>
 </tbody>
 </table>
-<h2 id="resolved-draft-mismatches">Resolved draft mismatches<a class="headerlink" href="#resolved-draft-mismatches" title="Permanent link">&para;</a></h2>
-<p>The parity pass intentionally aligned the spec to the shipped CLI instead of adding placeholder implementations for draft-only flags:</p>
+<h2 id="suggested-next-verification">Suggested next verification<a class="headerlink" href="#suggested-next-verification" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Run the focused suite used for this closure.</li>
+<li>Run <code>.venv/bin/python -m pytest -q --ignore=tests/test_tui.py</code>.</li>
+<li>If <code>textual</code> is installed in the active venv, run the full suite without the <code>test_tui.py</code> ignore.</li>
+</ol>
+<h2 id="working-agreement-lessons-from-last-session">Working agreement / lessons from last session<a class="headerlink" href="#working-agreement-lessons-from-last-session" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>audit --all --model</code> → removed from the canonical CLI surface; the shipped audit path is <code>--rederive</code>, <code>--session</code>, and <code>--cross-project</code> / <code>--proposal-key</code>.</li>
-<li><code>sync --all</code> → removed; sync is project-scoped and selected via <code>--cwd</code>.</li>
-<li><code>rebuild-index --force</code> → removed; the shipped explicit flag is <code>--embeddings</code>.</li>
-<li><code>view --scope</code> → removed; the shipped surface is <code>--fact</code> / <code>--list</code>.</li>
-<li><code>import --tool</code> → renamed in the spec to the shipped <code>--adapter</code>.</li>
-<li><code>health</code>, <code>setup-remote</code>, <code>archive-sessions</code>, <code>init-actions</code>, <code>mcp</code>, <code>search</code>, <code>capture</code>, <code>hooks</code>, <code>bridge</code>, <code>shim</code>, <code>migrate</code>, and <code>export</code> were added to the documented surface because they already ship in code.</li>
-</ul>
-<h2 id="known-broader-spec-gaps">Known broader spec gaps<a class="headerlink" href="#known-broader-spec-gaps" title="Permanent link">&para;</a></h2>
-<p>These are outside the narrow CLI flag audit above:</p>
-<ul>
-<li>Remote/hybrid Dream now opens dedicated lint PRs for <code>meta/lint-report.md</code> while syncing <code>meta/lint-state.json</code> to <code>main</code> as operational cadence state, so lint PRs stay non-blocking without reopening on every run.</li>
-<li><code>audit --rederive</code> now opens governed correction proposal branches/PRs when it finds drift, but the re-extraction itself is still the shipped native session-derive path rather than a model-selectable deep re-derivation workflow.</li>
-<li>Branch protection, approval gating, and other GitHub governance hardening remain partial/experimental outside the shipped local-first core.</li>
+<li><strong>Run the relevant tests and confirm GREEN before committing.</strong> Last session a GAP-01
+  commit (<code>936f44b</code>) shipped broken because a <code>cli.py</code> edit silently failed to apply and I
+  committed without re-running tests; fixed forward in <code>1bf2d9d</code>. Don't repeat that.</li>
+<li><strong><code>git grep</code>/secret-scanning:</strong> GitHub push protection blocks synthetic secrets in tests.
+  Use the split-string constants in <code>tests/secret_literals.py</code> (e.g. <code>GCP_API_KEY</code>,
+  <code>STRIPE_SECRET_KEY</code>) — never inline a full <code>sk_live_…</code>/<code>AIza…</code> literal.</li>
+<li><strong>Commit hygiene:</strong> end commit messages with the <code>Co-Authored-By: Claude Opus 4.8</code> trailer.</li>
+<li>Branch tracks <code>origin/spec-v0_10-unified-update</code>; pushes are normal fast-forwards.</li>
 </ul>
 
 

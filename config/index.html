@@ -1018,6 +1018,10 @@
 <p>This is a focused reference for the config knobs that most directly affect capture, injection, and scheduled maintenance. All values live in <code>~/.umx/config.yaml</code>.</p>
 <h2 id="injection">Injection<a class="headerlink" href="#injection" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="nt">inject</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">tool_max_tokens</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">aider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4000</span>
+<span class="w">    </span><span class="nt">claude-code</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">12000</span>
+<span class="w">    </span><span class="nt">codex</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">12000</span>
 <span class="w">  </span><span class="nt">pre_tool_max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1400</span>
 <span class="w">  </span><span class="nt">disclosure_slack_pct</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.20</span>
 <span class="w">  </span><span class="nt">subagent_max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2000</span>
@@ -1025,6 +1029,7 @@
 <span class="w">  </span><span class="nt">turn_token_estimate</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">250</span>
 </code></pre></div>
 <ul>
+<li><code>inject.tool_max_tokens</code>: per-tool fallback budgets used when <code>umx inject</code> or shim commands omit <code>--max-tokens</code>. Unknown tools still fall back to <code>4000</code>.</li>
 <li><code>inject.pre_tool_max_tokens</code>: default token budget for pre-tool hook injection.</li>
 <li><code>inject.disclosure_slack_pct</code>: fraction of the fact budget reserved before stable <code>L1</code> facts are downgraded to <code>L0</code>.</li>
 <li><code>inject.subagent_max_tokens</code>: default relay budget for subagent handoff memory.</li>
