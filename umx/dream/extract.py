@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 import json
 import re
 from pathlib import Path
 
 from umx.config import UMXConfig
+from umx.continuity import list_handover_paths
 from umx.dream.gates import read_dream_state
 from umx.dream.providers import ProviderExtractionResult, run_session_provider_extraction
 from umx.git_ops import git_blob_sha
@@ -21,6 +23,7 @@ from umx.models import (
 )
 from umx.redaction import redact_candidate_fact_text
 from umx.sessions import iter_session_payloads, list_sessions, read_session
+from umx.trust_tags import UNTRUSTED_SOURCE_TAG
 
 _SKIP_PREFIXES = (
     "i ",
@@ -150,7 +153,7 @@ _VERB_PATTERN = re.compile(
     r"|stores?|sends?|reads?|writes?|calls?|defines?|includes?|generates?"
     r"|implements?|handles?|processes?|accepts?|connects?|compiles?|builds?"
     r"|expects?|allows?|enables?|configures?|sets?|gets?|starts?|stops?"
-    r"|loads?|saves?|parses?|maps?|converts?|validates?|checks?)\b",
+    r"|loads?|saves?|parses?|maps?|converts?|validates?|checks?|expires?)\b",
     re.IGNORECASE,
 )
 
@@ -299,6 +302,46 @@ def _facts_from_session_payload(
     return facts
 
 
+def _session_payloads_to_facts_with_report(
+    repo_dir: Path,
+    payloads: Iterable[tuple[str, list[dict]]],
+    config: UMXConfig | None = None,
+    *,
+    skip_gathered: bool = True,
+    skip_session_ids: set[str] | None = None,
+) -> tuple[list[Fact], list[ProviderExtractionResult]]:
+    state = read_dream_state(repo_dir)
+    gathered: list[str] = list(state.get("last_gathered_sessions", []))
+    gathered_set = set(gathered)
+    skipped = skip_session_ids or set()
+
+    facts: list[Fact] = []
+    reports: list[ProviderExtractionResult] = []
+    seen_session_ids: set[str] = set()
+
+    for session_id, events in payloads:
+        if not session_id or session_id in skipped or session_id in seen_session_ids:
+            continue
+        seen_session_ids.add(session_id)
+        if skip_gathered and session_id in gathered_set:
+            continue
+        result = run_session_provider_extraction(
+            repo_dir,
+            session_id,
+            events,
+            config,
+            native_extractor=lambda session_id=session_id, events=events: _facts_from_session_payload(
+                repo_dir,
+                session_id,
+                events,
+                config,
+            ),
+        )
+        facts.extend(result.facts)
+        reports.append(result)
+    return facts, reports
+
+
 def session_records_to_facts(
     repo_dir: Path,
     config: UMXConfig | None = None,
@@ -325,35 +368,48 @@ def session_records_to_facts_with_report(
     session_ids: set[str] | None = None,
     skip_gathered: bool = True,
 ) -> tuple[list[Fact], list[ProviderExtractionResult]]:
-    state = read_dream_state(repo_dir)
-    gathered: list[str] = list(state.get("last_gathered_sessions", []))
-    gathered_set = set(gathered)
-
-    facts: list[Fact] = []
-    reports: list[ProviderExtractionResult] = []
-
-    for session_id, events in iter_session_payloads(
+    return _session_payloads_to_facts_with_report(
         repo_dir,
-        include_archived=include_archived,
-        session_ids=session_ids,
-    ):
-        if skip_gathered and session_id in gathered_set:
-            continue
-        result = run_session_provider_extraction(
+        iter_session_payloads(
             repo_dir,
-            session_id,
-            events,
-            config,
-            native_extractor=lambda session_id=session_id, events=events: _facts_from_session_payload(
-                repo_dir,
-                session_id,
-                events,
-                config,
-            ),
-        )
-        facts.extend(result.facts)
-        reports.append(result)
-    return facts, reports
+            include_archived=include_archived,
+            session_ids=session_ids,
+        ),
+        config,
+        skip_gathered=skip_gathered,
+    )
+
+
+def list_workspace_transcripts(project_root: Path) -> list[Path]:
+    transcripts_dir = project_root / "workspace" / "transcripts"
+    if not transcripts_dir.exists():
+        return []
+    return sorted(transcripts_dir.glob("*.jsonl"))
+
+
+def iter_workspace_transcript_payloads(project_root: Path) -> Iterator[tuple[str, list[dict]]]:
+    for path in list_workspace_transcripts(project_root):
+        events = [event for event in read_session(path) if isinstance(event, dict)]
+        if not events:
+            continue
+        yield path.stem, events
+
+
+def workspace_transcript_records_to_facts_with_report(
+    project_root: Path,
+    repo_dir: Path,
+    config: UMXConfig | None = None,
+    *,
+    skip_gathered: bool = True,
+    skip_session_ids: set[str] | None = None,
+) -> tuple[list[Fact], list[ProviderExtractionResult]]:
+    return _session_payloads_to_facts_with_report(
+        repo_dir,
+        iter_workspace_transcript_payloads(project_root),
+        config,
+        skip_gathered=skip_gathered,
+        skip_session_ids=skip_session_ids,
+    )
 
 
 def mark_sessions_gathered(repo_dir: Path, session_ids: list[str]) -> None:
@@ -401,6 +457,200 @@ def gap_records_to_facts(repo_dir: Path) -> list[Fact]:
                 repo=repo_dir.name,
             )
         )
+    return facts
+
+
+def _workspace_candidate_fact(
+    repo_dir: Path,
+    text: str,
+    *,
+    source_session: str,
+    source_tool: str,
+    config: UMXConfig | None = None,
+    encoding_context: dict[str, object] | None = None,
+) -> Fact | None:
+    redacted = redact_candidate_fact_text(text, config)
+    if not redacted:
+        return None
+    return Fact(
+        fact_id=generate_fact_id(),
+        text=redacted,
+        scope=Scope.PROJECT,
+        topic=_extract_topic(redacted),
+        encoding_strength=1,
+        memory_type=MemoryType.IMPLICIT,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.LLM_INFERENCE,
+        confidence=0.5,
+        source_tool=source_tool,
+        source_session=source_session,
+        consolidation_status=ConsolidationStatus.FRAGILE,
+        provenance=Provenance(
+            extracted_by="workspace-dream-candidate",
+            sessions=[source_session],
+        ),
+        encoding_context=encoding_context or {},
+        repo=repo_dir.name,
+    )
+
+
+def _workspace_candidate_records(path: Path) -> list[dict]:
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        try:
+            raw_lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        records: list[dict] = []
+        for line in raw_lines:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+    if suffix == ".json":
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return []
+        if isinstance(payload, dict):
+            return [payload]
+        if isinstance(payload, list):
+            return [record for record in payload if isinstance(record, dict)]
+    return []
+
+
+def workspace_dream_candidates_to_facts(
+    project_root: Path,
+    repo_dir: Path,
+    config: UMXConfig | None = None,
+) -> list[Fact]:
+    candidates_dir = project_root / "workspace" / "dream-candidates"
+    if not candidates_dir.exists():
+        return []
+
+    facts: list[Fact] = []
+    seen_texts: set[str] = set()
+    for path in sorted(candidates_dir.rglob("*")):
+        if not path.is_file():
+            continue
+
+        if path.suffix.lower() in {".json", ".jsonl"}:
+            for record in _workspace_candidate_records(path):
+                content = record.get("content") or record.get("proposed_fact") or record.get("text")
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                key = content.strip().lower()
+                if key in seen_texts:
+                    continue
+                seen_texts.add(key)
+                source_tool = record.get("source")
+                if not isinstance(source_tool, str) or not source_tool.strip():
+                    source_tool = "workspace-dream-candidate"
+                source_session = record.get("session_id")
+                if not isinstance(source_session, str) or not source_session.strip():
+                    source_session = path.stem
+                encoding_context = {
+                    key: value
+                    for key, value in {
+                        "metadata": record.get("metadata"),
+                        "task_class": record.get("task_class"),
+                        "trigger_type": record.get("trigger_type"),
+                        "workspace_candidate_path": str(path.relative_to(project_root)),
+                    }.items()
+                    if value is not None
+                }
+                fact = _workspace_candidate_fact(
+                    repo_dir,
+                    content,
+                    source_session=source_session,
+                    source_tool=source_tool,
+                    config=config,
+                    encoding_context=encoding_context,
+                )
+                if fact is not None:
+                    facts.append(fact)
+            continue
+
+        for sentence in _extract_from_markdown(path.read_text(encoding="utf-8"), path.name):
+            key = sentence.strip().lower()
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            fact = _workspace_candidate_fact(
+                repo_dir,
+                sentence,
+                source_session=path.stem,
+                source_tool="workspace-dream-candidate",
+                config=config,
+                encoding_context={"workspace_candidate_path": str(path.relative_to(project_root))},
+            )
+            if fact is not None:
+                facts.append(fact)
+    return facts
+
+
+def dream_candidate_dicts_to_facts(
+    repo_dir: Path,
+    candidates: list[dict],
+    *,
+    config: UMXConfig | None = None,
+    default_source_tool: str = "imx-dream-trigger",
+) -> list[Fact]:
+    """Convert Dream candidate dicts (IMX triggers / entrenchment risks) to facts.
+
+    Candidate dicts use the shape produced by
+    ``umx.dream.imx_triggers.triggers_to_dream_candidates`` and
+    ``umx.dream.entrenchment.entrenchment_risks_to_dream_candidates``:
+    ``{"source", "trigger_type", "content", "task_class", "metadata", ...}``.
+    Each becomes a fragile S:1 ``llm_inference`` candidate that flows through the
+    normal Consolidate/L1 governance path for human review.
+    """
+    facts: list[Fact] = []
+    seen_texts: set[str] = set()
+    for record in candidates:
+        if not isinstance(record, dict):
+            continue
+        content = record.get("content") or record.get("text")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        key = content.strip().lower()
+        if key in seen_texts:
+            continue
+        seen_texts.add(key)
+        source_tool = record.get("source")
+        if not isinstance(source_tool, str) or not source_tool.strip():
+            source_tool = default_source_tool
+        source_session = (
+            record.get("session_id")
+            or record.get("task_id")
+            or record.get("ts")
+            or record.get("trigger_type")
+            or "imx-dream-trigger"
+        )
+        encoding_context = {
+            ctx_key: ctx_value
+            for ctx_key, ctx_value in {
+                "metadata": record.get("metadata"),
+                "task_class": record.get("task_class"),
+                "trigger_type": record.get("trigger_type"),
+            }.items()
+            if ctx_value is not None
+        }
+        fact = _workspace_candidate_fact(
+            repo_dir,
+            content,
+            source_session=str(source_session),
+            source_tool=source_tool,
+            config=config,
+            encoding_context=encoding_context,
+        )
+        if fact is not None:
+            facts.append(fact)
     return facts
 
 
@@ -563,6 +813,55 @@ def _extract_from_markdown(content: str, path_str: str) -> list[str]:
     return statements
 
 
+def handover_records_to_facts(
+    repo_dir: Path,
+    config: UMXConfig | None = None,
+) -> list[Fact]:
+    facts: list[Fact] = []
+    seen_texts: set[str] = set()
+    for path in list_handover_paths(repo_dir):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        try:
+            relative = path.relative_to(repo_dir).as_posix()
+        except ValueError:
+            relative = path.as_posix()
+        source_session = f"handover:{path.stem}"
+        for statement in _extract_from_markdown(content, relative):
+            redacted = redact_candidate_fact_text(statement, config)
+            if not redacted:
+                continue
+            key = redacted.strip().lower()
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            facts.append(
+                Fact(
+                    fact_id=generate_fact_id(),
+                    text=redacted,
+                    scope=Scope.PROJECT,
+                    topic=_extract_topic(redacted),
+                    encoding_strength=3,
+                    memory_type=MemoryType.EXPLICIT_SEMANTIC,
+                    verification=Verification.SELF_REPORTED,
+                    source_type=SourceType.TOOL_OUTPUT,
+                    confidence=0.6,
+                    source_tool="handover",
+                    source_session=source_session,
+                    consolidation_status=ConsolidationStatus.FRAGILE,
+                    provenance=Provenance(
+                        extracted_by="handover",
+                        sessions=[source_session],
+                    ),
+                    encoding_context={"handover_path": relative},
+                    repo=repo_dir.name,
+                )
+            )
+    return facts
+
+
 def _extract_statements(content: str, path_str: str) -> list[str]:
     suffix = path_str.rsplit(".", 1)[-1].lower() if "." in path_str else ""
     if suffix == "py":
@@ -638,11 +937,13 @@ def source_files_to_facts(
             encoding_strength = 2
             confidence = 0.7
             consolidation_status = ConsolidationStatus.FRAGILE
+            tags = [UNTRUSTED_SOURCE_TAG]
         else:
             source_type = SourceType.GROUND_TRUTH_CODE
             encoding_strength = 3
             confidence = 0.9
             consolidation_status = ConsolidationStatus.STABLE
+            tags = []
         for stmt in statements:
             key = stmt.strip().lower()
             if key in seen_texts:
@@ -660,6 +961,7 @@ def source_files_to_facts(
                     verification=Verification.SELF_REPORTED,
                     source_type=source_type,
                     confidence=confidence,
+                    tags=tags,
                     source_tool="source-extract",
                     source_session=session_ids[0] if session_ids else "source",
                     consolidation_status=consolidation_status,

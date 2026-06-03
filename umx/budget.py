@@ -33,6 +33,7 @@ def estimate_fact_tokens(fact: Fact) -> int:
 class BudgetDecision:
     selected: list[Fact]
     packing_scores: dict[str, float]
+    warning: str | None = None
 
 
 def enforce_budget(
@@ -90,6 +91,10 @@ def enforce_budget(
         victim = removable.pop(0)
         selected = [fact for fact in selected if fact.fact_id != victim.fact_id]
 
+    warning = None
     if len(selected) < cfg.inject.min_facts and facts:
-        return BudgetDecision(selected=selected, packing_scores=packing_scores)
-    return BudgetDecision(selected=selected, packing_scores=packing_scores)
+        warning = (
+            f"budget may be too small: selected {len(selected)} fact(s) below "
+            f"inject.min_facts={cfg.inject.min_facts}"
+        )
+    return BudgetDecision(selected=selected, packing_scores=packing_scores, warning=warning)

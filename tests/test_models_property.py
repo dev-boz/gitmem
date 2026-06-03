@@ -249,8 +249,12 @@ def test_fact_markdown_round_trip_preserves_current_surface(
     assert parsed.provenance.approved_by == fact.provenance.approved_by
     assert parsed.provenance.approval_tier == fact.provenance.approval_tier
     assert parsed.provenance.pr == fact.provenance.pr
-    assert parsed.provenance.sessions == [fact.source_session]
-    assert parsed.tags == []
+    expected_sessions = list(dict.fromkeys(session for session in fact.provenance.sessions if session))
+    default_sessions = [fact.source_session] if fact.source_session else []
+    if not expected_sessions or expected_sessions == default_sessions:
+        expected_sessions = default_sessions
+    assert parsed.provenance.sessions == expected_sessions
+    assert parsed.tags == list(dict.fromkeys(tag for tag in fact.tags if tag.strip()))
     assert parsed.last_retrieved is None
     assert parsed.last_referenced is None
     assert parsed.encoding_context == {}

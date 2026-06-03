@@ -181,6 +181,43 @@ def _last_l2_review(repo_dir: Path) -> dict[str, Any] | None:
     }
 
 
+def _review_rate_summary(repo_dir: Path) -> dict[str, Any]:
+    completed_reviews = [
+        record
+        for record in _processing_records(repo_dir)
+        if record.get("tier") == "l2" and record.get("event") == "review_completed"
+    ]
+    actions = [
+        str(record.get("action") or "").strip().lower()
+        for record in completed_reviews
+        if str(record.get("action") or "").strip().lower() in {"approve", "reject", "escalate"}
+    ]
+    total_reviews = len(actions)
+    rejection_count = sum(1 for action in actions if action == "reject")
+    escalation_count = sum(1 for action in actions if action == "escalate")
+    return {
+        "review_decision_count": total_reviews,
+        "rejection_count": rejection_count,
+        "escalation_count": escalation_count,
+        "rejection_rate": (
+            rejection_count / total_reviews if total_reviews else None
+        ),
+        "escalation_rate": (
+            escalation_count / total_reviews if total_reviews else None
+        ),
+    }
+
+
+def _empty_review_rate_summary() -> dict[str, Any]:
+    return {
+        "review_decision_count": 0,
+        "rejection_count": 0,
+        "escalation_count": 0,
+        "rejection_rate": None,
+        "escalation_rate": None,
+    }
+
+
 def build_governance_health_payload(
     cwd: Path,
     config: UMXConfig | None = None,
@@ -207,6 +244,7 @@ def build_governance_health_payload(
         stale_branch_days=stale_branch_days,
     ) if governed and pr_inventory_available else []
     last_l2_review = _last_l2_review(repo_dir) if governed else None
+    review_rates = _review_rate_summary(repo_dir) if governed else _empty_review_rate_summary()
     label_drift = _label_drift(open_prs) if governed and pr_inventory_available else []
     body_errors = [
         f"PR #{pr.get('number')} {pr.get('head_ref')}: {pr.get('body_error')}"
@@ -234,6 +272,7 @@ def build_governance_health_payload(
         "label_drift_count": len(label_drift),
         "stale_branch_days": stale_branch_days,
         "pr_inventory_available": pr_inventory_available or not governed,
+        **review_rates,
     }
 
     flags: list[str] = []
@@ -268,6 +307,14 @@ def build_governance_health_payload(
     }
 
 
+def _format_rate(value: Any, total: Any, count: Any) -> str:
+    if not isinstance(total, int) or total <= 0 or not isinstance(count, int):
+        return "n/a"
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{value * 100:.1f}% ({count}/{total})"
+
+
 def render_governance_health_human(payload: dict[str, Any]) -> str:
     summary = payload.get("summary", {})
     pr_inventory_available = bool(summary.get("pr_inventory_available", True))
@@ -278,6 +325,17 @@ def render_governance_health_human(payload: dict[str, Any]) -> str:
     )
     stale_branch_count = summary.get("stale_branch_count", 0) if pr_inventory_available else "unknown"
     label_drift_count = summary.get("label_drift_count", 0) if pr_inventory_available else "unknown"
+    review_decision_count = summary.get("review_decision_count", 0)
+    rejection_rate = _format_rate(
+        summary.get("rejection_rate"),
+        review_decision_count,
+        summary.get("rejection_count"),
+    )
+    escalation_rate = _format_rate(
+        summary.get("escalation_rate"),
+        review_decision_count,
+        summary.get("escalation_count"),
+    )
     lines = [
         f"Governance health: {'ok' if payload.get('ok') else 'warn'}",
         f"Repo: {payload.get('repo', '')}",
@@ -299,6 +357,10 @@ def render_governance_health_human(payload: dict[str, Any]) -> str:
                 "Stale local branches: "
                 f"{stale_branch_count} "
                 f"(>{summary.get('stale_branch_days', _DEFAULT_STALE_BRANCH_DAYS)}d without open PR)"
+            ),
+            (
+                "Pipeline health: "
+                f"rejection {rejection_rate}, escalation {escalation_rate}"
             ),
             f"Label drift: {label_drift_count}",
         ]

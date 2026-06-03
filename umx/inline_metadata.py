@@ -19,6 +19,8 @@ INLINE_METADATA_FIELD_ORDER = (
     "cr",
     "v",
     "cs",
+    # Fields not listed here fall into alphabetical order after the canonical block.
+    # Spec-defined extended fields (at, ca, cw, ex, sby, sup, ts) appear alphabetically.
 )
 
 

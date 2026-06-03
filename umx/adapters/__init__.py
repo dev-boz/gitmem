@@ -3,11 +3,13 @@ from __future__ import annotations
 from umx.adapters.aider import AiderAdapter
 from umx.adapters.claude_code import ClaudeCodeAdapter
 from umx.adapters.copilot import CopilotAdapter
+from umx.adapters.gemini import GeminiAdapter
 from umx.adapters.generic import NativeMemoryAdapter
 
 ADAPTER_REGISTRY: dict[str, type[NativeMemoryAdapter]] = {
     "claude-code": ClaudeCodeAdapter,
     "copilot": CopilotAdapter,
+    "gemini": GeminiAdapter,
     "aider": AiderAdapter,
 }
 
@@ -32,6 +34,7 @@ __all__ = [
     "NativeMemoryAdapter",
     "ClaudeCodeAdapter",
     "CopilotAdapter",
+    "GeminiAdapter",
     "AiderAdapter",
     "ADAPTER_REGISTRY",
     "get_adapter",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -63,6 +64,7 @@ def _assert_round_trip(original: Fact, parsed: Fact) -> None:
     assert parsed.verification == original.verification
     assert parsed.source_type == original.source_type
     assert parsed.confidence == pytest.approx(round(original.confidence, 4))
+    assert parsed.tags == original.tags
     assert parsed.source_tool == original.source_tool
     assert parsed.source_session == original.source_session
     assert parsed.corroborated_by_tools == original.corroborated_by_tools
@@ -149,11 +151,43 @@ def _assert_round_trip(original: Fact, parsed: Fact) -> None:
                 source_tool="cursor-->shim",
             ),
         ),
+        (
+            "risk-tags",
+            _fact(
+                "reviewed external notes remain explicitly tagged",
+                tags=["untrusted_source", "contamination_risk"],
+            ),
+        ),
     ],
 )
 def test_inline_metadata_round_trip_corpus(project_repo, label: str, fact: Fact) -> None:
     parsed = _round_trip(project_repo, fact)
     _assert_round_trip(fact, parsed)
+
+
+def test_parse_fact_line_ignores_null_entries_in_tags_and_sessions(project_repo) -> None:
+    fact = _fact("external notes stay marked as risky")
+    metadata = {
+        "id": fact.fact_id,
+        "conf": round(fact.confidence, 4),
+        "src": fact.source_tool,
+        "xby": fact.provenance.extracted_by,
+        "ss": fact.source_session,
+        "st": fact.source_type.value,
+        "cr": fact.created.isoformat().replace("+00:00", "Z"),
+        "v": fact.verification.value,
+        "cs": fact.consolidation_status.value,
+        "ps": [fact.source_session, None],
+        "tg": ["untrusted_source", None],
+    }
+    prefix = format_fact_line(fact).split("<!-- umx:", 1)[0].rstrip()
+    line = f"{prefix} <!-- umx:{json.dumps(metadata, separators=(',', ':'))} -->"
+
+    parsed = parse_fact_line(line, repo_dir=project_repo, path=topic_path(project_repo, fact.topic))
+
+    assert parsed is not None
+    assert parsed.provenance.sessions == [fact.source_session]
+    assert parsed.tags == ["untrusted_source"]
 
 
 def test_format_fact_line_uses_canonical_metadata_order(project_repo) -> None:

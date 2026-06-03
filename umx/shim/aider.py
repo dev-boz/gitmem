@@ -2,20 +2,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from umx.inject import build_injection_block
+from umx.inject import inject_for_tool
 
 
-def generate_aider_prompt(cwd: Path, max_tokens: int = 4000) -> str:
+def generate_aider_prompt(cwd: Path, max_tokens: int | None = None) -> str:
     """Generate memory injection for aider's --message-file or --read flag.
 
     Aider reads .aider.conf.yml and supports --read to prepend files.
     This generates the memory block that should be prepended.
     """
-    return build_injection_block(cwd, tool="aider", max_tokens=max_tokens)
+    return inject_for_tool(cwd, tool="aider", max_tokens=max_tokens)
 
 
 def write_aider_memory_file(
-    cwd: Path, output_path: Path | None = None, max_tokens: int = 4000
+    cwd: Path, output_path: Path | None = None, max_tokens: int | None = None
 ) -> Path:
     """Write memory to a file suitable for aider --read.
 
@@ -28,7 +28,7 @@ def write_aider_memory_file(
     return output_path
 
 
-def run(cwd: Path | None = None, max_tokens: int = 4000) -> str:
+def run(cwd: Path | None = None, max_tokens: int | None = None) -> str:
     """Main entry point for aider shim."""
     cwd = cwd or Path.cwd()
     return generate_aider_prompt(cwd, max_tokens=max_tokens)

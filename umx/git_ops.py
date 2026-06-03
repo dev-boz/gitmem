@@ -4,11 +4,13 @@ import hashlib
 import logging
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from umx.config import UMXConfig, load_config
+from umx.push_queue import enqueue_push, load_push_queue, remove_queued_push
 from umx.scope import config_path
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,26 @@ class GitCommitResult:
             stderr=stderr,
             signed=signed,
         )
+
+
+@dataclass(slots=True, frozen=True)
+class GitPushResult:
+    status: Literal["ok", "queued", "failed"]
+    attempts: int = 1
+    stdout: str = ""
+    stderr: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+    @property
+    def queued(self) -> bool:
+        return self.status == "queued"
+
+    @property
+    def failed(self) -> bool:
+        return self.status == "failed"
 
 
 class GitCommitError(RuntimeError):
@@ -547,15 +569,118 @@ def git_pull_rebase(repo_dir: Path, *, config: UMXConfig | None = None) -> bool:
     return result.returncode == 0
 
 
-def git_push(repo_dir: Path, branch: str = "main", set_upstream: bool = False) -> bool:
-    """Push to remote. Returns True on success."""
+def _git_push_args(branch: str, set_upstream: bool) -> list[str]:
     args = ["push"]
     if set_upstream:
         args.extend(["--set-upstream", "origin", branch])
     else:
         args.extend(["origin", branch])
-    result = _run_git(repo_dir, *args)
+    return args
+
+
+def git_push(repo_dir: Path, branch: str = "main", set_upstream: bool = False) -> bool:
+    """Push to remote. Returns True on success."""
+    result = _run_git(repo_dir, *_git_push_args(branch, set_upstream))
     return result.returncode == 0
+
+
+def _is_non_fast_forward_push(result: subprocess.CompletedProcess[str]) -> bool:
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part).lower()
+    return any(
+        marker in output
+        for marker in (
+            "non-fast-forward",
+            "fetch first",
+            "failed to push some refs",
+            "[rejected]",
+        )
+    )
+
+
+def git_push_with_retry(
+    repo_dir: Path,
+    *,
+    branch: str = "main",
+    set_upstream: bool = False,
+    config: UMXConfig | None = None,
+    queue_on_failure: bool = False,
+    sleep_fn=time.sleep,
+) -> GitPushResult:
+    cfg = config or load_config(config_path())
+    max_attempts = max(1, int(cfg.git.push_max_attempts))
+    base_delay = max(0.0, float(cfg.git.push_backoff_base_seconds))
+    last_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="push failed")
+    attempts_used = 0
+    for attempt in range(1, max_attempts + 1):
+        attempts_used = attempt
+        result = _run_git(repo_dir, *_git_push_args(branch, set_upstream))
+        last_result = result
+        if result.returncode == 0:
+            remove_queued_push(repo_dir, branch=branch, set_upstream=set_upstream)
+            return GitPushResult(
+                status="ok",
+                attempts=attempt,
+                stdout=result.stdout,
+                stderr=result.stderr,
+            )
+        if not _is_non_fast_forward_push(result) or attempt >= max_attempts:
+            break
+        git_fetch(repo_dir)
+        if not git_pull_rebase(repo_dir, config=cfg):
+            break
+        if base_delay > 0:
+            sleep_fn(base_delay * (2 ** (attempt - 1)))
+    if queue_on_failure:
+        enqueue_push(
+            repo_dir,
+            branch=branch,
+            set_upstream=set_upstream,
+            attempts=attempts_used,
+            last_error=last_result.stderr or last_result.stdout or "push failed",
+        )
+        return GitPushResult(
+            status="queued",
+            attempts=attempts_used,
+            stdout=last_result.stdout,
+            stderr=last_result.stderr,
+        )
+    return GitPushResult(
+        status="failed",
+        attempts=attempts_used,
+        stdout=last_result.stdout,
+        stderr=last_result.stderr,
+    )
+
+
+def drain_push_queue(
+    repo_dir: Path,
+    *,
+    config: UMXConfig | None = None,
+    sleep_fn=time.sleep,
+) -> dict[str, int]:
+    drained = 0
+    remaining = 0
+    for entry in load_push_queue(repo_dir):
+        result = git_push_with_retry(
+            repo_dir,
+            branch=entry.branch,
+            set_upstream=entry.set_upstream,
+            config=config,
+            queue_on_failure=False,
+            sleep_fn=sleep_fn,
+        )
+        if result.ok:
+            drained += 1
+            continue
+        enqueue_push(
+            repo_dir,
+            branch=entry.branch,
+            set_upstream=entry.set_upstream,
+            attempts=result.attempts,
+            last_error=result.stderr or result.stdout or entry.last_error,
+        )
+        remaining += 1
+    return {"drained": drained, "remaining": remaining}
 
 
 def git_create_branch(repo_dir: Path, branch: str, checkout: bool = True) -> bool:

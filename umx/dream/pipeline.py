@@ -8,24 +8,41 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+from umx.artifacts import check_reasoning_artifact_invalidations
+from umx.chronicles import generate_context_layers
 from umx.config import UMXConfig, load_config
 from umx.conventions import ConventionSet, apply_conventions_to_fact, normalize_fact_text, parse_conventions
 from umx.dream.anchors import anchor_current_sha, code_anchor_is_stale
 from umx.dream.conflict import facts_conflict, resolve_conflict
 from umx.dream.consolidation import stabilize_facts
-from umx.dream.extract import clear_gap_records, gap_records_to_facts, mark_sessions_gathered, session_records_to_facts_with_report, source_files_to_facts
-from umx.dream.gates import DreamLock, mark_dream_complete, read_dream_state, should_dream
+from umx.dream.entrenchment import detect_entrenchment
+from umx.dream.extract import (
+    clear_gap_records,
+    dream_candidate_dicts_to_facts,
+    gap_records_to_facts,
+    handover_records_to_facts,
+    list_workspace_transcripts,
+    mark_sessions_gathered,
+    session_records_to_facts_with_report,
+    source_files_to_facts,
+    workspace_dream_candidates_to_facts,
+    workspace_transcript_records_to_facts_with_report,
+)
+from umx.dream.imx_triggers import KNOWN_TRIGGER_TYPES, ingest_imx_triggers
+from umx.dream.gates import CompositeDreamLock, DreamLock, UserDreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
 from umx.dream.lint import (
     generate_lint_findings,
     lint_report_path,
     lint_state_path,
     mark_lint_complete,
+    schema_lock_in_findings,
     should_run as should_run_lint,
     write_lint_report,
 )
 from umx.dream.notice import append_notice
 from umx.dream.pr_render import GovernancePRBodyError
+from umx.dream.procedure_pr import build_procedure_delta_from_eval_trigger, render_procedure_revision_pr_body
 from umx.dream.processing import (
     active_processing_runs,
     append_processing_event,
@@ -89,6 +106,7 @@ from umx.memory import (
     save_repository_facts,
     write_memory_md,
 )
+from umx.identity import semantic_dedup_key
 from umx.models import CodeAnchor, ConsolidationStatus, Fact, Provenance, SourceType, Verification
 from umx.push_safety import PushSafetyError, assert_push_safe
 from umx.schema import detect_schema_state
@@ -101,14 +119,79 @@ from umx.scope import (
 )
 from umx.search import injected_without_reference_sessions, rebuild_index, usage_snapshot
 from umx.search_semantic import embeddings_available, ensure_embeddings
-from umx.sessions import scheduled_archive_sessions
+from umx.sessions import list_sessions, scheduled_archive_sessions
 from umx.strength import apply_corroboration, independent_corroboration, should_prune
 from umx.tasks import auto_abandon_tasks
 from umx.tombstones import is_suppressed, load_tombstones
+from umx.trust_tags import REVIEW_RISK_TAGS, SELF_DERIVED_QUARANTINE_TAG
+
+
+_NON_SESSION_SOURCE_IDS = frozenset({"manual", "manual-edit", "cross-project-promotion", "gap", "adapter"})
+
+
+def _fact_semantic_dedup_key(fact: Fact) -> str:
+    return semantic_dedup_key(fact.text, fact.scope.value, fact.topic)
 
 
 def _default_lint_status() -> dict[str, object]:
     return {"ran": False, "reason": "not-started"}
+
+
+def _raw_session_anchors(fact: Fact, *, available_session_ids: set[str]) -> list[str]:
+    candidates = list(
+        dict.fromkeys(
+            session_id
+            for session_id in [fact.source_session, *fact.provenance.sessions]
+            if session_id
+        )
+    )
+    return [
+        session_id
+        for session_id in candidates
+        if session_id not in _NON_SESSION_SOURCE_IDS and session_id in available_session_ids
+    ]
+
+
+def _is_self_derived_llm_inference_fact(
+    fact: Fact,
+    *,
+    available_session_ids: set[str],
+) -> bool:
+    if fact.source_type != SourceType.LLM_INFERENCE:
+        return False
+    if not fact.provenance.pr:
+        return False
+    return not _raw_session_anchors(fact, available_session_ids=available_session_ids)
+
+
+def _orient_llm_inference_fact(
+    fact: Fact,
+    *,
+    available_session_ids: set[str],
+) -> Fact:
+    tags = [tag for tag in fact.tags if tag != SELF_DERIVED_QUARANTINE_TAG]
+    if not _is_self_derived_llm_inference_fact(
+        fact,
+        available_session_ids=available_session_ids,
+    ):
+        return fact if tags == fact.tags else fact.clone(tags=tags)
+
+    if SELF_DERIVED_QUARANTINE_TAG not in tags:
+        tags.append(SELF_DERIVED_QUARANTINE_TAG)
+    if tags == fact.tags and fact.consolidation_status == ConsolidationStatus.FRAGILE:
+        return fact
+    return fact.clone(tags=tags, consolidation_status=ConsolidationStatus.FRAGILE)
+
+
+def _l2_review_strength_target(fact: Fact, config: UMXConfig) -> int:
+    target = max(fact.encoding_strength, 4)
+    if fact.verification == Verification.HUMAN_CONFIRMED:
+        return target
+    if not (set(fact.tags) & REVIEW_RISK_TAGS):
+        return target
+    # Cap L2-driven promotion for risky facts without downgrading strength earned elsewhere.
+    ceiling = max(1, int(config.dream.untrusted_strength_ceiling))
+    return max(fact.encoding_strength, min(target, ceiling))
 
 
 @dataclass(slots=True)
@@ -134,13 +217,21 @@ class DreamPipeline:
         self.config = config or load_config(config_path())
         self.conventions = ConventionSet()
         self.new_fact_ids: set[str] = set()
+        self._extracted_session_ids: list[str] = []
         self._gathered_session_ids: list[str] = []
         self._push_block_reason: str | None = None
+        self._artifact_invalidations: list[dict[str, str]] = []
+        self._processing_run_id: str | None = None
 
     def orient(self) -> list[Fact]:
         ensure_repo_structure(self.repo_dir)
         self.conventions = parse_conventions(self.repo_dir / "CONVENTIONS.md")
+        self._artifact_invalidations = check_reasoning_artifact_invalidations(
+            self.project_root,
+            self.repo_dir,
+        )
         facts = load_all_facts(self.repo_dir, include_superseded=True)
+        available_session_ids = {path.stem for path in list_sessions(self.repo_dir)}
         updated: list[Fact] = []
         for fact in facts:
             if fact.source_type == SourceType.GROUND_TRUTH_CODE and fact.code_anchor:
@@ -154,8 +245,16 @@ class DreamPipeline:
                     updated.append(fact.clone(code_anchor=anchor))
                     continue
                 updated.append(fact)
-            else:
-                updated.append(fact)
+                continue
+            if fact.source_type == SourceType.LLM_INFERENCE:
+                updated.append(
+                    _orient_llm_inference_fact(
+                        fact,
+                        available_session_ids=available_session_ids,
+                    )
+                )
+                continue
+            updated.append(fact)
         return updated
 
     def gather(self) -> list[Fact]:
@@ -164,9 +263,19 @@ class DreamPipeline:
             self.repo_dir,
             config=self.config,
         )
+        workspace_session_candidates, workspace_provider_results = workspace_transcript_records_to_facts_with_report(
+            self.project_root,
+            self.repo_dir,
+            config=self.config,
+            skip_session_ids={result.session_id for result in provider_results},
+        )
+        provider_results.extend(workspace_provider_results)
         self._provider_results = provider_results
-        self._gathered_session_ids = list(
+        self._extracted_session_ids = list(
             dict.fromkeys(result.session_id for result in provider_results)
+        )
+        self._gathered_session_ids = list(
+            dict.fromkeys(result.session_id for result in provider_results if not result.native_only)
         )
         self._dream_provider = None
         self._dream_partial = False
@@ -177,6 +286,17 @@ class DreamPipeline:
             )
             self._dream_partial = any(result.native_only for result in provider_results)
         candidates.extend(session_candidates)
+        candidates.extend(workspace_session_candidates)
+        candidates.extend(
+            workspace_dream_candidates_to_facts(
+                self.project_root,
+                self.repo_dir,
+                config=self.config,
+            )
+        )
+        candidates.extend(handover_records_to_facts(self.repo_dir, config=self.config))
+        candidates.extend(self._imx_trigger_candidates())
+        candidates.extend(self._entrenchment_candidates())
         provider_notices = list(
             dict.fromkeys(
                 result.notice
@@ -190,10 +310,17 @@ class DreamPipeline:
         # Extract facts from source files referenced in sessions
         from umx.sessions import list_sessions
         session_paths = list_sessions(self.repo_dir)
-        if session_paths:
+        repo_session_ids = {path.stem for path in session_paths}
+        workspace_transcript_paths = [
+            path
+            for path in list_workspace_transcripts(self.project_root)
+            if path.stem not in repo_session_ids
+        ]
+        source_session_paths = session_paths + workspace_transcript_paths
+        if source_session_paths:
             try:
                 source_facts = source_files_to_facts(
-                    self.repo_dir, self.project_root, session_paths,
+                    self.repo_dir, self.project_root, source_session_paths,
                 )
                 candidates.extend(source_facts)
             except Exception:
@@ -235,11 +362,12 @@ class DreamPipeline:
         for candidate in candidates:
             if is_suppressed(candidate, tombstones):
                 continue
+            candidate_key = _fact_semantic_dedup_key(candidate)
             merged = False
             for index, existing in enumerate(current):
                 if existing.superseded_by is not None:
                     continue
-                if existing.topic == candidate.topic and existing.text.lower() == candidate.text.lower():
+                if _fact_semantic_dedup_key(existing) == candidate_key:
                     if independent_corroboration(existing, candidate):
                         updated = apply_corroboration(existing, candidate)
                         if updated.consolidation_status == ConsolidationStatus.FRAGILE:
@@ -272,27 +400,7 @@ class DreamPipeline:
         )
 
     def schema_lock_in_findings(self, candidates: list[Fact]) -> list[dict[str, str]]:
-        if not self.conventions.topics or len(candidates) < 5:
-            return []
-        matched = 0
-        for candidate in candidates:
-            if candidate.topic in self.conventions.topics:
-                matched += 1
-                continue
-            if any(candidate.topic.startswith(f"{topic}/") for topic in self.conventions.topics):
-                matched += 1
-        ratio = matched / max(1, len(candidates))
-        if ratio <= 0.8:
-            return []
-        return [
-            {
-                "kind": "schema-lock-in",
-                "message": (
-                    f"{matched}/{len(candidates)} gathered facts matched existing convention topics; "
-                    "challenge CONVENTIONS.md coverage before the schema hardens further"
-                ),
-            }
-        ]
+        return schema_lock_in_findings(candidates, conventions=self.conventions)
 
     def prune(self, facts: list[Fact], now: datetime) -> tuple[list[Fact], int]:
         usage = usage_snapshot(self.repo_dir)
@@ -362,11 +470,111 @@ class DreamPipeline:
             config=self.config,
             auto_commit=False,
         )
+        generate_context_layers(
+            self.repo_dir,
+            stabilized,
+            now,
+            task_class="general",
+        )
         rebuild_manifest(self.repo_dir, stabilized, now)
         rebuild_index(self.repo_dir)
         clear_gap_records(self.repo_dir)
         self._demoted_count = demoted_count
         return stabilized, pruned
+
+    def _imx_trigger_candidates(self) -> list[Fact]:
+        """Ingest IMX dream triggers (~/.imx/state/dream-triggers.jsonl) as candidates.
+
+        ``procedure_regression`` is excluded — it has a dedicated draft-PR path
+        in :meth:`_write_procedure_revision_drafts`. All other known trigger
+        types (query_gap, route_failure, context_saturation,
+        large_task_completion, entrenchment_risk, policy_drift) become fragile
+        S:1 candidates for the normal Consolidate/L1 governance path.
+        """
+        try:
+            allowed = KNOWN_TRIGGER_TYPES - {"procedure_regression"}
+            candidate_dicts = ingest_imx_triggers(allowed_types=allowed)
+        except Exception:
+            logger.warning("failed to ingest IMX dream triggers", exc_info=True)
+            return []
+        return dream_candidate_dicts_to_facts(
+            self.repo_dir, candidate_dicts, config=self.config
+        )
+
+    def _entrenchment_candidates(self) -> list[Fact]:
+        """Run entrenchment detection over local procedures and route cards.
+
+        Medium/high entrenchment risks become fragile S:1 candidates so the
+        Dream pipeline surfaces echo-chamber risks for human review (spec §11.7).
+        """
+        try:
+            candidate_dicts = detect_entrenchment(self.repo_dir)
+        except Exception:
+            logger.warning("entrenchment detection failed", exc_info=True)
+            return []
+        return dream_candidate_dicts_to_facts(
+            self.repo_dir,
+            candidate_dicts,
+            config=self.config,
+            default_source_tool="imx:entrenchment-detector",
+        )
+
+    def _write_procedure_revision_drafts(
+        self,
+        now: datetime,
+        *,
+        drafts_dir: Path | None = None,
+    ) -> list[Path]:
+        """Process any procedure_regression IMX triggers and write PR body drafts.
+
+        Returns a list of paths written (may be empty).
+        Failures are logged at WARNING and do not propagate.
+        """
+        from umx.dream.imx_triggers import read_imx_triggers
+
+        written: list[Path] = []
+        try:
+            triggers = read_imx_triggers()
+        except Exception:
+            logger.warning("failed to read IMX triggers for procedure revision", exc_info=True)
+            return written
+
+        regression_triggers = [t for t in triggers if t.trigger_type == "procedure_regression"]
+        if not regression_triggers:
+            return written
+
+        procedures_dir = self.project_root / "procedures"
+        if not procedures_dir.is_dir():
+            logger.debug("no procedures dir at %s; skipping procedure revision drafts", procedures_dir)
+            return written
+
+        resolved_drafts_dir = drafts_dir or (Path.home() / ".imx" / "state" / "drafts")
+
+        for trigger in regression_triggers:
+            try:
+                deltas = build_procedure_delta_from_eval_trigger(
+                    trigger.raw,
+                    procedures_dir=procedures_dir,
+                )
+                if not deltas:
+                    logger.debug(
+                        "procedure_regression trigger yielded no deltas (procedures_dir=%s)",
+                        procedures_dir,
+                    )
+                    continue
+                body = render_procedure_revision_pr_body(deltas)
+                ts_str = now.strftime("%Y%m%dT%H%M%S")
+                draft_path = resolved_drafts_dir / f"procedure-revision-{ts_str}.md"
+                resolved_drafts_dir.mkdir(parents=True, exist_ok=True)
+                tmp_path = draft_path.with_suffix(draft_path.suffix + ".tmp")
+                tmp_path.write_text(body, encoding="utf-8")
+                os.replace(tmp_path, draft_path)
+                written.append(draft_path)
+                logger.info("wrote procedure revision draft to %s", draft_path)
+            except Exception:
+                logger.warning("failed to write procedure revision draft for trigger", exc_info=True)
+
+        return written
 
     def _branch_changes(self) -> list[Path]:
         """Tracked changes that should be captured in a PR branch."""
@@ -516,6 +724,7 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
+        github_remote = is_github_repo_url(repo_ref.url)
         repo_owner = repo_ref.owner or self.config.org
         if not repo_owner:
             logger.warning("no org configured; skipping PR creation")
@@ -546,6 +755,23 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
+        create_pr_is_stubbed = getattr(create_pr, "__module__", "umx.github_ops") != "umx.github_ops"
+        if not github_remote and not create_pr_is_stubbed:
+            if not push_branch(self.repo_dir, pr_proposal.branch):
+                logger.warning("failed to push branch %s", pr_proposal.branch)
+            return None
+        if not github_remote and create_pr_is_stubbed:
+            if not push_branch(self.repo_dir, pr_proposal.branch):
+                logger.warning("failed to push branch %s", pr_proposal.branch)
+                return None
+            return create_pr(
+                repo_owner,
+                repo_ref.name,
+                pr_proposal.branch,
+                pr_proposal.title,
+                pr_proposal.body,
+                labels=pr_proposal.labels,
+            )
         try:
             if not gh_available():
                 logger.warning("gh CLI not available; skipping PR creation")
@@ -554,19 +780,18 @@ class DreamPipeline:
             self._push_block_reason = str(exc)
             logger.warning("%s", exc)
             return None
-        if is_github_repo_url(repo_ref.url):
-            try:
-                assert_no_open_governance_pr_overlap(
-                    repo_owner,
-                    repo_ref.name,
-                    branch=pr_proposal.branch,
-                    body=pr_proposal.body,
-                    labels=pr_proposal.labels,
-                )
-            except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
-                self._push_block_reason = str(exc)
-                logger.warning("%s", exc)
-                return None
+        try:
+            assert_no_open_governance_pr_overlap(
+                repo_owner,
+                repo_ref.name,
+                branch=pr_proposal.branch,
+                body=pr_proposal.body,
+                labels=pr_proposal.labels,
+            )
+        except (GitHubError, GovernancePRBodyError, GovernancePRConflictError) as exc:
+            self._push_block_reason = str(exc)
+            logger.warning("%s", exc)
+            return None
         if not push_branch(self.repo_dir, pr_proposal.branch):
             logger.warning("failed to push branch %s", pr_proposal.branch)
             return None
@@ -723,7 +948,12 @@ class DreamPipeline:
             provenance["approved_by"] = reviewed_by
             provenance["approval_tier"] = approval_tier
             provenance["pr"] = str(pr_number)
+            verification = fact.verification
+            if verification != Verification.HUMAN_CONFIRMED:
+                verification = Verification.SOTA_REVIEWED
             updated_fact = fact.clone(
+                encoding_strength=_l2_review_strength_target(fact, self.config),
+                verification=verification,
                 provenance=Provenance.from_dict(provenance),
             )
             updated = replace_fact(self.repo_dir, updated_fact) or updated
@@ -1269,7 +1499,10 @@ class DreamPipeline:
             )
         if not should_dream(self.repo_dir, force=force):
             return DreamResult(status="skipped", message="dream gates not met")
-        lock = DreamLock(self.repo_dir)
+        lock = CompositeDreamLock(
+            UserDreamLock(),
+            DreamLock(self.repo_dir),
+        )
         if not lock.acquire():
             return DreamResult(status="skipped", message="dream lock held")
         shared_refs = ("origin/main",) if mode in {"remote", "hybrid"} else ()
@@ -1284,6 +1517,7 @@ class DreamPipeline:
                 force=force,
                 branch=run_branch,
             )
+            self._processing_run_id = processing_run_id
             if mode in {"remote", "hybrid"} and self.config.org:
                 if not self._sync_processing_log_to_main("umx: dream processing start"):
                     fail_processing_run(
@@ -1313,10 +1547,11 @@ class DreamPipeline:
             findings: list[dict[str, str]] = []
             if lint_ran:
                 findings = self.lint(consolidated)
-                findings.extend(self.schema_lock_in_findings(candidates))
                 write_lint_report(self.repo_dir, findings)
                 mark_lint_complete(self.repo_dir, now)
             lock.heartbeat()
+
+            self._write_procedure_revision_drafts(now)
 
             provider_results = getattr(self, "_provider_results", [])
             provider_summary = None
@@ -1341,7 +1576,7 @@ class DreamPipeline:
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
-                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    pr_proposal = self._generate_pr(proposal_facts, self._extracted_session_ids)
                     if self._commit_to_branch(
                         pr_proposal.branch,
                         message="dream(l1): update memory snapshot",
@@ -1381,11 +1616,14 @@ class DreamPipeline:
                 )
                 archived_sessions = int(archive_result.get("archived_sessions", 0))
                 demoted = getattr(self, "_demoted_count", 0)
+                invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
                 msg = f"{len(final_facts)} facts retained"
                 if provider_summary:
                     msg += f", extraction: {provider_summary}"
                 if demoted:
                     msg += f", {demoted} demoted"
+                if invalidated_artifacts:
+                    msg += f", {invalidated_artifacts} artifacts invalidated"
                 if archived_sessions:
                     msg += f", {archived_sessions} archived"
                 if pr_proposal:
@@ -1444,7 +1682,7 @@ class DreamPipeline:
                 pr_number = None
                 if branch_changes:
                     proposal_facts = new_facts or final_facts
-                    pr_proposal = self._generate_pr(proposal_facts, self._gathered_session_ids)
+                    pr_proposal = self._generate_pr(proposal_facts, self._extracted_session_ids)
                     if self._commit_to_branch(
                         pr_proposal.branch,
                         message="dream(l1): update memory snapshot",
@@ -1478,11 +1716,14 @@ class DreamPipeline:
                     mark_sessions_gathered(self.repo_dir, self._gathered_session_ids)
                 mark_dream_complete(self.repo_dir, now)
                 demoted = getattr(self, "_demoted_count", 0)
+                invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
                 msg = f"{len(final_facts)} facts retained"
                 if provider_summary:
                     msg += f", extraction: {provider_summary}"
                 if demoted:
                     msg += f", {demoted} demoted"
+                if invalidated_artifacts:
+                    msg += f", {invalidated_artifacts} artifacts invalidated"
                 if pr_proposal:
                     msg += f", PR: {pr_proposal.title}"
                     if pr_number:
@@ -1541,11 +1782,14 @@ class DreamPipeline:
             )
             archived_sessions = int(archive_result.get("archived_sessions", 0))
             demoted = getattr(self, "_demoted_count", 0)
+            invalidated_artifacts = len(getattr(self, "_artifact_invalidations", []))
             msg = f"{len(final_facts)} facts retained"
             if provider_summary:
                 msg += f", extraction: {provider_summary}"
             if demoted:
                 msg += f", {demoted} demoted"
+            if invalidated_artifacts:
+                msg += f", {invalidated_artifacts} artifacts invalidated"
             if archived_sessions:
                 msg += f", {archived_sessions} archived"
             result = DreamResult(

@@ -75,7 +75,7 @@ def test_adversarial_redaction_quarantines_on_scanner_error(
     def fail_closed(*_args, **_kwargs):
         raise RedactionError("scanner crashed")
 
-    monkeypatch.setattr("umx.sessions.redact_jsonl_lines", fail_closed)
+    monkeypatch.setattr("umx.sessions.redact_jsonl_lines_with_issues", fail_closed)
 
     with pytest.raises(RedactionError, match="scanner crashed"):
         write_session(

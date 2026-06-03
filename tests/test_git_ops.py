@@ -10,19 +10,23 @@ from umx.config import default_config
 from umx.git_ops import (
     GitCommitError,
     GitCommitResult,
+    GitPushResult,
     GitSignedHistoryError,
     assert_signed_commit_range,
     conflicted_paths,
+    drain_push_queue,
     git_in_progress_operation,
     git_add_and_commit,
     git_init,
     git_pull_rebase,
+    git_push_with_retry,
     inspect_signed_commit_range,
     is_git_repo,
     list_local_branches,
     safety_sweep,
     uncommitted_sessions,
 )
+from umx.push_queue import enqueue_push, load_push_queue
 
 
 @pytest.fixture
@@ -298,6 +302,110 @@ def test_git_pull_rebase_enables_rebase_signing_when_signing_is_enabled(
 
     assert git_pull_rebase(repo, config=cfg) is True
     assert calls == [("-c", "rebase.gpgSign=true", "pull", "--rebase", "origin")]
+
+
+def test_git_push_with_retry_retries_non_fast_forward_push(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, ...]] = []
+    push_attempts = 0
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        nonlocal push_attempts
+        calls.append(args)
+        if args == ("push", "origin", "main"):
+            push_attempts += 1
+            if push_attempts == 1:
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="non-fast-forward")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="ok", stderr="")
+        if args == ("fetch", "--prune", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        if args == ("pull", "--rebase", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    cfg = default_config()
+    cfg.git.push_backoff_base_seconds = 0
+    cfg.git.push_max_attempts = 2
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    result = git_push_with_retry(repo, config=cfg, sleep_fn=lambda _seconds: None)
+
+    assert result == GitPushResult(status="ok", attempts=2, stdout="ok", stderr="")
+    assert calls == [
+        ("push", "origin", "main"),
+        ("fetch", "--prune", "origin"),
+        ("pull", "--rebase", "origin"),
+        ("push", "origin", "main"),
+    ]
+
+
+def test_git_push_with_retry_enqueues_failed_push(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("push", "origin", "main"):
+            return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="non-fast-forward")
+        if args == ("fetch", "--prune", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        if args == ("pull", "--rebase", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    cfg = default_config()
+    cfg.git.push_backoff_base_seconds = 0
+    cfg.git.push_max_attempts = 2
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    result = git_push_with_retry(
+        repo,
+        config=cfg,
+        queue_on_failure=True,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert result == GitPushResult(status="queued", attempts=2, stdout="", stderr="non-fast-forward")
+    queued = load_push_queue(repo)
+    assert len(queued) == 1
+    assert queued[0].branch == "main"
+    assert queued[0].attempts == 2
+    assert queued[0].last_error == "non-fast-forward"
+
+
+def test_drain_push_queue_retries_existing_entries(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    enqueue_push(repo, branch="main", last_error="stale queue entry")
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        assert args == ("push", "origin", "main")
+        return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="drained", stderr="")
+
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    result = drain_push_queue(repo, config=default_config(), sleep_fn=lambda _seconds: None)
+
+    assert result == {"drained": 1, "remaining": 0}
+    assert load_push_queue(repo) == []
+
+
+def test_drain_push_queue_preserves_attempt_counts(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    enqueue_push(repo, branch="main", attempts=2, last_error="stale queue entry")
+
+    def fake_run_git(repo_dir: Path, *args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+        if args == ("push", "origin", "main"):
+            return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="non-fast-forward")
+        if args == ("fetch", "--prune", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        if args == ("pull", "--rebase", "origin"):
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected git args: {args!r}")
+
+    cfg = default_config()
+    cfg.git.push_backoff_base_seconds = 0
+    cfg.git.push_max_attempts = 2
+    monkeypatch.setattr(git_ops, "_run_git", fake_run_git)
+
+    result = drain_push_queue(repo, config=cfg, sleep_fn=lambda _seconds: None)
+
+    assert result == {"drained": 0, "remaining": 1}
+    queued = load_push_queue(repo)
+    assert len(queued) == 1
+    assert queued[0].attempts == 4
 
 
 def test_conflicted_paths_filters_unmerged_entries(

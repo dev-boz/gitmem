@@ -265,6 +265,37 @@ def test_provider_zero_fact_success_still_marks_session_gathered(
         assert "No transcript extraction provider configured" not in notice_path.read_text()
 
 
+def test_dream_pipeline_keeps_native_only_sessions_requeueable(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    fact = _provider_fact(project_repo, "sess-native", "native fallback fact")
+
+    monkeypatch.setattr(
+        "umx.dream.pipeline.session_records_to_facts_with_report",
+        lambda *_args, **_kwargs: (
+            [fact],
+            [
+                providers.ProviderExtractionResult(
+                    session_id="sess-native",
+                    facts=[fact],
+                    native_only=True,
+                )
+            ],
+        ),
+    )
+    monkeypatch.setattr("umx.dream.pipeline.source_files_to_facts", lambda *_args, **_kwargs: [])
+    pipeline = DreamPipeline(project_dir, config=default_config())
+
+    gathered = pipeline.gather()
+
+    assert len(gathered) == 1
+    assert gathered[0].source_session == "sess-native"
+    assert pipeline._extracted_session_ids == ["sess-native"]
+    assert pipeline._gathered_session_ids == []
+
+
 def test_run_l2_review_with_provider_reviewer(project_repo: Path) -> None:
     cfg = default_config()
     cfg.dream.provider_rotation = ["groq"]

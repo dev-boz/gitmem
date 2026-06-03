@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Dream Gather now ingests IMX dream triggers from `~/.imx/state/dream-triggers.jsonl` (`query_gap`, `route_failure`, `context_saturation`, `large_task_completion`, `entrenchment_risk`, `policy_drift`) and runs local entrenchment detection over procedures and route cards (spec §11.7/§30). Both feed the normal Consolidate/L1 governance path as fragile S:1 candidates via the new `dream_candidate_dicts_to_facts` helper; `procedure_regression` continues to use its dedicated draft-PR path.
 - `gitmem eval l2-review --provider claude-cli` runs the L2 reviewer through the Claude Code CLI in headless `-p` mode, using the operator's existing OAuth session instead of an `ANTHROPIC_API_KEY`. New `umx/providers/claude_cli.py` subprocess wrapper, `claude_cli_l2_reviewer`, and `select_l2_reviewer` selector keep the existing Anthropic API path as the default.
 - Cross-scope promotion to `user`, `project`, and `principle` memory via `umx promote --to ...`
 - Cross-project governance flow: `umx audit --cross-project`, proposal previews, local proposal-branch materialization, guarded `--push`, and explicit `--open-pr`

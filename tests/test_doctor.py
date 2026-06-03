@@ -7,7 +7,27 @@ from pathlib import Path
 
 from umx.config import default_config, save_config
 from umx.doctor import run_doctor
+from umx.memory import add_fact
+from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
+from umx.search import rebuild_index
 from umx.scope import config_path
+
+
+def _fact(fact_id: str, text: str) -> Fact:
+    return Fact(
+        fact_id=fact_id,
+        text=text,
+        scope=Scope.PROJECT,
+        topic="general",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.SELF_REPORTED,
+        source_type=SourceType.USER_PROMPT,
+        confidence=0.9,
+        source_tool="manual",
+        source_session="manual",
+        consolidation_status=ConsolidationStatus.FRAGILE,
+    )
 
 
 def test_doctor_reports_and_clears_stale_dream_lock(project_dir: Path, project_repo: Path) -> None:
@@ -152,3 +172,55 @@ def test_doctor_surfaces_identity_issues_when_signing_is_enabled(
     assert readiness["ready"] is False
     assert any("user.name" in issue for issue in readiness["issues"])
     assert any("user.email" in issue for issue in readiness["issues"])
+
+
+def test_doctor_reports_push_queue_and_stale_index(project_dir: Path, project_repo: Path, monkeypatch) -> None:
+    add_fact(project_repo, _fact("01TESTDOCTORINDEX00000001", "deploys require a smoke check"), auto_commit=False)
+    rebuild_index(project_repo)
+    add_fact(project_repo, _fact("01TESTDOCTORINDEX00000002", "run migrations before boot"), auto_commit=False)
+    queue_path = project_repo / "local" / "push-queue.jsonl"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    queue_path.write_text(
+        json.dumps(
+            {
+                "attempts": 1,
+                "branch": "main",
+                "last_error": "non-fast-forward",
+                "queued_at": "2026-04-17T12:00:00Z",
+                "set_upstream": False,
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    monkeypatch.setattr(
+        "umx.doctor.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=list(args[0]),
+            returncode=1,
+            stdout="",
+            stderr="not logged in",
+        ),
+    )
+
+    payload = run_doctor(project_dir)
+
+    assert payload["auth"]["authenticated"] is False
+    assert payload["push_queue"]["count"] == 1
+    assert payload["push_queue"]["branches"] == ["main"]
+    assert payload["index"]["stale"] is True
+    assert payload["index"]["drift"]
+
+
+def test_doctor_reports_missing_gh_cli(project_dir: Path, monkeypatch) -> None:
+    def raise_file_not_found(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr("umx.doctor.subprocess.run", raise_file_not_found)
+
+    payload = run_doctor(project_dir)
+
+    assert payload["auth"]["available"] is False
+    assert payload["auth"]["authenticated"] is None
+    assert payload["auth"]["issues"] == ["gh CLI not found"]

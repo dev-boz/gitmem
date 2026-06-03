@@ -25,6 +25,7 @@ from umx.models import (
     utcnow,
 )
 from umx.schema import CURRENT_SCHEMA_VERSION
+from umx.strength import trust_score
 
 
 VERIFICATION_SHORT = {
@@ -42,6 +43,11 @@ _FACT_FILE_CACHE: dict[
     tuple[Path, bool],
     tuple[tuple[int, int, str, int, int, str], tuple[dict[str, Any], ...]],
 ] = {}
+_MERGE_TRUST_CONFIG = default_config()
+
+
+class FactDataIntegrityError(RuntimeError):
+    """Raised when facts with the same id diverge in text."""
 
 
 def _auto_commit_or_raise(repo_dir: Path, *, paths: list[Path] | None = None, message: str) -> None:
@@ -92,6 +98,9 @@ def cache_path_for(markdown_path: Path) -> Path:
 
 
 def _compact_metadata(fact: Fact) -> dict[str, Any]:
+    provenance_sessions = list(dict.fromkeys(session for session in fact.provenance.sessions if session))
+    default_sessions = [fact.source_session] if fact.source_session else []
+    tags = list(dict.fromkeys(tag for tag in fact.tags if tag))
     data: dict[str, Any] = {
         "id": fact.fact_id,
         "conf": round(fact.confidence, 4),
@@ -105,6 +114,8 @@ def _compact_metadata(fact: Fact) -> dict[str, Any]:
         "v": fact.verification.value,
         "cs": fact.consolidation_status.value,
     }
+    if provenance_sessions and provenance_sessions != default_sessions:
+        data["ps"] = provenance_sessions
     if fact.provenance.pr:
         data["pr"] = fact.provenance.pr
     if fact.provenance.approved_by:
@@ -119,6 +130,8 @@ def _compact_metadata(fact: Fact) -> dict[str, Any]:
         data["sby"] = fact.superseded_by
     if fact.task_status:
         data["ts"] = fact.task_status.value
+    if tags:
+        data["tg"] = tags
     if fact.expires_at:
         data["ex"] = fact.expires_at.isoformat().replace("+00:00", "Z")
     if fact.applies_to:
@@ -287,7 +300,11 @@ def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
         verification=Verification(metadata.get("v", verification.value)),
         source_type=SourceType(metadata.get("st", SourceType.USER_PROMPT.value)),
         confidence=float(metadata.get("conf", 1.0)),
-        tags=[],
+        tags=(
+            [str(tag) for tag in metadata.get("tg", []) if tag and str(tag).strip()]
+            if isinstance(metadata.get("tg"), list)
+            else []
+        ),
         source_tool=metadata.get("src", "manual"),
         source_session=metadata.get("ss", "manual"),
         corroborated_by_tools=list(metadata.get("cort", [])),
@@ -307,7 +324,11 @@ def parse_fact_line(line: str, *, repo_dir: Path, path: Path) -> Fact | None:
             approved_by=metadata.get("aby"),
             approval_tier=metadata.get("tier"),
             pr=metadata.get("pr"),
-            sessions=[metadata["ss"]] if metadata.get("ss") else [],
+            sessions=(
+                [str(session) for session in metadata.get("ps", []) if session and str(session).strip()]
+                if isinstance(metadata.get("ps"), list)
+                else ([metadata["ss"]] if metadata.get("ss") else [])
+            ),
         ),
         code_anchor=CodeAnchor.from_dict(metadata.get("ca")),
         repo=repo_dir.name,
@@ -413,6 +434,239 @@ def write_fact_file(path: Path, facts: list[Fact], repo_dir: Path) -> None:
     _purge_fact_file_cache(path)
 
 
+def _resolved_target_path(repo_dir: Path, fact: Fact, *, kind: str) -> Path:
+    path = target_path_for_fact(repo_dir, fact)
+    if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
+        return topic_path(repo_dir, fact.topic, kind="episodic")
+    if fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
+        return topic_path(repo_dir, fact.topic, kind=kind)
+    return path
+
+
+def _merge_unique_strings(*groups: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if item is None:
+                continue
+            value = str(item).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+    return merged
+
+
+def _merge_unique_items(*groups: list[Any]) -> list[Any]:
+    merged: list[Any] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if item is None:
+                continue
+            marker = json.dumps(item, sort_keys=True, default=str)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            merged.append(item)
+    return merged
+
+
+def _merge_encoding_context(existing: Fact, incoming: Fact, *, preferred: Fact, alternate: Fact) -> dict[str, Any]:
+    merged: dict[str, Any] = {**alternate.encoding_context, **preferred.encoding_context}
+    shared_keys = set(existing.encoding_context) & set(incoming.encoding_context)
+    for key in shared_keys:
+        existing_value = existing.encoding_context[key]
+        incoming_value = incoming.encoding_context[key]
+        if key == "cross_project_repos" and isinstance(existing_value, list) and isinstance(incoming_value, list):
+            merged[key] = _merge_unique_strings(existing_value, incoming_value)
+            continue
+        if key == "cross_project_occurrences" and isinstance(existing_value, list) and isinstance(incoming_value, list):
+            merged[key] = _merge_unique_items(existing_value, incoming_value)
+            continue
+        if key == "corroborating_source_weights" and isinstance(existing_value, list) and isinstance(incoming_value, list):
+            merged[key] = [
+                float(weight)
+                for weight in [*existing_value, *incoming_value]
+                if isinstance(weight, (int, float))
+            ]
+    return merged
+
+
+def _later_timestamp(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return max(left, right)
+
+
+def _serialize_timestamp(value) -> str | None:
+    if value is None:
+        return None
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _quarantine_collision_report_path(repo_dir: Path, fact_id: str) -> Path:
+    stamp = utcnow().strftime("%Y%m%dT%H%M%SZ")
+    return repo_dir / "local" / "quarantine" / f"fact-id-collision-{fact_id}-{stamp}.json"
+
+
+def _relative_fact_path(repo_dir: Path, fact: Fact) -> str | None:
+    if fact.file_path is None:
+        return None
+    if repo_dir in fact.file_path.parents:
+        return fact.file_path.relative_to(repo_dir).as_posix()
+    return fact.file_path.as_posix()
+
+
+def _quarantine_same_fact_id_collision(repo_dir: Path, existing: Fact, incoming: Fact) -> Path:
+    path = _quarantine_collision_report_path(repo_dir, incoming.fact_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "kind": "fact-id-collision",
+        "fact_id": incoming.fact_id,
+        "reason": "same fact_id with divergent text",
+        "quarantined_at": utcnow().isoformat().replace("+00:00", "Z"),
+        "existing": {
+            "path": _relative_fact_path(repo_dir, existing),
+            "fact": existing.to_dict(),
+        },
+        "incoming": {
+            "path": _relative_fact_path(repo_dir, incoming),
+            "fact": incoming.to_dict(),
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return path
+
+
+def _merge_same_fact_id(existing: Fact, incoming: Fact, *, repo_dir: Path) -> Fact:
+    if existing.text != incoming.text:
+        report_path = _quarantine_same_fact_id_collision(repo_dir, existing, incoming)
+        relative = report_path.relative_to(repo_dir).as_posix()
+        raise FactDataIntegrityError(
+            f"same fact_id collision for {incoming.fact_id}: divergent text quarantined at {relative}"
+        )
+    existing_score = trust_score(existing, _MERGE_TRUST_CONFIG)
+    incoming_score = trust_score(incoming, _MERGE_TRUST_CONFIG)
+    preferred = incoming if incoming_score > existing_score else existing
+    alternate = existing if preferred is incoming else incoming
+    corroborated_tools = _merge_unique_strings(
+        existing.corroborated_by_tools,
+        incoming.corroborated_by_tools,
+        [alternate.source_tool] if alternate.source_tool != preferred.source_tool else [],
+    )
+    corroborated_facts = [
+        fact_id
+        for fact_id in _merge_unique_strings(
+            existing.corroborated_by_facts,
+            incoming.corroborated_by_facts,
+        )
+        if fact_id != existing.fact_id
+    ]
+    return existing.clone(
+        encoding_strength=max(existing.encoding_strength, incoming.encoding_strength),
+        verification=preferred.verification,
+        source_type=preferred.source_type,
+        confidence=max(existing.confidence, incoming.confidence),
+        tags=_merge_unique_strings(existing.tags, incoming.tags),
+        source_tool=preferred.source_tool,
+        source_session=preferred.source_session,
+        corroborated_by_tools=corroborated_tools,
+        corroborated_by_facts=corroborated_facts,
+        conflicts_with=_merge_unique_strings(existing.conflicts_with, incoming.conflicts_with),
+        supersedes=preferred.supersedes or alternate.supersedes,
+        superseded_by=preferred.superseded_by or alternate.superseded_by,
+        consolidation_status=(
+            ConsolidationStatus.STABLE
+            if ConsolidationStatus.STABLE in {existing.consolidation_status, incoming.consolidation_status}
+            else ConsolidationStatus.FRAGILE
+        ),
+        task_status=preferred.task_status or alternate.task_status,
+        last_retrieved=_serialize_timestamp(
+            _later_timestamp(existing.last_retrieved, incoming.last_retrieved)
+        ),
+        created=_serialize_timestamp(min(existing.created, incoming.created)),
+        last_referenced=_serialize_timestamp(
+            _later_timestamp(existing.last_referenced, incoming.last_referenced)
+        ),
+        expires_at=_serialize_timestamp(_later_timestamp(existing.expires_at, incoming.expires_at)),
+        applies_to=preferred.applies_to or alternate.applies_to,
+        provenance=Provenance(
+            extracted_by=preferred.provenance.extracted_by or alternate.provenance.extracted_by,
+            approved_by=preferred.provenance.approved_by or alternate.provenance.approved_by,
+            approval_tier=preferred.provenance.approval_tier or alternate.provenance.approval_tier,
+            pr=preferred.provenance.pr or alternate.provenance.pr,
+            sessions=_merge_unique_strings(existing.provenance.sessions, incoming.provenance.sessions),
+        ),
+        encoding_context=_merge_encoding_context(
+            existing,
+            incoming,
+            preferred=preferred,
+            alternate=alternate,
+        ),
+        code_anchor=preferred.code_anchor or alternate.code_anchor,
+    )
+
+
+def _merge_same_fact_ids(repo_dir: Path, facts: list[Fact]) -> list[Fact]:
+    merged_by_id: dict[str, Fact] = {}
+    order: list[str] = []
+    for fact in facts:
+        current = merged_by_id.get(fact.fact_id)
+        if current is None:
+            merged_by_id[fact.fact_id] = fact
+            order.append(fact.fact_id)
+            continue
+        merged_by_id[fact.fact_id] = _merge_same_fact_id(current, fact, repo_dir=repo_dir)
+    return [merged_by_id[fact_id] for fact_id in order]
+
+
+def _commit_merged_fact(repo_dir: Path, fact: Fact, *, auto_commit: bool, message: str) -> Path:
+    resolved = fact.file_path or target_path_for_fact(repo_dir, fact)
+    if auto_commit:
+        _auto_commit_or_raise(
+            repo_dir,
+            paths=[resolved, cache_path_for(resolved)],
+            message=message,
+        )
+    return resolved
+
+
+def _merge_existing_fact(
+    repo_dir: Path,
+    incoming: Fact,
+    *,
+    auto_commit: bool,
+    normalize: bool,
+    commit_message: str,
+) -> Path | None:
+    matches = find_facts_by_id(repo_dir, incoming.fact_id, normalize=normalize)
+    if not matches:
+        return None
+    merged = matches[0]
+    for existing in matches[1:]:
+        merged = _merge_same_fact_id(merged, existing, repo_dir=repo_dir)
+    merged = _merge_same_fact_id(merged, incoming, repo_dir=repo_dir)
+    if len(matches) == 1:
+        replaced = replace_fact(repo_dir, merged)
+        if not replaced:
+            raise RuntimeError(f"failed to replace existing fact {incoming.fact_id}")
+        return _commit_merged_fact(repo_dir, merged, auto_commit=auto_commit, message=commit_message)
+    current = [
+        fact
+        for fact in load_all_facts(repo_dir, include_superseded=True, normalize=normalize)
+        if fact.fact_id != incoming.fact_id
+    ]
+    current.append(merged)
+    save_repository_facts(repo_dir, current, auto_commit=False)
+    if auto_commit:
+        _auto_commit_or_raise(repo_dir, message=commit_message)
+    return merged.file_path or target_path_for_fact(repo_dir, merged)
+
+
 def add_fact(
     repo_dir: Path,
     fact: Fact,
@@ -421,13 +675,19 @@ def add_fact(
     auto_commit: bool = True,
     normalize: bool = True,
 ) -> Path:
-    path = target_path_for_fact(repo_dir, fact)
-    if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
-        path = topic_path(repo_dir, fact.topic, kind="episodic")
-    elif fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
-        path = topic_path(repo_dir, fact.topic, kind=kind)
+    path = _resolved_target_path(repo_dir, fact, kind=kind)
+    materialized = fact.clone(repo=repo_dir.name, file_path=path)
+    merged_path = _merge_existing_fact(
+        repo_dir,
+        materialized,
+        auto_commit=auto_commit,
+        normalize=normalize,
+        commit_message=f"umx: merge fact metadata in {path.stem}",
+    )
+    if merged_path is not None:
+        return merged_path
     facts = read_fact_file(path, repo_dir=repo_dir, normalize=normalize)
-    facts.append(fact.clone(repo=repo_dir.name, file_path=path))
+    facts.append(materialized)
     write_fact_file(path, facts, repo_dir=repo_dir)
     if auto_commit:
         _auto_commit_or_raise(
@@ -443,13 +703,18 @@ def append_fact_preserving_existing(
     fact: Fact,
     kind: str = "facts",
 ) -> Path:
-    path = target_path_for_fact(repo_dir, fact)
-    if fact.scope in {Scope.PROJECT, Scope.USER} and fact.memory_type == MemoryType.EXPLICIT_EPISODIC:
-        path = topic_path(repo_dir, fact.topic, kind="episodic")
-    elif fact.scope in {Scope.PROJECT, Scope.USER} and kind != "facts":
-        path = topic_path(repo_dir, fact.topic, kind=kind)
+    path = _resolved_target_path(repo_dir, fact, kind=kind)
     path.parent.mkdir(parents=True, exist_ok=True)
     materialized = fact.clone(repo=repo_dir.name, file_path=path)
+    merged_path = _merge_existing_fact(
+        repo_dir,
+        materialized,
+        auto_commit=False,
+        normalize=False,
+        commit_message=f"umx: merge fact metadata in {path.stem}",
+    )
+    if merged_path is not None:
+        return merged_path
     current = path.read_text() if path.exists() else ""
     existing_facts = _parse_fact_lines(path, repo_dir) if current else []
     if current:
@@ -504,10 +769,21 @@ def iter_fact_files(repo_dir: Path) -> list[Path]:
 
 
 def find_fact_by_id(repo_dir: Path, fact_id: str) -> Fact | None:
-    for fact in load_all_facts(repo_dir, include_superseded=True):
-        if fact.fact_id == fact_id:
-            return fact
-    return None
+    matches = find_facts_by_id(repo_dir, fact_id)
+    return matches[0] if matches else None
+
+
+def find_facts_by_id(
+    repo_dir: Path,
+    fact_id: str,
+    *,
+    normalize: bool = True,
+) -> list[Fact]:
+    return [
+        fact
+        for fact in load_all_facts(repo_dir, include_superseded=True, normalize=normalize)
+        if fact.fact_id == fact_id
+    ]
 
 
 def replace_fact(repo_dir: Path, updated: Fact) -> bool:
@@ -558,6 +834,7 @@ def target_path_for_fact(repo_dir: Path, fact: Fact) -> Path:
 
 
 def save_repository_facts(repo_dir: Path, facts: list[Fact], *, auto_commit: bool = True) -> None:
+    facts = _merge_same_fact_ids(repo_dir, facts)
     grouped: dict[Path, list[Fact]] = {}
     for fact in facts:
         path = target_path_for_fact(repo_dir, fact)

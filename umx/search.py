@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from umx.artifacts import artifact_search_payload, iter_reasoning_artifact_paths, load_reasoning_artifacts
 from umx.config import UMXConfig, load_config
 from umx.memory import iter_fact_files, load_all_facts, read_fact_file
 from umx.models import fact_from_dict
@@ -22,6 +23,7 @@ from umx.sessions import iter_session_payloads, list_sessions, read_session
 
 INDEX_NAME = "index.sqlite"
 USAGE_NAME = "usage.sqlite"
+INJECTION_AUDIT_NAME = "injection-audit.jsonl"
 REFERENCE_STOPWORDS = {
     "a",
     "an",
@@ -161,6 +163,20 @@ def usage_path(repo_dir: Path) -> Path:
     return repo_dir / "meta" / USAGE_NAME
 
 
+def injection_audit_path(repo_dir: Path) -> Path:
+    return repo_dir / "local" / INJECTION_AUDIT_NAME
+
+
+def _append_injection_audit(repo_dir: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path = injection_audit_path(repo_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -249,6 +265,40 @@ def ensure_index(repo_dir: Path) -> None:
           INSERT INTO memories_fts(memories_fts, rowid, content, tags)
           VALUES ('delete', old.rowid, old.content, old.tags);
           INSERT INTO memories_fts(rowid, content, tags) VALUES (new.rowid, new.content, new.tags);
+        END;
+        CREATE TABLE IF NOT EXISTS reasoning_artifacts (
+          id TEXT PRIMARY KEY,
+          conclusion TEXT,
+          evidence TEXT,
+          invalidates_when TEXT,
+          confidence REAL,
+          status TEXT,
+          token_count INTEGER,
+          created_at TEXT,
+          source_path TEXT,
+          body TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_reasoning_artifacts_status ON reasoning_artifacts(status);
+        CREATE INDEX IF NOT EXISTS idx_reasoning_artifacts_source_path ON reasoning_artifacts(source_path);
+        CREATE VIRTUAL TABLE IF NOT EXISTS reasoning_artifacts_fts USING fts5(
+          conclusion, evidence, invalidates_when, body,
+          content='reasoning_artifacts',
+          content_rowid='rowid',
+          tokenize='unicode61'
+        );
+        CREATE TRIGGER IF NOT EXISTS reasoning_artifacts_ai AFTER INSERT ON reasoning_artifacts BEGIN
+          INSERT INTO reasoning_artifacts_fts(rowid, conclusion, evidence, invalidates_when, body)
+          VALUES (new.rowid, new.conclusion, new.evidence, new.invalidates_when, new.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS reasoning_artifacts_ad AFTER DELETE ON reasoning_artifacts BEGIN
+          INSERT INTO reasoning_artifacts_fts(reasoning_artifacts_fts, rowid, conclusion, evidence, invalidates_when, body)
+          VALUES ('delete', old.rowid, old.conclusion, old.evidence, old.invalidates_when, old.body);
+        END;
+        CREATE TRIGGER IF NOT EXISTS reasoning_artifacts_au AFTER UPDATE ON reasoning_artifacts BEGIN
+          INSERT INTO reasoning_artifacts_fts(reasoning_artifacts_fts, rowid, conclusion, evidence, invalidates_when, body)
+          VALUES ('delete', old.rowid, old.conclusion, old.evidence, old.invalidates_when, old.body);
+          INSERT INTO reasoning_artifacts_fts(rowid, conclusion, evidence, invalidates_when, body)
+          VALUES (new.rowid, new.conclusion, new.evidence, new.invalidates_when, new.body);
         END;
         """
     )
@@ -368,6 +418,17 @@ def ensure_usage_db(repo_dir: Path) -> None:
     )
     _ensure_columns(
         conn,
+        "usage_events",
+        {
+            "reason": "TEXT",
+            "relevance_score": "REAL",
+            "dedup": "TEXT",
+            "retrieval_fidelity": "TEXT",
+            "source_path": "TEXT",
+        },
+    )
+    _ensure_columns(
+        conn,
         "session_state",
         {
             "parent_session_id": "TEXT",
@@ -424,12 +485,44 @@ def _insert_fact(conn: sqlite3.Connection, fact, repo_dir: Path) -> None:
     )
 
 
+def _insert_reasoning_artifact(conn: sqlite3.Connection, artifact, repo_dir: Path) -> None:
+    payload = artifact_search_payload(artifact, repo_dir)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO reasoning_artifacts (
+          id, conclusion, evidence, invalidates_when, confidence, status,
+          token_count, created_at, source_path, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            payload["id"],
+            payload["conclusion"],
+            payload["evidence"],
+            payload["invalidates_when"],
+            payload["confidence"],
+            payload["status"],
+            max(1, (len(artifact.index_text()) + 3) // 4),
+            payload["created_at"],
+            payload["source_path"],
+            payload["body"],
+        ),
+    )
+
+
 def _compute_file_hashes(repo_dir: Path) -> dict[str, str]:
     hashes: dict[str, str] = {}
     for path in iter_fact_files(repo_dir):
         rel = str(path.relative_to(repo_dir))
         content = path.read_bytes()
         hashes[rel] = hashlib.md5(content).hexdigest()
+    return hashes
+
+
+def _compute_artifact_hashes(repo_dir: Path) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for path in iter_reasoning_artifact_paths(repo_dir):
+        rel = str(path.relative_to(repo_dir))
+        hashes[rel] = hashlib.md5(path.read_bytes()).hexdigest()
     return hashes
 
 
@@ -440,9 +533,36 @@ def _store_file_hashes(conn: sqlite3.Connection, hashes: dict[str, str]) -> None
     )
 
 
+def _store_artifact_hashes(conn: sqlite3.Connection, hashes: dict[str, str]) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO _meta(key, value) VALUES ('artifact_hashes', ?)",
+        (json.dumps(hashes),),
+    )
+
+
 def _load_file_hashes(conn: sqlite3.Connection) -> dict[str, str] | None:
     row = conn.execute(
         "SELECT value FROM _meta WHERE key = 'file_hashes'"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        loaded = json.loads(row["value"])
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    hashes: dict[str, str] = {}
+    for key, value in loaded.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return None
+        hashes[key] = value
+    return hashes
+
+
+def _load_artifact_hashes(conn: sqlite3.Connection) -> dict[str, str] | None:
+    row = conn.execute(
+        "SELECT value FROM _meta WHERE key = 'artifact_hashes'"
     ).fetchone()
     if row is None:
         return None
@@ -493,14 +613,18 @@ def rebuild_index(
     ensure_usage_db(repo_dir)
     conn = _connect(index_path(repo_dir))
     conn.execute("DELETE FROM memories")
+    conn.execute("DELETE FROM reasoning_artifacts")
     facts = load_all_facts(repo_dir, include_superseded=True)
     for fact in facts:
         _insert_fact(conn, fact, repo_dir)
+    for artifact in load_reasoning_artifacts(repo_dir):
+        _insert_reasoning_artifact(conn, artifact, repo_dir)
     conn.execute(
         "INSERT OR REPLACE INTO _meta(key, value) VALUES ('schema_version', ?)",
         (str(CURRENT_SCHEMA_VERSION),),
     )
     _store_file_hashes(conn, _compute_file_hashes(repo_dir))
+    _store_artifact_hashes(conn, _compute_artifact_hashes(repo_dir))
     conn.commit()
     conn.close()
     _mark_inject_index_ready(repo_dir, True)
@@ -599,6 +723,33 @@ def query_index(
         if len(ordered) >= limit:
             break
     return ordered
+
+
+def query_reasoning_artifacts(
+    repo_dir: Path,
+    query: str,
+    limit: int = 5,
+    *,
+    active_only: bool = True,
+) -> list[dict[str, Any]]:
+    ensure_index(repo_dir)
+    conn = _connect(index_path(repo_dir))
+    status_clause = "AND a.status != 'invalidated'" if active_only else ""
+    sql = f"""
+        SELECT a.*, bm25(reasoning_artifacts_fts) AS rank
+        FROM reasoning_artifacts_fts
+        JOIN reasoning_artifacts a ON a.rowid = reasoning_artifacts_fts.rowid
+        WHERE reasoning_artifacts_fts MATCH ?
+        {status_clause}
+        ORDER BY rank
+        LIMIT ?
+        """
+    try:
+        rows = conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(sql, (_fallback_match_query(query), limit)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 def inject_candidate_ids(
@@ -904,17 +1055,35 @@ def _record_injection_event(
     parent_session_id: str | None = None,
     token_count: int = 0,
     item_kind: str = "fact",
-) -> int | None:
+    reason: str | None = None,
+    relevance_score: float | None = None,
+    dedup: str | None = None,
+    retrieval_fidelity: str | None = None,
+    source_path: str | None = None,
+) -> tuple[int | None, str | None, str | None]:
     if session_id is None:
-        return None
+        return None, dedup, None
     now = _utcnow_iso()
+    dedup_value = dedup
+    if dedup_value is None:
+        prior = conn.execute(
+            """
+            SELECT injection_count
+            FROM session_fact_state
+            WHERE session_id = ? AND fact_id = ? AND item_kind = ?
+            """,
+            (session_id, fact_id, item_kind),
+        ).fetchone()
+        if prior is not None and int(prior["injection_count"] or 0) > 0:
+            dedup_value = "already_injected_this_session"
     cursor = conn.execute(
         """
         INSERT INTO usage_events (
           fact_id, item_kind, session_id, turn_index, event_kind, injection_point,
           disclosure_level, tool, parent_session_id, token_count, session_tokens,
-          used_in_output, content_preview, created_at
-        ) VALUES (?, ?, ?, ?, 'inject', ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+          used_in_output, content_preview, reason, relevance_score, dedup,
+          retrieval_fidelity, source_path, created_at
+        ) VALUES (?, ?, ?, ?, 'inject', ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?)
         """,
         (
             fact_id,
@@ -927,6 +1096,11 @@ def _record_injection_event(
             parent_session_id,
             max(0, int(token_count)),
             max(0, int(session_tokens or 0)),
+            reason,
+            relevance_score,
+            dedup_value,
+            retrieval_fidelity,
+            source_path,
             now,
         ),
     )
@@ -962,7 +1136,11 @@ def _record_injection_event(
                 refresh_delta,
             ),
         )
-    return int(cursor.lastrowid) if cursor.lastrowid is not None else None
+    return (
+        int(cursor.lastrowid) if cursor.lastrowid is not None else None,
+        dedup_value,
+        now,
+    )
 
 
 def record_injection(
@@ -978,31 +1156,34 @@ def record_injection(
     parent_session_id: str | None = None,
     token_count: int = 0,
     item_kind: str = "fact",
+    reason: str | None = None,
+    relevance_score: float | None = None,
+    dedup: str | None = None,
+    retrieval_fidelity: str | None = None,
+    source_path: str | None = None,
 ) -> int | None:
-    ensure_usage_db(repo_dir)
-    conn = _hot_connect(usage_path(repo_dir))
-    _record_usage_row(
-        conn,
-        fact_id,
-        injected=True,
-        session_id=session_id,
-        item_kind=item_kind,
-    )
-    event_id = _record_injection_event(
-        conn,
-        fact_id,
-        session_id=session_id,
-        turn_index=turn_index,
-        session_tokens=session_tokens,
-        injection_point=injection_point,
-        disclosure_level=disclosure_level,
-        tool=tool,
-        parent_session_id=parent_session_id,
-        token_count=token_count,
-        item_kind=item_kind,
-    )
-    conn.commit()
-    return event_id
+    return record_injections(
+        repo_dir,
+        [
+            {
+                "fact_id": fact_id,
+                "session_id": session_id,
+                "turn_index": turn_index,
+                "session_tokens": session_tokens,
+                "injection_point": injection_point,
+                "disclosure_level": disclosure_level,
+                "tool": tool,
+                "parent_session_id": parent_session_id,
+                "token_count": token_count,
+                "item_kind": item_kind,
+                "reason": reason,
+                "relevance_score": relevance_score,
+                "dedup": dedup,
+                "retrieval_fidelity": retrieval_fidelity,
+                "source_path": source_path,
+            }
+        ],
+    )[0]
 
 
 def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[int | None]:
@@ -1034,6 +1215,7 @@ def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[
         conn.commit()
         return [None] * len(injections)
     event_ids: list[int | None] = []
+    audit_rows: list[dict[str, Any]] = []
     for injection in injections:
         fact_id = str(injection["fact_id"])
         session_id = (
@@ -1049,34 +1231,79 @@ def record_injections(repo_dir: Path, injections: list[dict[str, Any]]) -> list[
             session_id=session_id,
             item_kind=item_kind,
         )
-        event_ids.append(
-            _record_injection_event(
-                conn,
-                fact_id,
-                session_id=session_id,
-                turn_index=(
-                    int(injection["turn_index"])
-                    if injection.get("turn_index") is not None
-                    else None
-                ),
-                session_tokens=(
-                    int(injection["session_tokens"])
-                    if injection.get("session_tokens") is not None
-                    else None
-                ),
-                injection_point=str(injection.get("injection_point") or "prompt"),
-                disclosure_level=str(injection.get("disclosure_level") or "l1"),
-                tool=str(injection["tool"]) if injection.get("tool") is not None else None,
-                parent_session_id=(
-                    str(injection["parent_session_id"])
-                    if injection.get("parent_session_id") is not None
-                    else None
-                ),
-                token_count=int(injection.get("token_count") or 0),
-                item_kind=item_kind,
-            )
+        event_id, dedup_value, created_at = _record_injection_event(
+            conn,
+            fact_id,
+            session_id=session_id,
+            turn_index=(
+                int(injection["turn_index"])
+                if injection.get("turn_index") is not None
+                else None
+            ),
+            session_tokens=(
+                int(injection["session_tokens"])
+                if injection.get("session_tokens") is not None
+                else None
+            ),
+            injection_point=str(injection.get("injection_point") or "prompt"),
+            disclosure_level=str(injection.get("disclosure_level") or "l1"),
+            tool=str(injection["tool"]) if injection.get("tool") is not None else None,
+            parent_session_id=(
+                str(injection["parent_session_id"])
+                if injection.get("parent_session_id") is not None
+                else None
+            ),
+            token_count=int(injection.get("token_count") or 0),
+            item_kind=item_kind,
+            reason=(
+                str(injection["reason"])
+                if injection.get("reason") is not None
+                else None
+            ),
+            relevance_score=(
+                float(injection["relevance_score"])
+                if injection.get("relevance_score") is not None
+                else None
+            ),
+            dedup=(
+                str(injection["dedup"])
+                if injection.get("dedup") is not None
+                else None
+            ),
+            retrieval_fidelity=(
+                str(injection["retrieval_fidelity"])
+                if injection.get("retrieval_fidelity") is not None
+                else None
+            ),
+            source_path=(
+                str(injection["source_path"])
+                if injection.get("source_path") is not None
+                else None
+            ),
         )
+        event_ids.append(event_id)
+        if session_id:
+            audit_row = {
+                "session_id": session_id,
+                "ts": created_at or _utcnow_iso(),
+                "injection_point": str(injection.get("injection_point") or "prompt"),
+                "fact_id": fact_id,
+                "item_kind": item_kind,
+                "token_count": int(injection.get("token_count") or 0),
+            }
+            if injection.get("reason") is not None:
+                audit_row["reason"] = str(injection["reason"])
+            if injection.get("relevance_score") is not None:
+                audit_row["relevance_score"] = float(injection["relevance_score"])
+            if dedup_value is not None:
+                audit_row["dedup"] = dedup_value
+            if injection.get("retrieval_fidelity") is not None:
+                audit_row["retrieval_fidelity"] = str(injection["retrieval_fidelity"])
+            if injection.get("source_path") is not None:
+                audit_row["source_path"] = str(injection["source_path"])
+            audit_rows.append(audit_row)
     conn.commit()
+    _append_injection_audit(repo_dir, audit_rows)
     return event_ids
 
 
@@ -1385,9 +1612,11 @@ def incremental_rebuild(repo_dir: Path) -> int:
     conn = _connect(index_path(repo_dir))
 
     stored = _load_file_hashes(conn)
+    stored_artifacts = _load_artifact_hashes(conn)
     schema_version = _load_schema_version(conn)
     if (
         stored is None
+        or stored_artifacts is None
         or schema_version != str(CURRENT_SCHEMA_VERSION)
         or not _has_complete_source_paths(conn)
     ):
@@ -1395,27 +1624,76 @@ def incremental_rebuild(repo_dir: Path) -> int:
         return _full_rebuild_file_count(repo_dir)
 
     current = _compute_file_hashes(repo_dir)
+    current_artifacts = _compute_artifact_hashes(repo_dir)
     changed: list[str] = []
     for rel, digest in current.items():
         if stored.get(rel) != digest:
             changed.append(rel)
     deleted = [rel for rel in stored if rel not in current]
+    changed_artifacts = [
+        rel for rel, digest in current_artifacts.items() if stored_artifacts.get(rel) != digest
+    ]
+    deleted_artifacts = [rel for rel in stored_artifacts if rel not in current_artifacts]
 
     for rel in deleted:
         conn.execute("DELETE FROM memories WHERE source_path = ?", (rel,))
+    for rel in deleted_artifacts:
+        conn.execute("DELETE FROM reasoning_artifacts WHERE source_path = ?", (rel,))
 
     for rel in changed:
         path = repo_dir / rel
         conn.execute("DELETE FROM memories WHERE source_path = ?", (rel,))
         for fact in read_fact_file(path, repo_dir=repo_dir):
             _insert_fact(conn, fact, repo_dir)
+    for rel in changed_artifacts:
+        path = repo_dir / rel
+        conn.execute("DELETE FROM reasoning_artifacts WHERE source_path = ?", (rel,))
+        for artifact in load_reasoning_artifacts(repo_dir):
+            if artifact.path and artifact.path.resolve() == path.resolve():
+                _insert_reasoning_artifact(conn, artifact, repo_dir)
+                break
 
     current = _compute_file_hashes(repo_dir)
+    current_artifacts = _compute_artifact_hashes(repo_dir)
     _store_file_hashes(conn, current)
+    _store_artifact_hashes(conn, current_artifacts)
     conn.commit()
     conn.close()
     _mark_inject_index_ready(repo_dir, True)
-    return len(changed) + len(deleted)
+    return len(changed) + len(deleted) + len(changed_artifacts) + len(deleted_artifacts)
+
+
+def index_staleness(repo_dir: Path) -> dict[str, object]:
+    path = index_path(repo_dir)
+    current = _compute_file_hashes(repo_dir)
+    if not path.exists():
+        return {
+            "current_files": len(current),
+            "drift": sorted(current)[:20],
+            "path": path.relative_to(repo_dir).as_posix(),
+            "present": False,
+            "stale": True,
+            "tracked_files": 0,
+        }
+    conn = _connect(path)
+    try:
+        stored = _load_file_hashes(conn) or {}
+    finally:
+        conn.close()
+    drift = sorted(
+        {
+            *[rel for rel in stored if rel not in current],
+            *[rel for rel in current if stored.get(rel) != current.get(rel)],
+        }
+    )
+    return {
+        "current_files": len(current),
+        "drift": drift[:20],
+        "path": path.relative_to(repo_dir).as_posix(),
+        "present": True,
+        "stale": stored != current,
+        "tracked_files": len(stored),
+    }
 
 
 def search_sessions(repo_dir: Path, query: str, limit: int = 20) -> list[dict]:

@@ -41,10 +41,10 @@ Within the audited CLI surface below, there are no unresolved command/flag diver
 | `migrate-scope` | `--cwd`, `--from`, `--to` | `umx/cli.py:908-919` | Match | No flag divergence. |
 | `doctor` | `--cwd`, `--fix` | `umx/cli.py:1416-1420` | Match | Spec updated to include `--cwd`. |
 | `migrate` | `--cwd` | `umx/cli.py:1423-1434` | Match | Added to spec to reflect the shipped fact-file migration command. |
-| `export` | `--cwd`, `--out` | `umx/cli.py:2238-2249` | Match | Added to spec to reflect the shipped full-backup export command. |
+| `export` | `--cwd`, `--format`, `--out`/`--output` | `umx/cli.py` | Match | `umx export` now ships both the original full-backup flow and the `/memories` compatibility projection. |
 | `config` | `set redaction.patterns <value>` | `umx/cli.py:951-966` | Match | Validates a regex string or JSON array of regex strings and stores them under `sessions.redaction_patterns`. |
 | `secret` | `get <key>`, `set <key> <value>` | `umx/cli.py:1138-1165` | Match | No flag divergence. |
-| `import` | `--cwd`, `--adapter`, `--dry-run` | `umx/cli.py:1168-1195` | Match | Spec updated from `--tool` to the shipped adapter terminology. |
+| `import` | `--cwd`, `--adapter`, `--full`, `--memories`, `--force`, `--dry-run` | `umx/cli.py` | Match | `umx import` now covers native adapters, full backup restore, and `/memories` projection ingest. |
 | `mcp` | no flags | `umx/cli.py:1198-1203` | Match | Added to spec to reflect the shipped MCP server entrypoint. |
 | `search` | `--cwd`, `--raw` (`--all` alias) | `umx/cli.py:2852-2875` | Match | Spec updated so the cold-tier search example can use the shipped raw-session alias without diverging from the canonical `--raw` wording. |
 

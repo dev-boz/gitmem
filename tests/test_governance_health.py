@@ -149,6 +149,56 @@ def test_governance_health_healthy_state(project_dir, monkeypatch) -> None:
     assert "Last L2 review: 2026-04-18T12:00:00Z" in human
 
 
+def test_governance_health_computes_pipeline_rates(project_dir, monkeypatch) -> None:
+    _configure_remote_mode()
+    monkeypatch.setattr("umx.governance_health.list_open_pull_requests", lambda org, repo: [])
+    monkeypatch.setattr("umx.governance_health.list_local_branches", lambda repo: ())
+    monkeypatch.setattr(
+        "umx.governance_health.read_processing_log",
+        lambda repo, ref=None: [
+            {
+                "tier": "l2",
+                "event": "review_completed",
+                "status": "completed",
+                "ts": "2026-04-18T12:00:00Z",
+                "action": "approve",
+            },
+            {
+                "tier": "l2",
+                "event": "review_completed",
+                "status": "completed",
+                "ts": "2026-04-18T12:05:00Z",
+                "action": "reject",
+            },
+            {
+                "tier": "l2",
+                "event": "review_completed",
+                "status": "completed",
+                "ts": "2026-04-18T12:10:00Z",
+                "action": "escalate",
+            },
+            {
+                "tier": "l2",
+                "event": "review_completed",
+                "status": "completed",
+                "ts": "2026-04-18T12:15:00Z",
+                "action": "reject",
+            },
+        ],
+    )
+    monkeypatch.setattr("umx.governance_health.git_ref_exists", lambda repo, ref: False)
+
+    payload = build_governance_health_payload(project_dir)
+    human = render_governance_health_human(payload)
+
+    assert payload["summary"]["review_decision_count"] == 4
+    assert payload["summary"]["rejection_count"] == 2
+    assert payload["summary"]["escalation_count"] == 1
+    assert payload["summary"]["rejection_rate"] == 0.5
+    assert payload["summary"]["escalation_rate"] == 0.25
+    assert "Pipeline health: rejection 50.0% (2/4), escalation 25.0% (1/4)" in human
+
+
 def test_governance_health_uses_rotated_credentialed_origin_for_open_pr_inventory(
     project_dir,
     project_repo,

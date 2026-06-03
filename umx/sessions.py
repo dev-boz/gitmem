@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from collections import Counter
 from dataclasses import dataclass
 import gzip
@@ -11,7 +13,7 @@ from typing import Any, Iterator
 from umx.config import UMXConfig, default_config, load_config
 from umx.git_ops import git_add_and_commit, git_commit_failure_message
 from umx.identity import generate_fact_id
-from umx.redaction import RedactionError, redact_jsonl_lines, redact_jsonl_lines_with_issues
+from umx.redaction import RedactionError, RedactionIssue, redact_jsonl_lines_with_issues
 from umx.search_semantic import load_semantic_cache, save_semantic_cache
 from umx.scope import config_path, ensure_repo_structure
 
@@ -33,6 +35,10 @@ class QuarantineActionResult:
     action: str
     message: str
     session_id: str | None = None
+
+
+class SessionQuarantineError(RuntimeError):
+    """Raised when a session payload must be quarantined before persistence."""
 
 
 def generate_session_id(now: datetime | None = None) -> str:
@@ -114,6 +120,164 @@ def _payload_meta(payload: list[dict[str, Any]]) -> dict[str, Any]:
     if payload and "_meta" in payload[0]:
         return dict(payload[0].get("_meta", {}))
     return {}
+
+
+def _redaction_issue_counts(issues: list[RedactionIssue]) -> dict[str, int]:
+    counts = Counter(issue.kind for issue in issues)
+    return {kind: counts[kind] for kind in sorted(counts)}
+
+
+def _annotate_redaction_review(
+    payload: list[dict[str, Any]],
+    issues: list[RedactionIssue],
+) -> list[dict[str, Any]]:
+    if not payload or "_meta" not in payload[0] or not issues:
+        return payload
+    meta = _payload_meta(payload)
+    issue_counts = _redaction_issue_counts(issues)
+    meta["redaction_review"] = {
+        "issue_counts": issue_counts,
+        "high_entropy_count": issue_counts.get("high-entropy", 0),
+    }
+    return [{"_meta": meta}, *payload[1:]]
+
+
+_BINARY_EXTENSION_TYPES = {
+    ".jpeg": "jpeg",
+    ".jpg": "jpeg",
+    ".mp4": "mp4",
+    ".png": "png",
+    ".wav": "wav",
+}
+_DATA_URI_BINARY_TYPES = {
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+    "image/jpeg": "jpeg",
+    "image/jpg": "jpeg",
+    "image/png": "png",
+    "video/mp4": "mp4",
+}
+_BINARY_PATH_KEYS = {"file", "file_path", "filename", "name", "path"}
+
+
+def _binary_extension_hint(value: Any) -> str | None:
+    if isinstance(value, dict):
+        for key, candidate in value.items():
+            if key in _BINARY_PATH_KEYS and isinstance(candidate, str):
+                suffix = Path(candidate).suffix.lower()
+                if suffix in _BINARY_EXTENSION_TYPES:
+                    return _BINARY_EXTENSION_TYPES[suffix]
+            hint = _binary_extension_hint(candidate)
+            if hint:
+                return hint
+    elif isinstance(value, list):
+        for candidate in value:
+            hint = _binary_extension_hint(candidate)
+            if hint:
+                return hint
+    return None
+
+
+def _detect_binary_kind(data: bytes, *, extension_hint: str | None = None) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpeg"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return "wav"
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        return "mp4"
+    return extension_hint
+
+
+def _data_uri_bytes(value: str) -> tuple[str | None, bytes | None]:
+    if not value.startswith("data:") or "," not in value:
+        return None, None
+    header, payload = value.split(",", 1)
+    if ";base64" not in header:
+        return None, None
+    media_type = header[5:].split(";", 1)[0].lower()
+    kind = _DATA_URI_BINARY_TYPES.get(media_type)
+    if kind is None:
+        return None, None
+    try:
+        return kind, base64.b64decode(payload, validate=True)
+    except (ValueError, binascii.Error):
+        return kind, None
+
+
+def _iter_binary_payloads(value: Any) -> Iterator[tuple[bytes, str | None]]:
+    if isinstance(value, memoryview):
+        yield value.tobytes(), None
+        return
+    if isinstance(value, bytearray):
+        yield bytes(value), None
+        return
+    if isinstance(value, bytes):
+        yield value, None
+        return
+    if isinstance(value, str):
+        kind, decoded = _data_uri_bytes(value)
+        if decoded is not None:
+            yield decoded, kind
+        return
+    if isinstance(value, dict):
+        for candidate in value.values():
+            yield from _iter_binary_payloads(candidate)
+        return
+    if isinstance(value, list):
+        for candidate in value:
+            yield from _iter_binary_payloads(candidate)
+
+
+def _quarantine_binary_reason(payload: list[dict[str, Any]], *, cap_bytes: int) -> str | None:
+    extension_hint = _binary_extension_hint(payload)
+    for raw, inline_hint in _iter_binary_payloads(payload):
+        kind = _detect_binary_kind(raw, extension_hint=inline_hint or extension_hint)
+        size_bytes = len(raw)
+        if kind is not None:
+            size_label = f"{size_bytes} bytes"
+            if size_bytes > cap_bytes:
+                return (
+                    f"binary session payload intercepted: {kind} payload exceeds "
+                    f"{cap_bytes} byte cap ({size_label})"
+                )
+            return f"binary session payload intercepted: {kind} payload ({size_label})"
+        if size_bytes > cap_bytes:
+            return (
+                f"opaque session payload intercepted: binary content exceeds "
+                f"{cap_bytes} byte cap ({size_bytes} bytes)"
+            )
+    return None
+
+
+def _json_safe_payload_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe_payload_value(candidate) for key, candidate in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_payload_value(candidate) for candidate in value]
+    if isinstance(value, tuple):
+        return [_json_safe_payload_value(candidate) for candidate in value]
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytearray):
+        value = bytes(value)
+    if isinstance(value, bytes):
+        return {
+            "__binary__": True,
+            "kind": _detect_binary_kind(value),
+            "preview_base64": base64.b64encode(value[:24]).decode("ascii"),
+            "size_bytes": len(value),
+        }
+    return value
+
+
+def _write_quarantined_payload(repo_dir: Path, session_id: str, payload: list[dict[str, Any]]) -> Path:
+    path = quarantine_path(repo_dir, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe_payload = [_json_safe_payload_value(line) for line in payload]
+    path.write_text("\n".join(json.dumps(line, sort_keys=True) for line in safe_payload) + "\n")
+    return path
 
 
 def _write_quarantine_metadata(
@@ -321,7 +485,8 @@ def release_quarantined_session(
             session_id=resolved_session_id,
         )
     try:
-        redacted = redact_jsonl_lines(payload, cfg)
+        redacted, issues = redact_jsonl_lines_with_issues(payload, cfg)
+        redacted = _annotate_redaction_review(redacted, issues)
     except RedactionError as exc:
         return QuarantineActionResult(
             ok=False,
@@ -408,11 +573,19 @@ def write_session(
     normalized_meta, normalized_events = normalize_session_payload(repo_dir, meta, events)
     payload = [{"_meta": normalized_meta}, *normalized_events]
     try:
-        redacted = payload if cfg.sessions.redaction == "none" else redact_jsonl_lines(payload, cfg)
-    except RedactionError as exc:
-        path = quarantine_path(repo_dir, session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(json.dumps(line, sort_keys=True) for line in payload) + "\n")
+        binary_reason = _quarantine_binary_reason(
+            payload,
+            cap_bytes=max(1, int(cfg.sessions.binary_cap_kb)) * 1024,
+        )
+        if binary_reason:
+            raise SessionQuarantineError(binary_reason)
+        if cfg.sessions.redaction == "none":
+            redacted = payload
+        else:
+            redacted, issues = redact_jsonl_lines_with_issues(payload, cfg)
+            redacted = _annotate_redaction_review(redacted, issues)
+    except (RedactionError, SessionQuarantineError) as exc:
+        _write_quarantined_payload(repo_dir, session_id, payload)
         _write_quarantine_metadata(repo_dir, session_id, reason=str(exc), meta=normalized_meta)
         raise
     path = session_path(repo_dir, session_id)
@@ -436,6 +609,53 @@ def read_session(path: Path) -> list[dict[str, Any]]:
 
 def list_sessions(repo_dir: Path) -> list[Path]:
     return sorted(repo_dir.glob("sessions/**/*.jsonl"))
+
+
+def _read_session_meta_record(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                record = json.loads(raw_line)
+                if isinstance(record, dict) and isinstance(record.get("_meta"), dict):
+                    return dict(record["_meta"])
+                return {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {}
+
+
+def _session_high_entropy_count(path: Path) -> tuple[str, int]:
+    meta = _read_session_meta_record(path)
+    session_id = str(meta.get("session_id") or path.stem)
+    review = meta.get("redaction_review")
+    if isinstance(review, dict):
+        candidate = review.get("high_entropy_count")
+        if isinstance(candidate, int):
+            return session_id, candidate
+        if isinstance(candidate, str) and candidate.isdigit():
+            return session_id, int(candidate)
+    try:
+        return session_id, path.read_text(encoding="utf-8").count("[REDACTED:high-entropy]")
+    except OSError:
+        return session_id, 0
+
+
+def redaction_review_summary(repo_dir: Path) -> dict[str, object]:
+    total = 0
+    sessions: list[str] = []
+    for path in list_sessions(repo_dir):
+        session_id, high_entropy_count = _session_high_entropy_count(path)
+        if high_entropy_count <= 0:
+            continue
+        total += high_entropy_count
+        if len(sessions) < 10:
+            sessions.append(session_id)
+    return {
+        "high_entropy_count": total,
+        "sessions": sessions,
+    }
 
 
 def _parse_iso(value: str | None) -> datetime | None:

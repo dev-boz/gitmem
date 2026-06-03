@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections import defaultdict
 import json
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,14 +11,25 @@ from umx.conventions import ConventionSet, validate_fact
 from umx.dream.anchors import code_anchor_status
 from umx.dream.conflict import facts_conflict
 from umx.models import Fact, SourceType, parse_datetime
+from umx.procedures import load_all_procedures
 from umx.scope import find_orphaned_scoped_memory
 from umx.search_semantic import load_semantic_cache
+from umx.skills import load_all_skills, resolve_skill
 
 
 _LINT_INTERVALS = {
     "daily": timedelta(days=1),
     "weekly": timedelta(days=7),
     "never": None,
+}
+
+_TAG_CANONICAL_CLUSTERS = {
+    "database": frozenset({"db", "database", "databases", "postgres", "postgresql", "sql"}),
+}
+_TAG_CANONICAL_LOOKUP = {
+    alias: canonical
+    for canonical, aliases in _TAG_CANONICAL_CLUSTERS.items()
+    for alias in aliases
 }
 
 
@@ -105,6 +118,73 @@ def should_run(
     return False, f"{interval}-not-due"
 
 
+def schema_lock_in_findings(
+    facts: list[Fact],
+    *,
+    conventions: ConventionSet,
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for fact in facts:
+        if fact.topic in conventions.topics or len(fact.text.split()) < 5:
+            continue
+        findings.append(
+            {
+                "kind": "schema-lock-in",
+                "message": f"{fact.fact_id} introduces unknown topic '{fact.topic}' with durable phrasing",
+            }
+        )
+    return findings
+
+
+def _normalize_tag(tag: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "-", tag.strip().lower())
+    return normalized.strip("-")
+
+
+def _canonical_tag(tag: str) -> str:
+    normalized = _normalize_tag(tag)
+    if not normalized:
+        return ""
+    if normalized in _TAG_CANONICAL_LOOKUP:
+        return _TAG_CANONICAL_LOOKUP[normalized]
+    if normalized.endswith("s") and len(normalized) > 3:
+        singular = normalized[:-1]
+        if singular in _TAG_CANONICAL_LOOKUP:
+            return _TAG_CANONICAL_LOOKUP[singular]
+        return singular
+    return normalized
+
+
+def _tag_drift_findings(facts: list[Fact]) -> list[dict[str, str]]:
+    variants_by_canonical: dict[str, set[str]] = defaultdict(set)
+    for fact in facts:
+        if fact.superseded_by is not None:
+            continue
+        for tag in fact.tags:
+            if not isinstance(tag, str):
+                continue
+            normalized = _normalize_tag(tag)
+            canonical = _canonical_tag(tag)
+            if not normalized or not canonical:
+                continue
+            variants_by_canonical[canonical].add(normalized)
+
+    findings: list[dict[str, str]] = []
+    for canonical, variants in sorted(variants_by_canonical.items()):
+        if len(variants) < 2:
+            continue
+        findings.append(
+            {
+                "kind": "tag-drift",
+                "message": (
+                    f"tags {', '.join(sorted(variants))} drift across active facts; "
+                    f"use canonical tag '{canonical}'"
+                ),
+            }
+        )
+    return findings
+
+
 def generate_lint_findings(
     facts: list[Fact],
     *,
@@ -115,6 +195,43 @@ def generate_lint_findings(
     findings: list[dict[str, str]] = []
     reverify_cutoff = datetime.now(tz=UTC) - timedelta(days=90)
     by_id = {fact.fact_id: fact for fact in facts}
+    for procedure in load_all_procedures(repo_dir):
+        if procedure.triggers:
+            continue
+        target = procedure.procedure_id
+        if procedure.file_path is not None:
+            try:
+                target = procedure.file_path.relative_to(repo_dir).as_posix()
+            except ValueError:
+                target = procedure.file_path.as_posix()
+        findings.append(
+            {
+                "kind": "procedure-trigger",
+                "message": f"{target} is missing required ## Triggers section",
+            }
+        )
+    for skill in load_all_skills(repo_dir):
+        resolution = resolve_skill(skill, repo_dir)
+        target = skill.name
+        if skill.file_path is not None:
+            try:
+                target = skill.file_path.relative_to(repo_dir).as_posix()
+            except ValueError:
+                target = skill.file_path.as_posix()
+        for directive in resolution.unsupported_directives:
+            findings.append(
+                {
+                    "kind": "skill-directive",
+                    "message": f"{target} uses unsupported retrieval directive {directive}",
+                }
+            )
+        for blocked_path in resolution.blocked_paths:
+            findings.append(
+                {
+                    "kind": "skill-portability",
+                    "message": f"{target} uses non-portable load target {blocked_path}",
+                }
+            )
     for orphan in find_orphaned_scoped_memory(repo_dir, project_root):
         findings.append(
             {
@@ -159,6 +276,8 @@ def generate_lint_findings(
                         "message": f"{left.fact_id} and {right.fact_id} appear contradictory",
                     }
                 )
+    findings.extend(_tag_drift_findings(active))
+    findings.extend(schema_lock_in_findings(facts, conventions=conventions))
     return findings
 
 

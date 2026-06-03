@@ -31,7 +31,9 @@ Facts are governed through pull requests so memory is auditable, correctable, an
 8. [Local Path Convention](#8-local-path-convention)
 9. [Memory File Format](#9-memory-file-format)
 9a. [Procedure File Format](#9a-procedure-file-format)
+8a. [Diary and Session Handover](#diary-and-session-handover)
 9b. [Skill File Format](#9b-skill-file-format)
+9c. [Skill Invocation, Progressive Disclosure, and Promotion](#9c-skill-invocation-progressive-disclosure-and-promotion)
 10. [Read Strategy](#10-read-strategy)
 11. [Dream Pipeline](#11-dream-pipeline)
 12. [GitHub Dream Governance (gitmem)](#12-github-dream-governance-gitmem)
@@ -127,6 +129,9 @@ Why:
 │    principles/  cross-session patterns (SotA/human gate)         │
 │    procedures/  reusable playbooks and action rules              │
 │    skills/      retrieval routing cues and memory pointers        │
+│    routing/     durable IMX routing lessons and route cards       │
+│    codebase/    codemap, onboarding units, docs registry          │
+│    artifacts/   reasoning artifacts, conclusions, evidence        │
 │    meta/        index, manifest, dream log, schema version       │
 │    local/       gitignored — private/ and secret/ split          │
 └──────────────────────┬───────────────────────────────────────────┘
@@ -184,6 +189,12 @@ The memory owner is something you control. This means:
 
 Agents MUST NOT touch GitHub directly during a session. They read and write local files. The umx push queue owns the token and sync cadence.
 
+### Multi-agent shared memory
+
+When multiple agents collaborate on the same project, they share memory through the same gitmem project repo — not through a shared in-process database or a dedicated memory service. Each agent reads from the local clone, writes sessions, and appends proposed facts. The PR-based governance model (in remote/hybrid mode) ensures that concurrent fact proposals are reviewed before they merge to main, which prevents conflicting claims from silently overwriting each other.
+
+This is the file-first equivalent of a `memory.db` or `infra.db` shared between agents. The difference is: the shared store has version history, review gates, and a correction path through `git revert`. A shared database has none of these. When a multi-agent workflow needs tool-specific memory (each agent's native memory format from Claude Code, Aider, Copilot, etc.), normalise through the native memory adapters in §10 and store in `tools/{tool-name}.md` facts tagged with the originating tool. There is no separate coordination database.
+
 ---
 
 ## 3a  Agent Memory Interaction Loop
@@ -211,6 +222,104 @@ Observe → Retrieve → Act → Reflect → Encode → Consolidate
 | **Consolidate** | Dream pipeline: Orient → Gather → Consolidate → Lint → Prune | Mixed |
 
 This division follows a governing design constraint: deterministic work SHOULD live in cheap substrates, and model inference SHOULD be reserved for tasks that actually require reasoning. The result is a cue-dependent retrieval system that reduces free-form recall pressure on the agent by preferring **recognition over regeneration**.
+
+---
+
+## 3b  Codebase Memory and Repo Intelligence
+
+Beyond session-derived facts, gitmem can maintain derived codebase artifacts that sit beside the code and travel through git. These are not facts (they don't go through the Dream pipeline); they are computed derived views of the repo committed at useful cadences.
+
+### codemap.json
+
+A git-committed codemap artifact containing file-level structure, entry points, key symbols, and inter-module relationships. The codemap is derived from AST analysis, `ctags`, or equivalent tools and committed to the memory repo's `codebase/` directory — not to the project repo itself.
+
+```json
+{
+  "schema_version": "0.6",
+  "project": "boz",
+  "generated_at": "2026-04-27T12:00:00Z",
+  "git_sha": "abc123",
+  "modules": {
+    "auth": {
+      "path": "src/auth/",
+      "entry_points": ["src/auth/session.py::validate_token"],
+      "exports": ["validate_token", "create_session", "revoke_session"],
+      "imports": ["src/db/pool.py", "src/config.py"]
+    }
+  }
+}
+```
+
+The codemap is a cache — re-derivable at any time from `git ls-files` and static analysis. It is committed because commit history makes it easy to diff what changed between versions. Agents use it for orientation, not as ground truth for facts.
+
+### onboarding/<path>.md
+
+Path-derived onboarding units are Markdown files that explain a specific directory or module to an agent encountering it for the first time. They are stored in `codebase/onboarding/` keyed by the normalized path they describe.
+
+```text
+codebase/onboarding/
+├── src-auth.md          ← onboarding for src/auth/
+├── src-db.md            ← onboarding for src/db/
+└── src-api.md
+```
+
+Each onboarding unit includes:
+- Purpose of the module
+- Key invariants and constraints (stable interface contracts)
+- Known fragile areas or gotchas
+- Relevant facts and procedures to read first
+- `drift_hash` — SHA of the key files the unit describes; when this hash changes, the unit is flagged as stale and needs re-validation
+
+Onboarding units are authored or Dream-proposed and require L2 review before merge.
+
+### docs/registry.{json,yaml}
+
+A task-type → owned-documentation mapping that keeps documentation ownership explicit. When an agent needs to understand where canonical information lives for a task type, it consults the registry rather than searching broadly.
+
+```yaml
+# codebase/docs/registry.yaml
+schema_version: "0.6"
+project: boz
+task_type_docs:
+  api_design:
+    owned_by: docs/API_SPEC.md
+    conventions: [REST-style, versioned endpoints, no breaking changes to /v1]
+  database_migration:
+    owned_by: docs/DB_MIGRATIONS.md
+    procedures: [procedures/db-migration-checklist.md]
+  deployment:
+    owned_by: docs/DEPLOY.md
+    risk_tier: EXTERNAL
+    requires_approval: true
+```
+
+The registry is maintained by the team and reviewed like any other docs change. Agents read it before starting work on a typed task.
+
+### memory/artifacts/*.md
+
+Reasoning artifacts capture conclusions, evidence, and invalidation conditions from significant decisions. They are not facts (no provenance pipeline) — they are human-or-agent-authored decision records.
+
+```markdown
+---
+artifact_id: 01JQXYZ...
+kind: reasoning_artifact
+conclusion: Use connection pooling via PgBouncer rather than per-request connections
+evidence:
+  - Load test showed 400% latency reduction under 50 concurrent requests
+  - See session 2026-04-08-01JQXYZ for benchmark details
+confidence: 0.92
+invalidates_when:
+  - Postgres version changes to support native connection multiplexing
+  - Team moves to a single-threaded async model
+created_at: 2026-04-08T12:00:00Z
+---
+
+## Reasoning
+
+...
+```
+
+Artifacts are stored in `memory/artifacts/` and indexed in the SQLite cache for retrieval. Flat-layout repos MAY expose the same canonical files at repo-root `artifacts/` for backward compatibility, but the memory-facing path remains `memory/artifacts/`. They are injected when the task class or query matches `conclusion` or `evidence` keywords. Unlike facts, they carry `invalidates_when` conditions that the Dream pipeline checks against code changes during Orient.
 
 ---
 
@@ -541,6 +650,31 @@ The `local/` directory is gitignored. It contains two subdirectories with differ
 
 - **`local/private/`** — private facts that ARE injected (personal preferences, machine-specific config, scratchpad). Always loaded: **Yes**.
 - **`local/secret/`** — tokens, credentials, connection strings. Always loaded: **No**. Never injected into prompts. Accessed only by explicit CLI request (`umx secret get <key>`). Cross-machine syncing of secrets is a non-goal — use a dedicated secret manager (1Password CLI, Vault, etc.).
+- **`local/quarantine/`** — sessions that failed the pre-commit redaction pass. Require manual inspection and resolution before commit. `umx status` surfaces them.
+- **`local/context/`** — durable context: ticket descriptions, research excerpts, roadmap notes, and task briefings that span multiple sessions. Ordinary markdown under git version control; agents read for orientation, humans edit directly.
+- **`local/diary.md`** — append-only observation log. See §8a for format and governance.
+- **`local/blobs/`** — content-addressed raw attachments (screenshots, binary artifacts, large log excerpts). Files stored as `blobs/{sha256-prefix}/{filename}`. Gitignored. Referenced from facts or handover notes by their hash. Deduplication is automatic: two identical files produce the same path.
+
+### Content-addressed blob storage
+
+Raw binary attachments — screenshots, rendered diff images, large log excerpts, audio snippets — are too large and too volatile for inline fact storage. They also change binary content without changing their logical identity, which makes git history noisy. `local/blobs/` solves this with a content-addressed layout: the first 8 hex digits of the SHA-256 hash of the file contents become the directory prefix, and the original filename is preserved:
+
+```
+local/blobs/
+├── a3f9c12e/screenshot-auth-flow.png
+├── b7d8e441/deploy-log-2026-05-21.txt
+└── f19a2b53/heap-dump-worker-crash.bin
+```
+
+A fact or handover note references a blob by its hash prefix and filename:
+
+```markdown
+- Auth flow screenshot confirming token scope UI <!-- ... --> [blob:a3f9c12e/screenshot-auth-flow.png]
+```
+
+Two identical files — regardless of their location or what session produced them — produce the same path, preventing silent duplication across sessions. Blobs are local-only (`local/` is gitignored). If a blob needs to travel with a compiled artifact or compiled knowledge export, it SHOULD be referenced by hash and bundled explicitly. The blob store is not a substitute for a proper media asset manager; it is a low-friction quarantine layer that keeps binaries out of committed history while preserving their traceability.
+
+`umx blob store <file>` returns the hash prefix. `umx blob get <hash-prefix>/<filename>` retrieves the file.
 
 ### Path encoding for folder/file scope
 
@@ -636,9 +770,15 @@ $UMX_HOME/
     │   ├── facts/
     │   ├── principles/
     │   ├── meta/
-    │   └── local/
-    │       ├── private/
-    │       └── secret/
+    │   ├── local/
+    │   │   ├── private/
+    │   │   ├── secret/
+    │   │   ├── diary.md            # append-only observation log (local-only)
+    │   │   ├── handover.md         # latest handover note
+    │   │   ├── handovers/          # dated handover archive
+    │   │   ├── context/            # tickets, roadmap, research notes
+    │   │   └── quarantine/         # failed-redaction sessions awaiting review
+    │   └── blobs/                  # content-addressed raw attachments (gitignored)
     └── agent-interface-protocol/
         └── ...
 ```
@@ -716,6 +856,54 @@ This:
 - **Conflict on push:** Pull, re-run dream consolidation locally, re-push.
 
 Agents work fully offline. Push failures are queued and retried.
+
+### Diary and Session Handover
+
+For agents that run long-lived sessions or hand off work across session boundaries, gitmem supports two lightweight continuity formats:
+
+**Diary (`local/diary.md`)** — an append-only chronological log of brief observations, decisions, and reminders that didn't rise to the level of a formal fact. Written directly by the agent or user without Dream governance. Entries are dated and short (1-3 lines each). The diary is gitignored by default (local-only) but MAY be committed if the owner wants cross-machine sync:
+
+```markdown
+## 2026-05-21
+
+- Tried indexing the monorepo; hit OOM at 6M files — need chunked approach
+- Auth PR merged; cookie domain now scoped to api.prod.example.com
+- Defer the rate-limit refactor — blocked on infra ticket #441
+```
+
+The diary is not a fact store. It has no inline metadata, no strength scores, and no Dream promotion path by default. It is a scratch surface for observations that an agent should re-read at the start of the next session. If an observation survives several diary entries without being promoted or discarded, Dream MAY propose it as a formal fact at the next cycle.
+
+**Handover notes (`local/handover.md`)** — a short structured document written at the end of a session, intended for the agent (or human) that picks up work next. Unlike summaries (which are outward-facing), handover notes are written to the incoming agent:
+
+```markdown
+# Handover — 2026-05-21T10:00:00Z
+
+## Active context
+- Task: implement OAuth token refresh (task-042)
+- Branch: feature/oauth-refresh
+- Last action: wrote tests in tests/test_refresh.py — 2 failing
+
+## What you need to know
+- Token endpoint requires X-Request-ID header (see facts/topics/auth.md)
+- The `refresh_token` expiry is 30 days, not 7 — confirmed in last session
+
+## Next step
+Fix the token clock skew issue in src/auth/refresh.py:127
+```
+
+Handover notes live in `local/handover.md` (latest) and `local/handovers/YYYY-MM-DD.md` (archive). Dream ingest MAY extract formal facts from handover notes during Gather, tagging them with `source_type: tool_output` at S:3.
+
+**Context directory (`local/context/`)** — for larger continuity artifacts: ticket descriptions, roadmap notes, research excerpts, and per-task context packets. These live as ordinary markdown files under git version control. Agents read them for orientation; humans edit them directly. The context directory is the file-first substitute for hosted project wikis and ticket-linked memory systems.
+
+### Governed Sync Constraints
+
+gitmem is versioned-in-git for a reason: adaptation must be **reviewable**, not automatic. The following patterns are explicitly defended against:
+
+**DEFEND: self-modifying online learning** — fine-tuned model weights, online adapters, and embedding stores that auto-update from agent outputs bypass review. gitmem's governance model requires that all durable memory changes go through Dream consolidation and then PR review (in remote/hybrid mode) or explicit human approval (in local mode). Observations land in `sessions/` (immutable) first; only reviewed conclusions land in `facts/`. Nothing in the write path mutates canonical memory without an explicit gate.
+
+**DEFEND: opaque memory stores** — vector databases, proprietary memory APIs, and agent bundles that self-update are not substitutes for gitmem canonical markdown. They may serve as retrieval caches (see §10), but they MUST NOT become the store that agents write conclusions to. If the vector store diverges from markdown, discard the vector store and rebuild. The correction path always runs through files and git history.
+
+**CITE: AMFS** — Agent Memory File System demonstrates that treating agent memory like code (branches, diffs, rollback, PR review) is sound and scalable. gitmem's design independently arrives at the same conclusion. AMFS validates the core architectural choice that memory governance should look like code governance.
 
 ---
 
@@ -827,6 +1015,31 @@ schema_version: 1
 ```
 
 This file-level schema is intentionally separate from `meta/schema_version`. It allows ordered fact-file migrations to run via `umx migrate` without conflating them with repo bootstrap repair. `umx doctor` SHOULD report missing, stale, or future fact-file schema headers, but `umx doctor --fix` MUST remain scoped to repo-level repair; operators run fact-file migrations explicitly.
+
+### `agent.md` entrypoints, owned docs, and wikilinks
+
+Each durable agent role MAY expose an `agent.md` entrypoint that tells gitmem where that role's canonical reading surface begins. This file is not a prompt dump and not a cache of generated context. It is a human-readable routing document with two explicit jobs: declare the docs the role owns, and map task types to the files or procedures that should be read first. `agent.md` therefore acts as a file-first registry for role-specific memory entrypoints. An agent that starts a review task does not need a memory server lookup to discover its canon; it reads `agent.md`, follows the listed docs, and resolves any embedded wikilinks.
+
+Wikilinks such as `[[deploy-target]]` or `[[auth-session-boundary]]` are the preferred cross-reference surface inside markdown memory files because they remain stable under ordinary text editing and work well in both rendered and grep-based workflows. Reasoning artifacts referenced from `agent.md` SHOULD live in `memory/artifacts/*.md` and MUST carry `invalidates_when:` so the role entrypoint does not anchor itself to obsolete conclusions. The entrypoint is therefore a directory of truth-bearing files, not a second truth store.
+
+```markdown
+---
+role: reviewer
+owned_docs:
+  - docs/API_SPEC.md
+  - CONVENTIONS.md
+task_types:
+  code_review:
+    read_first:
+      - procedures/review-checklist.md
+      - memory/artifacts/auth-boundary.md
+      - facts/topics/deploy.md
+---
+# reviewer
+
+Start with [[api-versioning]] and [[auth-session-boundary]] before reviewing route changes.
+Escalate conflicts to [[deploy-target]] when code and docs disagree.
+```
 
 ### Conflict file
 
@@ -1010,6 +1223,130 @@ modification SHOULD follow the same review path as facts and procedures. Trigger
 not low-risk: broadening a trigger can materially increase injection volume and change agent
 behaviour.
 
+## 9c  Skill Invocation, Progressive Disclosure, and Promotion
+
+Skills are portable artifacts. A skill file checked into the repo is importable by any agent
+running against that memory store. This section covers how skills are invoked, how they disclose
+their retrieved content progressively based on budget, and how draft skills graduate to active.
+
+### Explicit invocation patterns
+
+**Prompt-level explicit invocation** — the user or an agent embeds `@skill:<name>` in prompt text:
+
+```
+@skill:database-debug — why is the connection being refused?
+```
+
+The injection layer detects the token, activates the named skill at high priority, and routes its
+`load:` targets into the current context pack. Name matching is exact and case-sensitive. Only
+`active` and `competing` skills respond to explicit invocation; `draft` and `retired` skills are
+silently ignored.
+
+**CLI invocation** — `umx skill test` runs a skill in isolation against a sample prompt or
+workspace state, printing what facts and hints would be injected without modifying live context:
+
+```bash
+umx skill test --name database-debug --prompt "psql: connection refused on port 5432"
+# → Activated: database-debug (explicit)
+# → load: facts/topics/database.md — 3 facts routed
+# → load: facts/topics/devenv.md — 2 facts routed
+# → hint: "Check database port facts before assuming the default PostgreSQL port."
+# → Total injected: 5 facts, 1 hint — estimated 420 tokens
+```
+
+`umx skill test` is the primary authoring feedback loop. It is safe to run against production
+memory; it never writes state.
+
+**Harness invocation** — harnesses that support progressive disclosure may request a skill pack
+by name via the injection shim:
+
+```json
+{ "skill_request": "database-debug", "disclosure_level": "L1" }
+```
+
+The shim resolves `load:` targets, scores facts against the current context, and returns the L1
+summary block (see Progressive Disclosure below).
+
+### Progressive disclosure
+
+Activated skills expose their content in three levels. The injection layer chooses a level based
+on available token budget:
+
+| Level | Budget available | Content returned |
+|-------|-----------------|-----------------|
+| L0 | Very tight (< 500 tokens) | Skill name + hint only; no facts loaded |
+| L1 | Moderate (500–3000 tokens) | Hints + top-N facts by relevance (N ≤ 5) |
+| L2 | Comfortable (> 3000 tokens) | Hints + all routed facts up to context budget |
+
+L0 is a signal to the agent that the skill exists but its full content cannot be loaded; the
+agent may request a context refresh or defer the skill to a future turn.
+
+Explicit `@skill:<name>` invocations receive at least L1 regardless of budget — the agent's
+explicit request is treated as a budget override for hints, though individual facts may still be
+dropped by the normal budget-packing pass.
+
+### Skill artifact format and portability
+
+A skill file is self-contained when its `load:` targets reference files that travel with it in
+the repo. Skills that reference paths outside `skills/`-adjacent namespaces are flagged by
+`umx lint` as non-portable.
+
+Skills can be exported as structured JSON artifacts for transfer across memory repos:
+
+```json
+{
+  "skill_artifact_version": "0.9",
+  "name": "database-debug",
+  "version": 1,
+  "skill_status": "active",
+  "description": "Routes database-debugging prompts to database and local development facts.",
+  "triggers": [
+    { "type": "command", "pattern": "psql|pg_dump|pg_restore|pgcli" },
+    { "type": "pattern", "pattern": "database|postgres|connection.*refused" }
+  ],
+  "retrieval": [
+    { "directive": "load", "target": "facts/topics/database.md" },
+    { "directive": "hint", "text": "Check database port facts before assuming the default PostgreSQL port." }
+  ],
+  "exported_at": "2026-05-21T10:00:00Z",
+  "exported_from": "org/project-memory"
+}
+```
+
+Import: `umx skill import --file database-debug.skill.json --status draft`
+
+Imported skills land as `draft` and must be manually promoted. Importing a skill does not import
+the facts it references — those must be reconciled separately.
+
+### Promotion pipeline
+
+Skills progress through statuses: `draft` → `active` → (optionally) `competing` → `retired`.
+
+**Draft** — created by authoring tools, `umx skill import`, or the Dream pipeline when a
+recurring retrieval gap is detected. Not activated by triggers or explicit invocation.
+
+**Active** — promoted by a human or authorized orchestrator after the skill passes `umx skill test`
+against representative prompts. In `remote` mode, promotion requires a PR merge (same review path
+as fact promotion).
+
+**Competing** — two versions of a skill with the same name are both `competing`. The injection
+layer runs both, records which facts were retrieved and used, and emits telemetry. After N
+evaluation sessions (configurable), the higher-performing version is promoted to `active` and the
+other is `retired`.
+
+**Retired** — excluded from activation. Retained in git history for audit. Can be un-retired by
+changing `skill_status`.
+
+**Dream-proposed skills** — when the Dream pipeline's Consolidation step identifies a recurring
+retrieval gap (a topic queried frequently but not well-covered by existing skills), it MAY emit a
+draft skill proposal to `skills/proposed/{name}.md` with a `skill_status: draft` header and a
+`proposed_by: dream` annotation. Humans review before promotion.
+
+**Automated competition** — promotion to `competing` can be triggered by `umx skill compete
+--name <name> --challenger <path>`. The challenger is added as a second `competing` version.
+Full automated version competition (including semantic activation and champion selection) is
+deferred post-v0.9.
+
 ## 10  Read Strategy
 
 umx uses a **hybrid read** approach. Two tracks:
@@ -1036,6 +1373,10 @@ Session transcripts / logs       → 2–3 (explicit episodic)
 Inferred patterns                → 1–2 (implicit)
   Repeated mentions across N sessions without explicit save
 ```
+
+### LLMs as synthesis engines, not datastores
+
+The umx retrieval model treats LLMs as bounded synthesis agents, not as the primary filter or lookup engine. Filtering happens through facts, manifests, and SQLite FTS before an LLM is invoked. This keeps deterministic, cheap structured retrieval on the fast path and reserves LLM calls for synthesis and conflict resolution where structured queries produce ambiguous results. The Dream pipeline follows the same principle: Gather and Lint are deterministic passes over committed data; LLM calls are bounded to extraction and review decisions, not to full-context retrieval or memory arbitration.
 
 ### .gitignore-driven extraction safety
 
@@ -1107,6 +1448,26 @@ At session end, accumulated gaps are processed as part of the normal Dream pipel
 
 **Mid-session fast path (optional).** For tools with hook support, an agent MAY write a gap-proposed fact directly to `local/private/scratchpad.md` at S:1 for immediate availability in the current session. This fact is ephemeral — it is always injected within the current session but MUST survive the normal Dream pipeline (corroboration, consolidation) to be promoted to `facts/`. The scratchpad is gitignored; scratchpad facts never reach the remote repo unless promoted.
 
+### Bounded consolidation gates
+
+gitmem places a second boundary around Dream so consolidation stays bounded, idempotent, and reviewable. A run MUST NOT start until the time gate and session-count gate are both satisfied for the configured thresholds, and it MUST acquire a singleton lock at `~/.gitmem/state/dream.lock` before reading any inputs. The existing repo-local `meta/dream.lock` remains the per-clone coordination marker; the user-level lock prevents two Dream processes from racing across multiple repos or shells on the same machine. If the outer lock is stale relative to the configured heartbeat timeout, the next run MAY reclaim it after logging the reclaim event.
+
+The automatic Dream pass is read-only with respect to canonical memory. It reads `sessions/`, current markdown facts, procedures, skills, and artifacts, then writes only proposal material into `dream-candidates/`. Those candidate files use content-addressed IDs so rerunning the same inputs yields the same proposal path instead of duplicate edits. Promotion from `dream-candidates/` into `facts/`, `principles/`, or other canonical markdown happens only through the existing governed PR flow in §12, or through an explicit human approval step in local-only operation. Dream therefore consolidates by proposing, not by silently mutating truth.
+
+```yaml
+# ~/.gitmem/state/dream.lock
+owner: umx-dream
+pid: 48122
+started_at: 2026-05-21T10:00:00Z
+last_heartbeat: 2026-05-21T10:03:00Z
+repo: boz
+```
+
+```text
+dream-candidates/
+└── sha256-6f8e...c1b9.md
+```
+
 ### Phases
 
 The Dream pipeline runs four top-level phases. Phase 3 (Consolidate) contains an integrated Lint sub-phase (3b) that runs after the merge/resolve step (3a) and before Prune.
@@ -1115,8 +1476,8 @@ The Dream pipeline runs four top-level phases. Phase 3 (Consolidate) contains an
 |---|-------|--------|--------|
 | 1 | **Orient** | Read `MEMORY.md`, `CONVENTIONS.md` (if absent: skip convention checks, log notice, `umx status` SHOULD suggest creating one), and `meta/manifest.json`. Check `meta/schema_version`. Compare project file tree against existing `folders/` and `files/` entries (detect orphaned scoped memory from renames). Check tombstones. Check `ground_truth_code` anchors for staleness — demote to `fragile` if referenced files are deleted or significantly changed. | Current memory map + orphan candidates + convention context |
 | 2 | **Gather** | Read tool native memory (`source_type: tool_output`, S:3). Parse project repo's `.gitignore` for exclusions. Read source files referenced in session (`source_type: ground_truth_code`, S:3–4). Extract from sessions (`source_type: llm_inference` for paraphrased, S:2–3). Infer patterns (S:1–2). Process `meta/gaps.jsonl`. Check tombstones — suppress matching facts. Apply `CONVENTIONS.md` phrasing and taxonomy rules. Flag project-specific conventions deviating from common practice (`schema_conflict: true`). If `search.backend: hybrid` and an embedding model is configured, generate embeddings for new facts and write to `.umx.json` cache alongside fact text (never committed). Embedding generation is best-effort: failures MUST NOT block Gather or cause facts to be dropped. | Candidate fact list with strength + `source_type` + provenance (+ embeddings in `.umx.json` if enabled) |
-| 3a | **Consolidate** | Merge candidates against existing facts. Apply corroboration bonus. Detect contradictions and write `conflicts_with` pointers (Interference Theory). Resolve conflicts by composite score; set `supersedes`/`superseded_by` on winner/loser. Flag ties. Mark new facts as `consolidation_status: fragile`. Write atomic facts. **In local mode: direct write. In remote/hybrid mode: commit to branch, open PR.** | Updated topic files or PR |
-| 3b | **Lint** | Integrity checks against the consolidated store: semantic contradiction scan (high similarity + opposing assertions not caught by `conflicts_with`), stale file references (`files/` / `folders/` scopes pointing to paths that no longer exist), orphan `fact_id` references (IDs in `corroborated_by_facts` / `conflicts_with` / `supersedes` / `provenance.sessions` that don't resolve), tag drift (same concept tagged inconsistently: `database` vs `db` vs `postgres`), convention violations (facts breaking `CONVENTIONS.md` phrasing or taxonomy). If `CONVENTIONS.md` is absent, Lint MUST skip convention checks and log a notice. | Lint findings report |
+| 3a | **Consolidate** | Merge candidates against existing facts. Apply corroboration bonus. Detect contradictions and write `conflicts_with` pointers (Interference Theory). Resolve conflicts by composite score; set `supersedes`/`superseded_by` on winner/loser. Flag ties. Mark new facts as `consolidation_status: fragile`. Write content-addressed proposal files in `dream-candidates/`. **In local mode: an explicit human-approved merge MAY promote those proposals directly to markdown. In remote/hybrid mode: commit to branch, open PR.** | Updated candidate set or PR |
+| 3b | **Lint** | Integrity checks against the proposed or consolidated store: semantic contradiction scan (high similarity + opposing assertions not caught by `conflicts_with`), stale file references (`files/` / `folders/` scopes pointing to paths that no longer exist), orphan `fact_id` references (IDs in `corroborated_by_facts` / `conflicts_with` / `supersedes` / `provenance.sessions` that don't resolve), tag drift (same concept tagged inconsistently: `database` vs `db` vs `postgres`), convention violations (facts breaking `CONVENTIONS.md` phrasing or taxonomy). If `CONVENTIONS.md` is absent, Lint MUST skip convention checks and log a notice. | Lint findings report |
 | 4 | **Prune** | Remove facts below threshold (default S:2) **AND** older than `prune.min_age_days` (default: 7 — protects incubating facts in new projects). Apply time decay (Ebbinghaus [5]). Check `expires_at` TTLs; an explicit TTL expiry overrides `prune.min_age_days` and removes the fact immediately. Deduplicate by semantic dedup key. Read `meta/usage.sqlite` to identify injected-but-unused facts for relevance-weight calibration. Rebuild `MEMORY.md` index (see §9 generation algorithm). Rebuild `meta/manifest.json` (topics, uncertainty_hotspots, knowledge_gaps). Promote `consolidation_status: fragile` → `stable` for facts satisfying any stabilisation rule (Section 14). Auto-abandon open/blocked tasks older than `prune.abandon_days`. Enforce MEMORY.md size limit. Detect orphaned scope entries and propose rename/migration. | Pruned index |
 
 ### Lint sub-phase output
@@ -1152,7 +1513,7 @@ dream:
   mode: local       # local | remote | hybrid
 ```
 
-- `local`: dream writes facts directly to markdown, commits, pushes to main. No PR gates, no governance. For solo/offline use.
+- `local`: dream writes candidates locally. An explicit user-approved merge MAY promote them directly to markdown without PR infrastructure. For solo/offline use.
 - `remote`: dream commits to a branch, opens a PR, never pushes facts to main. Full L1/L2/L3 governance. Sessions are still direct-pushed (append-only).
 - `hybrid`: sessions push directly to main (append-only, no governance needed). ALL fact changes go through PRs — same L1/L2/L3 governance as remote mode. This gives immediate session availability with full fact governance.
 
@@ -1496,6 +1857,86 @@ When a tool exposes a visible subagent spawn event, gitmem SHOULD relay a bounde
 
 Subagent relay is always a subset of the parent's authorised context. `local/secret/` content MUST NOT be introduced during handoff.
 
+### Context Packs and Briefings
+
+Context packs and briefings are pre-assembled, bounded recall bundles that bridges and harnesses can request without triggering a full injection pipeline. They are designed for use cases where:
+
+- a harness cannot run hooks (batch jobs, CI, cloud agents)
+- a caller needs a reproducible context snapshot rather than a live-assembled one
+- the full injection pipeline is too expensive for the call site
+
+**Context packs** are JSON files assembled from a scope and a query at pack-time:
+
+```text
+context-packs/{pack_id}.json
+```
+
+```json
+{
+  "schema_version": "0.6",
+  "pack_id": "cp-01JQXYZ...",
+  "scope": "project:boz",
+  "query": "database migrations",
+  "assembled_at": "2026-04-27T12:00:00Z",
+  "token_count": 1240,
+  "facts": [...],
+  "procedures": [...],
+  "artifacts": [...],
+  "fallback_tier": "hot_tier_only"
+}
+```
+
+Packs are assembled by `umx pack --scope project:boz --query "database migrations"` and committed to the memory repo. They are caches — re-assemblable at any time. A `fallback_tier` field specifies what to inject if the pack is absent: `hot_tier_only`, `procedures_only`, or `none`.
+
+**Briefings** are human-readable Markdown renderings of a context pack, suitable for direct injection into an agent's system prompt or task context:
+
+```text
+briefings/{briefing_id}.md
+```
+
+Briefings are preferred over packs when the consumer is an LLM — they are already in a format agents understand without requiring JSON parsing. Briefings include headings, bullet facts, procedure excerpts, and relevant onboarding text.
+
+#### Layered Context Blocks (MEMORY CHRONICLES pattern)
+
+Dream SHOULD emit layered context block files alongside context packs. Each block targets a distinct view of the same memory window:
+
+```text
+context/layers/{task_class}-{date}/
+  numeric.md      — quantitative facts, thresholds, counts, rates
+  temporal.md     — timeline of decisions, milestones, status changes
+  narrative.md    — explanatory summaries, rationale, design reasoning
+  digest.md       — compact one-liner per active fact for token-constrained injection
+```
+
+Generation rules:
+- layers are generated once per dream cycle and cached; they do not regenerate per query
+- the digest layer is always injected; numeric/temporal/narrative layers are optional per budget
+- layers are derived outputs — canonical source is the fact files; layers do not replace them
+- layer generation is a dream sub-phase, logged in the dream audit trail
+
+The layered block pattern allows injection to be tuned to the agent's task: a debugging agent gets the numeric layer; a planning agent gets the temporal + narrative layers; a fast classifier gets the digest only.
+
+### Injection Audit
+
+`injection-audit.jsonl` is an append-only log of exactly what was injected into each session and why. It enables:
+
+- exact-span deduplication across injection points in a session
+- recall audit: "why did the agent see this fact?"
+- precision calibration: identifying injected-but-unused facts for relevance score tuning
+
+```text
+local/injection-audit.jsonl
+```
+
+```jsonl
+{"session_id":"2026-04-27-01JQ...","ts":"...","injection_point":"session_start","fact_id":"01JQ...","token_count":45,"reason":"scope:project:boz,keyword:database","relevance_score":0.87}
+{"session_id":"2026-04-27-01JQ...","ts":"...","injection_point":"pre_tool","fact_id":"01JQ...","token_count":45,"reason":"tool:bash,path:src/db/pool.py","relevance_score":0.91,"dedup":"already_injected_this_session"}
+```
+
+The `dedup: already_injected_this_session` field marks when a fact would have been injected again but was suppressed as a duplicate. This prevents token waste without losing the signal that the fact was relevant at multiple points.
+
+`injection-audit.jsonl` is local-only (gitignored) — it is session-specific ephemeral data for debugging and telemetry, not committed memory.
+
 ### Fragile fact marking
 
 When a fact at `consolidation_status: fragile` is selected for injection, it SHOULD be prefixed with `[fragile]` in the injected output. Example:
@@ -1759,6 +2200,8 @@ Matches are replaced with `[REDACTED:<type>]` placeholders. Sessions are immutab
 
 **Emergency purge:** `umx purge --session <id>` rewrites git history (BFG or `git filter-repo`) for secret removal. This breaks the immutability guarantee for that session and is logged in the audit trail. For jurisdictions requiring data deletion (GDPR), this is the escape hatch.
 
+**Binary and media pre-ingest scan.** Before committing any session that includes tool outputs referencing image, audio, or video files, the ingest pipeline SHOULD check whether binary attachments are present. Recognized binary types (`.png`, `.jpg`, `.mp4`, `.wav`, and similar MIME types detectable by file header magic bytes) MUST be intercepted before they reach `sessions/`. Small, text-safe screenshots MAY be stored in `local/blobs/` under content-addressed paths. Large binaries and opaque executable content MUST be quarantined to `local/quarantine/` for review before any ingest. This is a defense against hidden-payload injection through agent tool outputs. The binary scan does not need to be forensic — a file-type check plus size cap (configurable, default: 100KB) is the minimum.
+
 **Startup sweep.** On session start, before pull, the implementation MUST scan for uncommitted session files from prior runs (crashed or killed processes). Any found uncommitted sessions MUST be committed and pushed before proceeding. This prevents session data loss from non-graceful shutdowns.
 
 ### Session capture methods
@@ -1813,6 +2256,51 @@ Archive compaction MAY be run explicitly via `umx archive-sessions` or implicitl
 **Fast track (SQLite FTS):** "what do I know about X" queries. Built from markdown, local-only, incrementally rebuilt on pull.
 
 **Raw track (direct session scan):** "what actually happened around X" queries. Full context.
+
+### Canonical markdown and derived retrieval caches
+
+Search infrastructure in gitmem is a cache layer, never a truth layer. SQLite FTS, HNSW vector indexes, graph indexes, extracted fact tables, and any other retrieval accelerator are all derived from canonical markdown plus immutable session JSONL. They MUST be gitignored, MUST be safe to delete at any time, and MUST be rebuildable locally from files alone through a single rebuild command or wrapper script (for example `umx index rebuild`, backed by the canonical CLI rebuild path). If an index disagrees with markdown, the index loses. This rule keeps retrieval fast without letting a database quietly become the memory system.
+
+The retrieval model is therefore dual-track by design. Structured queries such as "facts about deploy target" should hit FTS or a derived graph cache first because they benefit from indexing. Full-context questions such as "what happened around the last auth rollback?" should read raw session JSONL directly because compression loses nuance. Before either track injects material into an agent context, implementations MUST deduplicate overlapping spans so the same fact is not shown twice via both FTS and raw replay. Fact extraction outputs may themselves be cached as normalized artifacts, but those artifacts remain disposable products of the source markdown and raw sessions.
+
+```bash
+#!/usr/bin/env bash
+# scripts/rebuild-derived-indexes.sh
+set -euo pipefail
+rm -rf .cache/umx
+umx rebuild-index --cwd "$PWD" --embeddings
+```
+
+```text
+.cache/umx/
+├── search.sqlite      # FTS cache
+├── vectors.hnsw       # semantic cache
+├── graph.json         # derived relation graph
+└── extracted.jsonl    # normalized retrieval spans
+```
+
+#### Retrieval-Fidelity Tags
+
+Every injected memory block SHOULD carry a `retrieval_fidelity` tag. Under degraded retrieval conditions (stale index, embedding model mismatch, fallback to keyword-only), the tag tells the receiving agent how much to trust the recalled content.
+
+Fidelity levels:
+| level | meaning |
+|---|---|
+| `exact` | retrieved by deterministic lookup (slug, anchor ID, or exact phrase) — highest trust |
+| `lexical` | retrieved by keyword/FTS match — high trust |
+| `semantic` | retrieved by embedding similarity — moderate trust (embedding may be stale) |
+| `fallback` | retrieved by date-ordered recency when primary retrieval failed — low trust |
+| `expired` | retrieved but TTL exceeded or source anchor changed — label and de-prioritize |
+
+In the injected markdown block, the fidelity appears as a YAML comment on the block header:
+
+```markdown
+<!-- retrieval_fidelity: lexical  source: facts/auth-cookie.md  strength: 4 -->
+### Auth cookie domain is scoped to api.prod.example.com
+...
+```
+
+The receiving agent can use this tag to calibrate confidence. IMX route decisions that rely on gitmem facts for routing SHOULD only use `exact` or `lexical` fidelity facts as evidence inputs.
 
 ### SQLite schema (canonical, defined once)
 
@@ -2139,6 +2627,10 @@ Earlier spec drafts used a `[DEPRECATED]` marker inline. This is superseded by t
 | **Ground truth staleness** | Code changed since fact extraction | Orient phase checks anchored paths; demotes to `fragile` if source changed |
 | **Stale embeddings (model upgrade)** | Cached vectors from old model mixed with new | Per-fact `embedding_model_version` field — mismatch → treat as absent, schedule rebuild |
 | **False contradiction (env mismatch)** | Facts true in different envs | `applies_to` schema prevents non-overlapping facts from being flagged as contradictions |
+| **Retrieval-only ceiling** | Memory is correctly retrieved but never shapes behaviour — agent ignores injected content | Session-aware `injection-audit.jsonl` tracks injected-but-unused facts; relevance calibration demotes consistently unused facts; procedures are injected at pre-tool time where they are hardest to ignore |
+| **Adversarial injection / memory poisoning** | Untrusted session content (handoff summaries, external docs, tool output) is extracted as fact and poisons the store | `source_type: llm_inference` requires corroboration to reach S:3; `untrusted_source` tag propagates through extraction; handoff content carries `contamination_risk` metadata; L2 review blocks high-strength promotion of facts from untrusted provenance |
+| **Self-modifying memory loop** | Dream pipeline proposes facts that were themselves extracted from previous dream output rather than raw sessions | Orient phase traces provenance chains; facts with `source_type: llm_inference` and no session anchor are quarantined if they appear to originate from a previous Dream PR rather than a raw session |
+| **Contradictory recall under context pressure** | Two conflicting facts both injected, agent reasons from the worse one | `conflicts_with` field enables priority ordering in injection; higher-trust fact gets injection priority; conflicting pairs are surfaced together so the agent can reason about the conflict rather than silently using one |
 
 ---
 
@@ -2210,6 +2702,24 @@ These norms guide agent behaviour when consuming gitmem memory. They are **norma
 
 **vs Karpathy's LLM Wiki pattern:** Karpathy's wiki shares the "LLM maintains markdown, raw sources are immutable" architecture. umx adds: git-native version history (wiki has no history), PR-based governance (wiki has no review mechanism), encoding strength and provenance (wiki has no quality differentiation), multi-agent support (wiki is single-user single-agent), and tombstone-based forgetting (wiki has no suppression mechanism). The wiki pattern is umx without governance, history, provenance, or multi-agent support.
 
+**vs memory-first coding harnesses** (e.g. Aider's in-session context, Cursor's codebase index): These are harness-level session memories — relevant for a single session, not durable across sessions. They answer "what is in context now?" not "what did this agent learn over the last three months?". gitmem complements them: the harness manages active context, gitmem holds the durable cross-session store. The native memory adapters (§10) normalise harness-format memory into gitmem facts where they carry forward-looking relevance.
+
+**vs benchmarked local-first memory systems** (e.g. MemGPT, Mem0): These systems optimize for fast recall with selective memory pipelines. gitmem is complementary: their strength is retrieval latency (embedding lookup, tiered summarization); gitmem's strength is auditability, governance, and correctness over time. A project MAY use a MemGPT-style cache as the fast retrieval layer while gitmem provides the reviewed, versioned canonical store underneath it.
+
+### Positioning against retrieval interfaces and cache systems
+
+gitmem is intentionally narrower and more durable than the systems it is often compared against. An MCP memory server is a **retrieval interface**: useful for exposing memory to a tool, but not a canonical store. A vector-memory product is a **search cache**: useful for nearest-neighbor recall, but not durable truth. A compiled knowledge artifact such as AKS is a **transport package**: useful for shipping a frozen bundle, but not the place where edits are authored. gitmem sits underneath all three. Canonical markdown plus immutable session logs are the source of truth; MCP servers, vector indexes, and compiled bundles are views built from those files.
+
+This is why gitmem can interoperate with them without adopting their failure modes. A project may expose gitmem through an MCP bridge, rebuild HNSW or graph indexes for fast retrieval, or export a compiled artifact for offline distribution, and none of those steps changes what counts as memory truth. If the cache goes stale or the bridge misbehaves, rebuild it from markdown. If the compiled artifact drifts, regenerate it from markdown. The correction path always returns to files and Git history rather than to a service database or opaque embedding store.
+
+```text
+facts/*.md           ← canonical memory
+sessions/*.jsonl     ← canonical evidence
+.cache/umx/*.sqlite  ← derived search cache
+.cache/umx/*.hnsw    ← derived vector cache
+exports/aks/*.json   ← derived exchange artifact
+```
+
 ---
 
 ## 25  Python Package Structure
@@ -2267,8 +2777,9 @@ umx/
 ├── shim/
 │   ├── aider.py
 │   └── generic.py
+├── blobs.py                # content-addressed blob store: umx blob store/get/list/purge
 ├── bridge.py               # legacy file bridge (CLAUDE.md / AGENTS.md markers)
-├── doctor.py               # umx doctor: auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embedding availability
+├── doctor.py               # umx doctor: auth, push queue, locks, schema, orphans, quarantine, index staleness, hot-tier pressure, embedding availability, stale blobs
 ├── viewer/
 │   └── server.py
 └── mcp_server.py           # read_memory / write_memory MCP tools
@@ -2557,10 +3068,82 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 - AIP hook proxy normalises payloads from all Tier 1 CLIs. umx hook handlers consume those events.
 - AIP shim watch provides lifecycle events for Tier 2 CLIs. umx shim handles collection.
 - `workspace/events.jsonl` feeds the Gather phase as a structured session source (preferred over raw transcripts).
+- `workspace/dream-candidates/` — AIP compaction hooks write dream candidates here; gitmem Dream Orient reads them as a session ingest source alongside raw sessions.
+- `workspace/transcripts/{session_id}.jsonl` — AIP session transcripts are a normalised input format for the extraction pipeline.
+- `workspace/tasks/{task_id}/audit.jsonl` — task-local audit logs are secondary ingest candidates for task-scoped facts; Dream Gather MAY read them when a task's `plan.yaml` completion triggers a large_task_completion dream event.
+- `workspace/status/HEARTBEAT-{agent}.md` — gitmem MAY read heartbeat files during Orient to classify sessions as active, stale, or crashed, adjusting ingest priority accordingly.
+- `workspace/locks/` — gitmem SHOULD NOT consume resource lock files, but lock acquisition and release events emitted to `workspace/events.jsonl` MAY be extracted as episodic facts about resource contention patterns.
 - umx ships as `aip mem` subcommands alongside its standalone CLI.
 - gitmem's GitHub org is separate from the project org — memory governance is isolated from code governance.
 
 **Boundary:** AIP owns orchestration and inter-agent communication. umx owns memory scoping, extraction, strength, injection, and governance.
+
+---
+
+## 30a  Relation to IMX
+
+IMX is the routing and governance layer of the triad. gitmem is its durable memory substrate for routing knowledge.
+
+### What gitmem provides to IMX
+
+- **`routing/` namespace** — durable IMX route cards, routing lessons, known failure patterns, and evaluated heuristics live in `memory-org/<project>/routing/`. This namespace uses the same PR governance as `facts/` but is consumed exclusively by IMX rather than general agents.
+- **Procedures and CONVENTIONS.md** — IMX reads project procedures, conventions, and pre-tool guidance at routing step 2 (Gather) to inform dispatch decisions. These are standard gitmem artifacts consumed through the normal injection path.
+- **Attention refresh** — IMX triggers gitmem attention refresh at workflow iteration boundaries, multi-agent handoffs, and post-compaction state restoration. This uses the standard `~/.imx/state/dream-triggers.jsonl` mechanism.
+- **Task-class query dimension** — procedures and route cards in `routing/` SHOULD be tagged with `task_class` in their YAML front matter so IMX can retrieve them by routing dimension rather than just keyword.
+
+### What gitmem receives from IMX
+
+- **Dream triggers** — IMX writes Dream trigger records to `~/.imx/state/dream-triggers.jsonl`. The gitmem Orient phase reads this file at the start of each Dream cycle. Trigger types include `query_gap`, `route_failure`, `context_saturation`, `large_task_completion`, `entrenchment_risk`, `procedure_regression`, and `policy_drift`.
+- **Distilled telemetry** — IMX promotes summarized task outcomes (failure type, controllability class, node identity, task class) into gitmem as facts in `routing/`. Raw IMX telemetry (JSONL logs) is not pushed to gitmem — only distilled, reviewed lessons that have survived skeptical verification.
+- **Contamination metadata** — IMX `chain_depth` and `contamination_risk.untrusted_sources` fields propagate into gitmem fact provenance when facts are derived from handoff content. The Dream pipeline uses these to weight extraction confidence and gate promotion.
+
+### Route-card governance
+
+Route cards in `routing/` follow the same lifecycle as facts: `draft → active → deprecated → archived`. Promotion from draft to active requires either:
+- empirical evidence (≥3 corroborating task outcomes with the same node × task_class pattern), or
+- skeptical review (a challenge agent found no counter-evidence)
+
+This mirrors how facts require corroboration to reach S:3. Route cards are not promoted on a single routing success.
+
+The `routing/` namespace SHOULD contain a `routing/ROUTING.md` index analogous to `meta/MEMORY.md`, listing active route cards by task class.
+
+### Entrenchment detection
+
+gitmem's Dream pipeline SHOULD periodically challenge route cards that:
+- originate from a single source or session
+- have never been challenged
+- are frequently injected into routing context
+- influence high-risk or EXTERNAL routing decisions
+- lack fresh supporting telemetry (no corroborating outcomes in >30 days)
+
+IMX emits an `entrenchment_risk` Dream trigger when it detects this pattern. The Dream pipeline responds by opening a challenge PR that requires human or skeptic review before the route card remains active.
+
+### Shared redaction vocabulary
+
+IMX and gitmem SHOULD use the same fail-closed redaction vocabulary at their shared boundaries:
+- handoff packets processed by gitmem Dream
+- exported summaries used as memory candidates
+- route decision records promoted to `routing/`
+
+Secrets, tokens, internal hostnames, and machine-specific identifiers MUST be redacted before any artifact crosses from AIP/IMX execution space into gitmem's GitHub-backed store.
+
+**Boundary:** IMX owns live routing decisions, telemetry, and policy gates. gitmem owns durable memory, knowledge governance, and the provenance trail that makes routing decisions reviewable after the fact.
+
+---
+
+## 30b  `/memories` Compatibility Projection
+
+Some harnesses and tools already know a `/memories`-style directory interface: a flat or shallow directory of markdown files where each file is a discrete memory entry, readable and writable via simple filesystem CRUD. This is a simpler interface than gitmem's scoped repo layout, but it is compatible: a `/memories` directory is a projection of gitmem's `facts/` namespace.
+
+When a harness requests `/memories`-style access, umx MAY generate a compatibility view at `local/memories/` (gitignored, derived):
+
+```bash
+umx export --format memories --output local/memories/
+```
+
+The output is flat markdown files derived from hot-tier and warm-tier facts. Writes to `local/memories/` are treated as user-level S:5 additions and queued for ingest on the next session. The projection is always read-only from gitmem's canonical store; facts added through the projection follow the normal Dream path to become durable. This makes gitmem compatible with agents that assume a flat memory API without letting the flat view become authoritative.
+
+**DEFEND: opaque internet prompt blobs** — agents that scrape prompt libraries, download gist collections, or import external prompt templates directly into memory are introducing unreviewed external content with unknown provenance. gitmem's pre-ingest redaction and quarantine pass applies to these imports: if a gist or prompt blob is worth keeping, capture it to `local/context/` with a provenance note, then extract only the reviewed rules, conventions, or skills into the appropriate gitmem namespace. Never commit an opaque import directly to `facts/` or `skills/`.
 
 ---
 
@@ -2604,6 +3187,16 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 
 [19] Liu, N. F., Lin, K., Hewitt, J., Paranjape, A., Bevilacqua, M., Petroni, F., & Liang, P. (2023). *Lost in the Middle: How Language Models Use Long Contexts.* Transactions of the Association for Computational Linguistics, 12, 157–173. — Long-context retrieval degrades away from the active cursor; motivates attention refresh near the working edge rather than assuming one injection lasts for the full session.
 
+[20] Hu, S., et al. (2025). *AMFS: Agent Memory File System* — Demonstrates that treating agent memory like code (branches, diffs, rollback, PR review) is a sound and scalable architecture. gitmem independently converged on the same approach. Cited in §8 (Governed Sync Constraints) as external validation for git-native memory governance.
+
+[21] Ma, W., et al. (2024). *Mem0: The Memory Layer for AI Agents.* — Production-scale selective memory pipeline yielding near-full recall accuracy at ~90% lower latency than naive full-context. Validates the tiered memory model (hot/warm/cold) and the importance of selective distillation. Used as comparator in §24.
+
+[22] Packer, C., et al. (2023). *MemGPT: Towards LLMs as Operating Systems.* — Hierarchical memory management across context tiers using self-directed paging. Relevant as a retrieval-speed comparator; gitmem complements MemGPT-style systems by providing the durable reviewed store underneath the fast tier. Used as comparator in §24.
+
+[23] WRIT Benchmark (2025). *Write Integrity Testing for Long-Context Memory Systems.* — Tests write integrity, drift, provenance, and corruption rather than only retrieval quality. Cited in §24 as the class of benchmark that tests durable-memory correctness; gitmem's provenance trail, tombstone mechanism, and Dream governance are designed to pass write-integrity checks, not just recall benchmarks.
+
+[24] Chen, J., et al. (2025). *Reduced RAG: Deterministic Signal Extraction for Structured Memory.* — Argues for pushing filtering and structure into data artifacts (indexes, fact schemas, manifests) so the LLM is used only for bounded synthesis and review, not as a datastore or filter engine. Validates gitmem's approach: SQLite FTS plus structured markdown facts carry the filtering burden; Dream pipeline LLMs handle only extraction, conflict detection, and review.
+
 ---
 
 ## Open Questions
@@ -2621,6 +3214,7 @@ umx is a natural extension of AIP. AIP provides the orchestration substrate (tmu
 - **Inline metadata grammar formalisation** — §9 defines the field table. A formal EBNF grammar, escaping rules for `-->` inside JSON values, and a round-trip conformance test corpus (5-10 examples) are deferred to Phase 7 (Hardening). Canonical field ordering: `id`, `conf`, `cort`, `corf`, `pr`, `src`, `xby`, `aby`, `ss`, `st`, `cr`, `v`, `cs`, then optional fields alphabetically.
 - **Procedure ergonomics** — `procedures/` is now part of the v1 schema. What remains open is authoring ergonomics: richer trigger builders, linting, templates, and optional execution-adjacent helpers are deferred beyond v1.
 - **Skill expansion beyond routing MVP** — `skills/` supports trigger/explicit activation, `load:`, `hint:`, and `umx skill test`. Deferred work includes executing `query:`, supporting `link:` chains with cycle detection, semantic skill activation, dream-proposed skills, and automated skill version competition.
+- **Failed-run skill mining** — when a failure-fix pattern recurs across sessions (e.g. a recurring test failure resolved the same way twice), the Dream pipeline MAY propose a draft skill in `skills/proposed/{name}.md` based on the failure signature and fix steps extracted from session transcripts. These proposals are draft-only until human review. Automatic skill discovery from failed runs is deferred to post-v1 because it requires a reliable failure-pattern extractor and skill de-duplication logic; the architectural slot in Dream's Gather phase is reserved. The principle (skills should graduate through reviewable, versioned proposals rather than staying latent in a swarm) is normative now.
 - **Distributed dream locking** — `meta/processing.jsonl` for multi-machine coordination is a Phase 5 deliverable. For now, GitHub Actions `concurrency` groups are sufficient.
 - **`confidence` calibration** — bounded [0,1], informational-only for conflict resolution in v1. Excluded from trust_score until calibrated across models.
 

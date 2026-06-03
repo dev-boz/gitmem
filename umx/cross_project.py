@@ -23,6 +23,7 @@ from umx.models import (
     isoformat_z,
     utcnow,
 )
+from umx.strength import SOURCE_TYPE_WEIGHTS
 
 
 _WHITESPACE_RE = re.compile(r"\s+")
@@ -39,6 +40,7 @@ class CrossProjectOccurrence:
     created: str
     encoding_strength: int
     file_path: str | None
+    source_type: str = SourceType.GROUND_TRUTH_CODE.value
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +51,7 @@ class CrossProjectOccurrence:
             "created": self.created,
             "encoding_strength": self.encoding_strength,
             "file_path": self.file_path,
+            "source_type": self.source_type,
         }
 
 
@@ -114,6 +117,7 @@ def _build_occurrence(repo_dir: Path, fact: Fact) -> CrossProjectOccurrence:
         created=isoformat_z(fact.created) or "",
         encoding_strength=fact.encoding_strength,
         file_path=file_path,
+        source_type=fact.source_type.value,
     )
 
 
@@ -346,6 +350,15 @@ def build_cross_project_promotion_fact(report: dict[str, Any]) -> Fact:
         raise ValueError("cross-project proposal target topic is not resolved")
     if not occurrences:
         raise ValueError("cross-project proposal candidate has no supporting occurrences")
+    source_weights: list[float] = []
+    for occurrence in occurrences:
+        source_type = occurrence.get("source_type")
+        if not isinstance(source_type, str):
+            continue
+        try:
+            source_weights.append(SOURCE_TYPE_WEIGHTS[SourceType(source_type)])
+        except (KeyError, ValueError):
+            continue
     return Fact(
         fact_id=generate_fact_id(),
         text=candidate["text"],
@@ -366,6 +379,7 @@ def build_cross_project_promotion_fact(report: dict[str, Any]) -> Fact:
             "cross_project_candidate_key": candidate["key"],
             "cross_project_repos": list(candidate["repos"]),
             "cross_project_occurrences": occurrences,
+            "corroborating_source_weights": source_weights,
         },
     )
 
@@ -489,6 +503,7 @@ def _candidate_from_payload(payload: dict[str, Any]) -> CrossProjectCandidate:
                 created=str(occurrence["created"]),
                 encoding_strength=int(occurrence["encoding_strength"]),
                 file_path=str(occurrence["file_path"]) if occurrence["file_path"] is not None else None,
+                source_type=str(occurrence.get("source_type") or SourceType.GROUND_TRUTH_CODE.value),
             )
             for occurrence in payload["occurrences"]
         ],

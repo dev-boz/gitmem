@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from umx.adapters.generic import NativeMemoryAdapter
+from umx.claude_code_capture import _project_hash, list_claude_code_sessions, parse_claude_code_session
 from umx.models import Fact
 
 
@@ -13,9 +13,9 @@ class ClaudeCodeAdapter(NativeMemoryAdapter):
     def read_native_memory(self, project_root: Path) -> list[Fact]:
         """Read facts from Claude Code's native memory files.
 
-        Claude Code stores project memory in ~/.claude/projects/<hash>/
-        as JSONL files or markdown. We look for CLAUDE.md in the project
-        root and ~/.claude/ directories.
+        Claude Code stores project memory in ~/.claude/projects/<hash>/ as
+        JSONL transcripts and may also keep markdown guidance in CLAUDE.md
+        files. We read both surfaces.
         """
         facts: list[Fact] = []
         candidates: list[Path] = []
@@ -33,14 +33,26 @@ class ClaudeCodeAdapter(NativeMemoryAdapter):
             if global_claude.exists():
                 candidates.append(global_claude)
 
-            # Look for project-specific memory
-            for proj_dir in claude_home.glob("projects/*/"):
-                memory_file = proj_dir / "CLAUDE.md"
-                if memory_file.exists():
-                    candidates.append(memory_file)
+            # Project-specific Claude memory for the active repo
+            project_claude = claude_home / "projects" / _project_hash(project_root) / "CLAUDE.md"
+            if project_claude.exists():
+                candidates.append(project_claude)
 
         for path in candidates:
             facts.extend(self._parse_claude_md(path))
+
+        for session_path in list_claude_code_sessions(project_root=project_root):
+            transcript = parse_claude_code_session(session_path)
+            if not transcript.events:
+                continue
+            facts.extend(
+                self._facts_from_transcript_events(
+                    project_root,
+                    session=transcript.umx_session_id,
+                    events=transcript.events,
+                    encoding_context={"native_store_path": str(session_path)},
+                )
+            )
         return facts
 
     def _parse_claude_md(self, path: Path) -> list[Fact]:

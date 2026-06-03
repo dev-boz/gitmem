@@ -7,7 +7,7 @@ from pathlib import Path
 from tests.secret_literals import ANTHROPIC_KEY_FAKE
 from umx.config import default_config
 from umx.dream.extract import mark_sessions_gathered, session_records_to_facts
-from umx.dream.gates import read_dream_state
+from umx.dream.gates import UserDreamLock, read_dream_state
 from umx.dream.pipeline import DreamPipeline
 from umx.dream.processing import read_processing_log, start_processing_run
 from umx.inject import emit_gap_signal
@@ -15,6 +15,7 @@ from umx.memory import add_fact, find_fact_by_id, load_all_facts
 from umx.models import ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.search import search_sessions
 from umx.sessions import archive_path, archive_state_path, session_path, write_session
+from umx.scope import init_project_memory, project_memory_dir
 from umx.tombstones import forget_fact
 
 
@@ -115,6 +116,49 @@ def test_dream_run_skips_when_processing_is_active(project_dir: Path, project_re
 
     assert result.status == "skipped"
     assert result.message == "dream processing held"
+
+
+def test_dream_run_skips_when_user_level_lock_is_held(
+    umx_home: Path,
+    tmp_path: Path,
+) -> None:
+    other_project = tmp_path / "other-project"
+    other_project.mkdir()
+    (other_project / ".git").mkdir()
+    init_project_memory(other_project)
+    project_memory_dir(other_project)
+
+    lock = UserDreamLock(umx_home=umx_home)
+    assert lock.acquire()
+    try:
+        result = DreamPipeline(other_project).run(force=True)
+    finally:
+        lock.release()
+
+    assert result.status == "skipped"
+    assert result.message == "dream lock held"
+
+
+def test_user_dream_lock_reclaims_stale_lock(umx_home: Path) -> None:
+    lock = UserDreamLock(umx_home=umx_home)
+    lock.path.parent.mkdir(parents=True, exist_ok=True)
+    lock.path.write_text(
+        json.dumps(
+            {
+                "pid": 999999,
+                "hostname": "stale-host",
+                "started": "2000-01-01T00:00:00Z",
+                "heartbeat": "2000-01-01T00:00:00Z",
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    assert lock.acquire()
+    payload = json.loads(lock.path.read_text())
+    assert payload["pid"] != 999999
+    lock.release()
 
 
 def test_dream_run_archives_due_sessions_and_keeps_them_searchable(
@@ -262,6 +306,64 @@ def test_gap_fact_stays_fragile_first_cycle_then_stabilizes(project_dir: Path, p
     assert fact.consolidation_status.value == "stable"
 
 
+def test_consolidate_merges_same_text_scope_topic(project_dir: Path) -> None:
+    existing = Fact(
+        fact_id="01TESTDREAMMERGE0000000001",
+        text="postgres runs on 5433 in dev",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="sess-project",
+        consolidation_status=ConsolidationStatus.FRAGILE,
+    )
+    # Identical text+scope+topic, different tool+session → independent corroboration.
+    candidate = existing.clone(
+        fact_id="01TESTDREAMMERGE0000000002",
+        source_tool="copilot",
+        source_session="sess-other",
+    )
+
+    consolidated = DreamPipeline(project_dir).consolidate([existing], [candidate])
+
+    active = [fact for fact in consolidated if fact.superseded_by is None]
+    assert len(active) == 1
+    assert active[0].fact_id == existing.fact_id
+    assert "copilot" in active[0].corroborated_by_tools
+    assert candidate.fact_id in active[0].corroborated_by_facts
+    assert active[0].consolidation_status == ConsolidationStatus.STABLE
+
+
+def test_consolidate_keeps_same_text_in_different_scopes(project_dir: Path) -> None:
+    existing = Fact(
+        fact_id="01TESTDREAMSCOPE0000000001",
+        text="postgres runs on 5433 in dev",
+        scope=Scope.PROJECT,
+        topic="devenv",
+        encoding_strength=3,
+        memory_type=MemoryType.EXPLICIT_SEMANTIC,
+        verification=Verification.CORROBORATED,
+        source_type=SourceType.TOOL_OUTPUT,
+        source_tool="codex",
+        source_session="sess-project",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    candidate = existing.clone(
+        fact_id="01TESTDREAMSCOPE0000000002",
+        scope=Scope.USER,
+        source_tool="copilot",
+        source_session="sess-user",
+    )
+
+    consolidated = DreamPipeline(project_dir).consolidate([existing], [candidate])
+
+    assert len([fact for fact in consolidated if fact.superseded_by is None]) == 2
+    assert all(not fact.corroborated_by_facts for fact in consolidated)
+
+
 def test_tombstone_suppresses_gap_resurrection(project_dir: Path, project_repo: Path) -> None:
     emit_gap_signal(
         project_repo,
@@ -392,3 +494,146 @@ def test_dream_hybrid_search_warns_when_embeddings_unavailable(
 
     assert result.status == "ok"
     assert "embedding prewarm skipped" in caplog.text
+
+
+def test_procedure_regression_trigger_writes_draft(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+    tmp_path: Path,
+) -> None:
+    from umx.dream import imx_triggers as imx_mod
+    from umx.dream.imx_triggers import ImxDreamTrigger
+
+    # Set up a procedures dir in the project with a matching procedure file
+    procedures_dir = project_dir / "procedures"
+    procedures_dir.mkdir()
+    (procedures_dir / "code-review.md").write_text(
+        "# Code Review\ntask_class: implementation\nReview all changes carefully.",
+        encoding="utf-8",
+    )
+
+    raw_trigger = {
+        "trigger_type": "procedure_regression",
+        "query": "code review skipped in fast-path",
+        "source": "imx",
+        "ts": "2026-05-22T00:00:00Z",
+        "context": {"task_class": "implementation", "task_id": "task-99"},
+    }
+    fake_trigger = ImxDreamTrigger(
+        trigger_type="procedure_regression",
+        source="imx",
+        query="code review skipped in fast-path",
+        ts="2026-05-22T00:00:00Z",
+        context={"task_class": "implementation", "task_id": "task-99"},
+        raw=raw_trigger,
+    )
+    monkeypatch.setattr(imx_mod, "read_imx_triggers", lambda *a, **kw: [fake_trigger])
+
+    drafts_dir = tmp_path / "drafts"
+    pipeline = DreamPipeline(project_dir)
+    # Patch _write_procedure_revision_drafts to use our tmp drafts_dir
+    original_method = pipeline._write_procedure_revision_drafts
+
+    def patched_write(now, **kwargs):
+        return original_method(now, drafts_dir=drafts_dir)
+
+    monkeypatch.setattr(pipeline, "_write_procedure_revision_drafts", patched_write)
+
+    result = pipeline.run(force=True)
+
+    assert result.status == "ok"
+
+    draft_files = list(drafts_dir.glob("procedure-revision-*.md"))
+    assert len(draft_files) == 1, f"expected 1 draft file, found: {draft_files}"
+    body = draft_files[0].read_text(encoding="utf-8")
+    assert "<!-- umx-pr-type: procedure_revision -->" in body
+    assert "code-review" in body
+
+
+def test_dream_candidate_dicts_to_facts_converts_trigger_dicts(project_repo: Path) -> None:
+    from umx.dream.extract import dream_candidate_dicts_to_facts
+
+    facts = dream_candidate_dicts_to_facts(
+        project_repo,
+        [
+            {
+                "source": "imx:detector",
+                "trigger_type": "query_gap",
+                "content": "Recurring query gap about deployment rollback steps.",
+                "task_class": "ops",
+                "metadata": {"query": "rollback"},
+            },
+            {"trigger_type": "policy_drift", "content": ""},  # empty content -> skipped
+            {"not": "a candidate"},  # no content -> skipped
+        ],
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert "deployment rollback" in fact.text
+    assert fact.encoding_strength == 1
+    assert fact.consolidation_status == ConsolidationStatus.FRAGILE
+    assert fact.source_type == SourceType.LLM_INFERENCE
+    assert fact.source_tool == "imx:detector"
+    assert fact.encoding_context.get("trigger_type") == "query_gap"
+    assert fact.encoding_context.get("task_class") == "ops"
+
+
+def test_gather_ingests_imx_triggers_excluding_procedure_regression(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    from umx.dream import imx_triggers as imx_mod
+    from umx.dream.imx_triggers import ImxDreamTrigger
+
+    triggers = [
+        ImxDreamTrigger(
+            trigger_type="entrenchment_risk",
+            source="imx",
+            query="route card never challenged",
+            ts="2026-05-22T00:00:00Z",
+            context={"task_class": "ops"},
+        ),
+        ImxDreamTrigger(
+            trigger_type="procedure_regression",
+            source="imx",
+            query="should be excluded — has its own draft-PR path",
+            ts="2026-05-22T00:00:00Z",
+            context={},
+        ),
+    ]
+    monkeypatch.setattr(imx_mod, "read_imx_triggers", lambda *a, **kw: triggers)
+
+    candidates = DreamPipeline(project_dir).gather()
+    texts = " ".join(c.text for c in candidates)
+
+    assert "entrenchment_risk" in texts
+    assert "route card never challenged" in texts
+    assert "should be excluded" not in texts
+
+
+def test_gather_ingests_entrenchment_risk_from_local_procedures(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    procedures_dir = project_repo / "procedures"
+    procedures_dir.mkdir(parents=True, exist_ok=True)
+    # Non-human source + high confidence => two reasons => high entrenchment risk.
+    (procedures_dir / "auto-deploy.md").write_text(
+        "# Auto Deploy\n"
+        "<!-- id:p-auto conf:0.95 src:copilot -->\n\n"
+        "## Triggers\n- deploy to production\n\n"
+        "## Steps\nRun the deploy script without review.\n",
+        encoding="utf-8",
+    )
+
+    candidates = DreamPipeline(project_dir).gather()
+    entrenchment_facts = [c for c in candidates if "Entrenchment risk" in c.text]
+
+    assert entrenchment_facts, "expected an entrenchment-risk candidate from the procedure"
+    fact = entrenchment_facts[0]
+    assert "p-auto" in fact.text
+    assert fact.source_tool == "imx:entrenchment-detector"
+    assert fact.consolidation_status == ConsolidationStatus.FRAGILE

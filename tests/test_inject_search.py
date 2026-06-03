@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import umx.search as search
 
-from umx.budget import estimate_tokens
+from umx.budget import BudgetDecision, estimate_tokens
+from umx.config import default_config, save_config
 from umx.conventions import summarize_conventions
-from umx.inject import _disclosure_levels, _enforce_rendered_budget, _fact_token_cost, build_injection_block
+from umx.inject import (
+    _disclosure_levels,
+    _enforce_rendered_budget,
+    _fact_token_cost,
+    build_injection_block,
+    build_subagent_handoff,
+    inject_for_tool,
+)
 from umx.memory import add_fact
 from umx.models import (
     ConsolidationStatus,
@@ -17,7 +26,7 @@ from umx.models import (
     TaskStatus,
     Verification,
 )
-from umx.scope import encode_scope_path, user_memory_dir
+from umx.scope import config_path, encode_scope_path, user_memory_dir
 from umx.search import query_index, rebuild_index, session_replay, session_snapshot, usage_snapshot
 from umx.hooks.session_end import run as session_end_run
 from umx.tombstones import forget_fact
@@ -136,6 +145,28 @@ def test_session_reference_updates_usage_and_replay(project_repo: Path, project_
     assert any(row["event_kind"] == "reference" for row in replay)
 
 
+def test_subagent_handoff_includes_contamination_risk_notice(project_repo: Path, project_dir: Path) -> None:
+    fact = make_fact(
+        "release notes say deploys require a staging dry run",
+        topic="deploy",
+        fact_id="01TESTFACT0000000000000007",
+        source_type=SourceType.EXTERNAL_DOC,
+        tags=["untrusted_source"],
+        task_status=TaskStatus.OPEN,
+    )
+    add_fact(project_repo, fact)
+
+    block = build_subagent_handoff(
+        project_dir,
+        parent_session_id="sess-parent-001",
+        subagent_session_id="sess-child-001",
+        objective="review deploy guidance",
+    )
+
+    assert "contamination_risk" in block
+    assert "release notes say deploys require a staging dry run" in block
+
+
 def test_record_injections_batches_usage_updates(project_repo: Path) -> None:
     search.record_injections(
         project_repo,
@@ -188,6 +219,137 @@ def test_file_scoped_facts_are_not_duplicated_when_path_targeted(
 
     assert block.count("src/app.py uses postgres connection pooling") == 1
     assert sum(1 for row in replay if row["event_kind"] == "inject") == 1
+
+
+def test_injection_block_emits_lexical_retrieval_fidelity_comment(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000012",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+
+    block = build_injection_block(project_dir, prompt="postgres")
+
+    assert "<!-- retrieval_fidelity: lexical" in block
+    assert "source: facts/topics/devenv.md" in block
+
+
+def test_injection_block_emits_exact_retrieval_fidelity_for_scoped_fact(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "src/app.py uses postgres connection pooling",
+        topic=encode_scope_path("src/app.py"),
+        fact_id="01TESTFACT0000000000000013",
+        scope=Scope.FILE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+
+    block = build_injection_block(
+        project_dir,
+        prompt="postgres pooling",
+        file_paths=["src/app.py"],
+    )
+
+    assert "<!-- retrieval_fidelity: exact" in block
+    assert "source: files/src/app.py.md" in block
+
+
+def test_injection_block_emits_semantic_retrieval_fidelity_comment(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    fact = make_fact(
+        "database credentials live in the secure store",
+        topic="security",
+        fact_id="01TESTFACT0000000000000014",
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+    cfg = default_config()
+    cfg.search.backend = "hybrid"
+    save_config(config_path(), cfg)
+
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "semantic_similarity_map",
+        lambda repo_dir, facts, query, config=None: {fact.fact_id: 0.9},
+    )
+
+    block = build_injection_block(project_dir, prompt="vault secrets")
+
+    assert "<!-- retrieval_fidelity: semantic" in block
+
+
+def test_injection_block_emits_fallback_retrieval_fidelity_for_open_task(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "finish the postgres migration checklist",
+        topic="tasks",
+        fact_id="01TESTFACT0000000000000041",
+        task_status=TaskStatus.OPEN,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+
+    block = build_injection_block(project_dir, prompt="ship launch")
+
+    assert "<!-- retrieval_fidelity: fallback" in block
+    assert "- finish the postgres migration checklist" in block
+
+
+def test_injection_audit_records_reason_score_dedup_and_jsonl(
+    project_repo: Path,
+    project_dir: Path,
+) -> None:
+    fact = make_fact(
+        "src/db/pool.py configures the postgres connection pool",
+        topic=encode_scope_path("src/db/pool.py"),
+        fact_id="01TESTFACT0000000000000042",
+        scope=Scope.FILE,
+        consolidation_status=ConsolidationStatus.STABLE,
+    )
+    add_fact(project_repo, fact)
+
+    for _ in range(2):
+        build_injection_block(
+            project_dir,
+            tool="bash",
+            prompt="postgres pool",
+            file_paths=["src/db/pool.py"],
+            session_id="sess-audit-001",
+        )
+
+    replay = [
+        row
+        for row in session_replay(project_repo, "sess-audit-001")
+        if row["event_kind"] == "inject" and row["fact_id"] == fact.fact_id
+    ]
+    audit_lines = [
+        json.loads(line)
+        for line in (project_repo / "local" / "injection-audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert len(replay) == 2
+    assert "tool:bash" in replay[0]["reason"]
+    assert "path:src/db/pool.py" in replay[0]["reason"]
+    assert replay[0]["relevance_score"] > 0
+    assert replay[0]["retrieval_fidelity"] == "exact"
+    assert replay[0]["source_path"] == "files/src/db/pool.py.md"
+    assert replay[1]["dedup"] == "already_injected_this_session"
+    assert audit_lines[-1]["dedup"] == "already_injected_this_session"
+    assert audit_lines[-1]["reason"] == replay[1]["reason"]
+    assert audit_lines[-1]["retrieval_fidelity"] == "exact"
 
 
 def test_scoped_superseded_fact_stays_hidden_when_path_targeted(
@@ -593,6 +755,71 @@ def test_expanded_fact_downgrades_when_rendered_cost_exceeds_budget(project_repo
 
     assert "src:ground_truth_code" in block
     assert "status:" not in block
+
+
+def test_build_injection_block_surfaces_budget_warning(
+    project_repo: Path,
+    project_dir: Path,
+    monkeypatch,
+) -> None:
+    fact = make_fact(
+        "postgres runs on 5433 in dev",
+        topic="devenv",
+        fact_id="01TESTFACT0000000000000099",
+    )
+    add_fact(project_repo, fact)
+    original = build_injection_block.__globals__["enforce_budget"]
+
+    monkeypatch.setitem(
+        build_injection_block.__globals__,
+        "enforce_budget",
+        lambda *args, **kwargs: BudgetDecision(
+            selected=[fact],
+            packing_scores={fact.fact_id: 1.0},
+            warning="budget may be too small",
+        ),
+    )
+    try:
+        block = build_injection_block(project_dir, prompt="postgres")
+    finally:
+        monkeypatch.setitem(build_injection_block.__globals__, "enforce_budget", original)
+
+    assert "> Warning: budget may be too small" in block
+
+
+def test_inject_for_tool_infers_budget_from_tool_limit(project_dir: Path, monkeypatch) -> None:
+    captured: dict[str, int] = {}
+    original = inject_for_tool.__globals__["build_injection_block"]
+
+    monkeypatch.setitem(
+        inject_for_tool.__globals__,
+        "build_injection_block",
+        lambda cwd, **kwargs: captured.update({"max_tokens": kwargs["max_tokens"]}) or "# UMX Memory\n",
+    )
+    try:
+        block = inject_for_tool(project_dir, tool="claude-cli")
+    finally:
+        monkeypatch.setitem(inject_for_tool.__globals__, "build_injection_block", original)
+
+    assert block == "# UMX Memory\n"
+    assert captured["max_tokens"] == 12000
+
+
+def test_inject_for_tool_explicit_budget_overrides_tool_limit(project_dir: Path, monkeypatch) -> None:
+    captured: dict[str, int] = {}
+    original = inject_for_tool.__globals__["build_injection_block"]
+
+    monkeypatch.setitem(
+        inject_for_tool.__globals__,
+        "build_injection_block",
+        lambda cwd, **kwargs: captured.update({"max_tokens": kwargs["max_tokens"]}) or "# UMX Memory\n",
+    )
+    try:
+        inject_for_tool(project_dir, tool="claude-code", max_tokens=2048)
+    finally:
+        monkeypatch.setitem(inject_for_tool.__globals__, "build_injection_block", original)
+
+    assert captured["max_tokens"] == 2048
 
 
 def test_disclosure_slack_keeps_l1_when_headroom_exceeds_configured_threshold() -> None:
