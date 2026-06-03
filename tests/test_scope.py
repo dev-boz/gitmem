@@ -7,10 +7,33 @@ from click.testing import CliRunner
 from umx.cli import main
 from umx.conventions import ConventionSet
 from umx.doctor import run_doctor
-from umx.dream.lint import generate_lint_findings
+from umx.dream.lint import generate_lint_findings, schema_lock_in_findings
 from umx.git_ops import git_blob_sha
 from umx.models import CodeAnchor, ConsolidationStatus, Fact, MemoryType, Scope, SourceType, Verification
 from umx.scope import find_orphaned_scoped_memory
+
+
+def test_ensure_repo_structure_scaffolds_canonical_directories(project_repo) -> None:
+    # project_repo runs init_project_memory -> ensure_repo_structure.
+    for relative in [
+        "sessions",
+        "facts/topics",
+        "principles/topics",
+        "procedures",
+        "skills",
+        "codebase",
+        "context/layers",
+        "memory/artifacts",
+        "routing",
+        "local/private",
+        "local/secret",
+        "local/quarantine",
+        "local/blobs",
+        "local/handovers",
+        "local/context",
+        "meta",
+    ]:
+        assert (project_repo / relative).is_dir(), f"missing scaffolded dir: {relative}"
 
 
 def test_find_orphaned_scoped_memory_reports_missing_paths(project_dir, project_repo) -> None:
@@ -236,6 +259,37 @@ def test_generate_lint_findings_reports_tag_drift(project_dir, project_repo) -> 
         "kind": "tag-drift",
         "message": "tags database, db, postgres drift across active facts; use canonical tag 'database'",
     } in findings
+
+
+def test_schema_lock_in_flags_bucket_saturation() -> None:
+    def bucketed_fact(idx: int, topic: str) -> Fact:
+        return Fact(
+            fact_id=f"01TESTSCHEMALOCKIN{idx:06d}",
+            text="the deploy step pins the runtime version before publishing",
+            scope=Scope.PROJECT,
+            topic=topic,
+            encoding_strength=3,
+            memory_type=MemoryType.EXPLICIT_SEMANTIC,
+            verification=Verification.SELF_REPORTED,
+            source_type=SourceType.TOOL_OUTPUT,
+            source_tool="codex",
+            source_session=f"2026-04-22-{idx}",
+            consolidation_status=ConsolidationStatus.FRAGILE,
+        )
+
+    conventions = ConventionSet(topics={"deploy", "testing"})
+    # 5 of 6 candidates land in existing buckets -> 83% > 80% threshold.
+    facts = [bucketed_fact(i, "deploy") for i in range(5)] + [bucketed_fact(5, "newthing")]
+
+    findings = schema_lock_in_findings(facts, conventions=conventions)
+    saturation = [f for f in findings if "convention buckets" in f["message"]]
+
+    assert len(saturation) == 1
+    assert "5/6" in saturation[0]["message"]
+
+    # Below the floor (too few candidates) -> no saturation finding.
+    few = schema_lock_in_findings(facts[:3], conventions=conventions)
+    assert not [f for f in few if "convention buckets" in f["message"]]
 
 
 def test_run_doctor_surfaces_orphaned_scopes(project_dir, project_repo) -> None:

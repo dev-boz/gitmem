@@ -118,6 +118,13 @@ def should_run(
     return False, f"{interval}-not-due"
 
 
+# §22: L2/lint SHOULD flag cycles where >80% of new candidates fall into
+# existing convention buckets (taxonomy saturation). A small floor avoids
+# firing on tiny batches where the ratio is statistically meaningless.
+_SCHEMA_LOCK_IN_RATIO = 0.8
+_SCHEMA_LOCK_IN_MIN_CANDIDATES = 5
+
+
 def schema_lock_in_findings(
     facts: list[Fact],
     *,
@@ -133,6 +140,22 @@ def schema_lock_in_findings(
                 "message": f"{fact.fact_id} introduces unknown topic '{fact.topic}' with durable phrasing",
             }
         )
+    # Saturation signal (§22): too much of this cycle landing in existing buckets.
+    if conventions.topics:
+        topical = [fact for fact in facts if fact.topic]
+        if len(topical) >= _SCHEMA_LOCK_IN_MIN_CANDIDATES:
+            in_existing = sum(1 for fact in topical if fact.topic in conventions.topics)
+            ratio = in_existing / len(topical)
+            if ratio > _SCHEMA_LOCK_IN_RATIO:
+                findings.append(
+                    {
+                        "kind": "schema-lock-in",
+                        "message": (
+                            f"{in_existing}/{len(topical)} ({ratio:.0%}) of new candidates fall into "
+                            f"existing convention buckets; review taxonomy for schema lock-in"
+                        ),
+                    }
+                )
     return findings
 
 

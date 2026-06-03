@@ -39,6 +39,7 @@ from umx.search import (
     ensure_session_state,
     inject_candidate_ids,
     latest_referenced_turn,
+    query_reasoning_artifacts,
     record_injections,
     record_skill_load,
     record_skill_retrievals,
@@ -421,9 +422,33 @@ def _select_reasoning_artifacts(
 ) -> tuple[list[ReasoningArtifact], int]:
     if budget <= 0 or not keywords:
         return [], 0
+    artifacts_by_id = {
+        artifact.artifact_id: artifact
+        for artifact in load_reasoning_artifacts(repo_dir, active_only=True)
+    }
+    if not artifacts_by_id:
+        return [], 0
+    # Spec §3b: reasoning artifacts are indexed in SQLite and injected on
+    # conclusion/evidence match. Use the FTS index to find candidates, falling
+    # back to a full active-artifact scan if the index yields nothing (covers
+    # tokenization-edge matches and unbuilt indexes).
+    candidates: list[ReasoningArtifact] = []
+    try:
+        rows = query_reasoning_artifacts(
+            repo_dir, _inject_candidate_query(keywords), active_only=True
+        )
+        candidates = [
+            artifacts_by_id[str(row["id"])]
+            for row in rows
+            if str(row.get("id")) in artifacts_by_id
+        ]
+    except Exception:
+        candidates = []
+    if not candidates:
+        candidates = list(artifacts_by_id.values())
     scored = [
         (score, artifact)
-        for artifact in load_reasoning_artifacts(repo_dir, active_only=True)
+        for artifact in candidates
         if (score := _artifact_score(artifact, keywords)) > 0
     ]
     scored.sort(key=lambda item: (item[0], item[1].created_at or datetime.min.replace(tzinfo=UTC)), reverse=True)
