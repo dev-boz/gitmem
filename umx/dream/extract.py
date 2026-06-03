@@ -594,6 +594,66 @@ def workspace_dream_candidates_to_facts(
     return facts
 
 
+def dream_candidate_dicts_to_facts(
+    repo_dir: Path,
+    candidates: list[dict],
+    *,
+    config: UMXConfig | None = None,
+    default_source_tool: str = "imx-dream-trigger",
+) -> list[Fact]:
+    """Convert Dream candidate dicts (IMX triggers / entrenchment risks) to facts.
+
+    Candidate dicts use the shape produced by
+    ``umx.dream.imx_triggers.triggers_to_dream_candidates`` and
+    ``umx.dream.entrenchment.entrenchment_risks_to_dream_candidates``:
+    ``{"source", "trigger_type", "content", "task_class", "metadata", ...}``.
+    Each becomes a fragile S:1 ``llm_inference`` candidate that flows through the
+    normal Consolidate/L1 governance path for human review.
+    """
+    facts: list[Fact] = []
+    seen_texts: set[str] = set()
+    for record in candidates:
+        if not isinstance(record, dict):
+            continue
+        content = record.get("content") or record.get("text")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        key = content.strip().lower()
+        if key in seen_texts:
+            continue
+        seen_texts.add(key)
+        source_tool = record.get("source")
+        if not isinstance(source_tool, str) or not source_tool.strip():
+            source_tool = default_source_tool
+        source_session = (
+            record.get("session_id")
+            or record.get("task_id")
+            or record.get("ts")
+            or record.get("trigger_type")
+            or "imx-dream-trigger"
+        )
+        encoding_context = {
+            ctx_key: ctx_value
+            for ctx_key, ctx_value in {
+                "metadata": record.get("metadata"),
+                "task_class": record.get("task_class"),
+                "trigger_type": record.get("trigger_type"),
+            }.items()
+            if ctx_value is not None
+        }
+        fact = _workspace_candidate_fact(
+            repo_dir,
+            content,
+            source_session=str(source_session),
+            source_tool=source_tool,
+            config=config,
+            encoding_context=encoding_context,
+        )
+        if fact is not None:
+            facts.append(fact)
+    return facts
+
+
 def clear_gap_records(repo_dir: Path) -> None:
     path = repo_dir / "meta" / "gaps.jsonl"
     if path.exists():

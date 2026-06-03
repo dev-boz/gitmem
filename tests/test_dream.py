@@ -549,3 +549,91 @@ def test_procedure_regression_trigger_writes_draft(
     body = draft_files[0].read_text(encoding="utf-8")
     assert "<!-- umx-pr-type: procedure_revision -->" in body
     assert "code-review" in body
+
+
+def test_dream_candidate_dicts_to_facts_converts_trigger_dicts(project_repo: Path) -> None:
+    from umx.dream.extract import dream_candidate_dicts_to_facts
+
+    facts = dream_candidate_dicts_to_facts(
+        project_repo,
+        [
+            {
+                "source": "imx:detector",
+                "trigger_type": "query_gap",
+                "content": "Recurring query gap about deployment rollback steps.",
+                "task_class": "ops",
+                "metadata": {"query": "rollback"},
+            },
+            {"trigger_type": "policy_drift", "content": ""},  # empty content -> skipped
+            {"not": "a candidate"},  # no content -> skipped
+        ],
+    )
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert "deployment rollback" in fact.text
+    assert fact.encoding_strength == 1
+    assert fact.consolidation_status == ConsolidationStatus.FRAGILE
+    assert fact.source_type == SourceType.LLM_INFERENCE
+    assert fact.source_tool == "imx:detector"
+    assert fact.encoding_context.get("trigger_type") == "query_gap"
+    assert fact.encoding_context.get("task_class") == "ops"
+
+
+def test_gather_ingests_imx_triggers_excluding_procedure_regression(
+    monkeypatch,
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    from umx.dream import imx_triggers as imx_mod
+    from umx.dream.imx_triggers import ImxDreamTrigger
+
+    triggers = [
+        ImxDreamTrigger(
+            trigger_type="entrenchment_risk",
+            source="imx",
+            query="route card never challenged",
+            ts="2026-05-22T00:00:00Z",
+            context={"task_class": "ops"},
+        ),
+        ImxDreamTrigger(
+            trigger_type="procedure_regression",
+            source="imx",
+            query="should be excluded — has its own draft-PR path",
+            ts="2026-05-22T00:00:00Z",
+            context={},
+        ),
+    ]
+    monkeypatch.setattr(imx_mod, "read_imx_triggers", lambda *a, **kw: triggers)
+
+    candidates = DreamPipeline(project_dir).gather()
+    texts = " ".join(c.text for c in candidates)
+
+    assert "entrenchment_risk" in texts
+    assert "route card never challenged" in texts
+    assert "should be excluded" not in texts
+
+
+def test_gather_ingests_entrenchment_risk_from_local_procedures(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    procedures_dir = project_repo / "procedures"
+    procedures_dir.mkdir(parents=True, exist_ok=True)
+    # Non-human source + high confidence => two reasons => high entrenchment risk.
+    (procedures_dir / "auto-deploy.md").write_text(
+        "# Auto Deploy\n"
+        "<!-- id:p-auto conf:0.95 src:copilot -->\n\n"
+        "## Triggers\n- deploy to production\n\n"
+        "## Steps\nRun the deploy script without review.\n",
+        encoding="utf-8",
+    )
+
+    candidates = DreamPipeline(project_dir).gather()
+    entrenchment_facts = [c for c in candidates if "Entrenchment risk" in c.text]
+
+    assert entrenchment_facts, "expected an entrenchment-risk candidate from the procedure"
+    fact = entrenchment_facts[0]
+    assert "p-auto" in fact.text
+    assert fact.source_tool == "imx:entrenchment-detector"
+    assert fact.consolidation_status == ConsolidationStatus.FRAGILE

@@ -15,8 +15,10 @@ from umx.conventions import ConventionSet, apply_conventions_to_fact, normalize_
 from umx.dream.anchors import anchor_current_sha, code_anchor_is_stale
 from umx.dream.conflict import facts_conflict, resolve_conflict
 from umx.dream.consolidation import stabilize_facts
+from umx.dream.entrenchment import detect_entrenchment
 from umx.dream.extract import (
     clear_gap_records,
+    dream_candidate_dicts_to_facts,
     gap_records_to_facts,
     handover_records_to_facts,
     list_workspace_transcripts,
@@ -26,6 +28,7 @@ from umx.dream.extract import (
     workspace_dream_candidates_to_facts,
     workspace_transcript_records_to_facts_with_report,
 )
+from umx.dream.imx_triggers import KNOWN_TRIGGER_TYPES, ingest_imx_triggers
 from umx.dream.gates import CompositeDreamLock, DreamLock, UserDreamLock, mark_dream_complete, read_dream_state, should_dream
 from umx.dream.gitignore import load_gitignore, route_facts
 from umx.dream.lint import (
@@ -292,6 +295,8 @@ class DreamPipeline:
             )
         )
         candidates.extend(handover_records_to_facts(self.repo_dir, config=self.config))
+        candidates.extend(self._imx_trigger_candidates())
+        candidates.extend(self._entrenchment_candidates())
         provider_notices = list(
             dict.fromkeys(
                 result.notice
@@ -476,6 +481,43 @@ class DreamPipeline:
         clear_gap_records(self.repo_dir)
         self._demoted_count = demoted_count
         return stabilized, pruned
+
+    def _imx_trigger_candidates(self) -> list[Fact]:
+        """Ingest IMX dream triggers (~/.imx/state/dream-triggers.jsonl) as candidates.
+
+        ``procedure_regression`` is excluded — it has a dedicated draft-PR path
+        in :meth:`_write_procedure_revision_drafts`. All other known trigger
+        types (query_gap, route_failure, context_saturation,
+        large_task_completion, entrenchment_risk, policy_drift) become fragile
+        S:1 candidates for the normal Consolidate/L1 governance path.
+        """
+        try:
+            allowed = KNOWN_TRIGGER_TYPES - {"procedure_regression"}
+            candidate_dicts = ingest_imx_triggers(allowed_types=allowed)
+        except Exception:
+            logger.warning("failed to ingest IMX dream triggers", exc_info=True)
+            return []
+        return dream_candidate_dicts_to_facts(
+            self.repo_dir, candidate_dicts, config=self.config
+        )
+
+    def _entrenchment_candidates(self) -> list[Fact]:
+        """Run entrenchment detection over local procedures and route cards.
+
+        Medium/high entrenchment risks become fragile S:1 candidates so the
+        Dream pipeline surfaces echo-chamber risks for human review (spec §11.7).
+        """
+        try:
+            candidate_dicts = detect_entrenchment(self.repo_dir)
+        except Exception:
+            logger.warning("entrenchment detection failed", exc_info=True)
+            return []
+        return dream_candidate_dicts_to_facts(
+            self.repo_dir,
+            candidate_dicts,
+            config=self.config,
+            default_source_tool="imx:entrenchment-detector",
+        )
 
     def _write_procedure_revision_drafts(
         self,
