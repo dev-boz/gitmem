@@ -34,6 +34,10 @@ gitmem fixes both problems. Memory is stored as markdown files in git repos, syn
 - codebase-memory artifacts with `gitmem codemap` plus onboarding/docs registry helpers under `codebase/`
 - local web viewer via `gitmem view` and terminal TUI via `gitmem tui`
 - diagnostics and fact lifecycle commands: `status`, `health`, `doctor`, `audit`, `forget`, `confirm`, `promote`, `merge`, `history`, `resume`, `purge`
+- continuity surfaces: append-only diary (`gitmem diary`) and structured session handovers (`gitmem handover`) that Dream can ingest at S:3
+- content-addressed blob store (`gitmem blob`) so binary/media payloads stay out of session logs
+- reasoning artifacts under `memory/artifacts/` and layered context blocks under `context/layers/` (numeric / temporal / narrative / digest)
+- IMX dream-trigger ingestion (`~/.imx/state/dream-triggers.jsonl`) and entrenchment detection feeding the Dream pipeline
 - integrations: Claude Code hooks, shims, bridge files, backup/export/import, MCP server
 - benchmark and eval harnesses under `benchmarks/` and `tests/eval/`
 - GitHub-backed bootstrap, sync, and PR-scaffolded governance for `remote` / `hybrid` mode (**experimental**)
@@ -133,7 +137,8 @@ The repository and primary CLI are `gitmem`, the Python package name remains `um
 - user memory repo: `~/.umx/user/`
 - project memory repo: `~/.umx/projects/<slug>/`
 - project repo marker: `.umx-project`
-- memory repos contain directories such as `sessions/`, `facts/topics/`, `principles/topics/`, `episodic/topics/`, `procedures/`, `skills/`, `codebase/`, `files/`, `folders/`, `tools/`, `machines/`, `local/private/`, `local/secret/`, `local/quarantine/`, and `meta/`
+- memory repos contain directories such as `sessions/`, `facts/topics/`, `principles/topics/`, `episodic/topics/`, `procedures/`, `skills/`, `codebase/`, `memory/artifacts/`, `context/layers/`, `files/`, `folders/`, `tools/`, `machines/`, `local/private/`, `local/secret/`, `local/quarantine/`, `local/blobs/`, and `meta/`
+- continuity files live under `local/`: `local/diary.md` (append-only observation log) and `local/handover.md` plus dated archives in `local/handovers/`
 - fact scopes include `user`, `tool`, `machine`, `project`, `project_private`, `project_secret`, `folder`, and `file`
 
 ## Install
@@ -213,6 +218,18 @@ gitmem propose --cwd /path/to/project --cross-project --proposal-key "shared dep
 gitmem promote --cwd /path/to/project --fact FACT123 --to project
 gitmem promote --cwd /path/to/project --fact FACT123 --to principle
 
+# Append/read continuity notes (diary observations and session handovers)
+gitmem diary append --cwd /path/to/project "switched the cache to redis for the staging env"
+gitmem diary read --cwd /path/to/project
+gitmem handover write --cwd /path/to/project "next session: finish the migration rollback path"
+gitmem handover read --cwd /path/to/project
+
+# Store and retrieve binary/media payloads by content hash
+gitmem blob store --cwd /path/to/project ./diagram.png
+gitmem blob list --cwd /path/to/project
+gitmem blob get --cwd /path/to/project <sha> --output ./restored.png
+gitmem blob purge --cwd /path/to/project --dry-run   # report unreferenced blobs
+
 # Inspect a skill's routed context
 gitmem skill test --cwd /path/to/project --name database-debug
 
@@ -254,10 +271,11 @@ These are file-backed helper artifacts, not hidden state. They pair well with AI
 
 | Area | Commands |
 | --- | --- |
-| Setup | `init`, `init-project`, `setup-remote`, `sync` |
+| Setup | `init`, `init-project`, `init-actions`, `setup-remote`, `sync`, `migrate`, `migrate-scope` |
 | Capture and import | `capture ...`, `collect`, `import`, `export`, `archive-sessions` |
 | Dream and retrieval | `dream`, `search`, `inject`, `view`, `tui`, `mcp`, `rebuild-index` |
 | Codebase artifacts | `codemap` |
+| Continuity and blobs | `diary append|read`, `handover write|read`, `blob store|get|list|purge` |
 | Fact lifecycle | `forget`, `confirm`, `promote`, `merge`, `history`, `resume`, `purge`, `rollback` |
 | Diagnostics | `status`, `health`, `doctor`, `audit`, `propose`, `gaps`, `conflicts`, `meta` |
 | Integrations | `hooks claude-code ...`, `shim ...`, `bridge ...`, `secret ...`, `skill test` |
@@ -310,7 +328,9 @@ gitmem import --cwd /path/to/project --adapter claude-code
 gitmem import --cwd /path/to/project --adapter copilot
 gitmem import --cwd /path/to/project --adapter aider
 gitmem import --cwd /path/to/project --adapter generic
+gitmem import --cwd /path/to/project --tool claude-code   # --tool is an alias for --adapter
 gitmem export --cwd /path/to/project --out ./gitmem-backup
+gitmem export --cwd /path/to/project --format memories --out ./local/memories   # /memories-style projection
 gitmem import --cwd /path/to/project --full ./gitmem-backup
 ```
 
@@ -432,6 +452,13 @@ On GitHub plans where private-repo rulesets are unavailable, `gitmem setup-remot
 - **Tombstones** — explicit forgetting mechanism that suppresses facts across future dream cycles
 - **Procedures** — reusable playbooks and action rules, matched and injected at pre-tool time
 - **Cross-scope promotion** — move facts into user, project, or principle memory with `gitmem promote --to ...`
+- **Reasoning artifacts** — durable conclusions + evidence under `memory/artifacts/`, indexed, injected on conclusion/evidence match, and invalidated by Dream when `invalidates_when` conditions fire
+- **MEMORY CHRONICLES context layers** — Dream emits per-task-class `numeric` / `temporal` / `narrative` / `digest` layers under `context/layers/`; injection always includes the digest and upgrades to richer layers as budget permits
+- **Continuity** — append-only diary and structured session handovers under `local/`, with Dream ingesting handover content at S:3
+- **Content-addressed blobs** — `gitmem blob` stores binary/media payloads under `local/blobs/<sha>` and keeps them out of session transcripts; `doctor` reports unreferenced blobs
+- **IMX trigger + entrenchment ingestion** — Dream Gather reads IMX dream triggers and runs entrenchment detection over procedures/route cards, surfacing echo-chamber risks for review
+- **Retrieval-fidelity tags** — injected blocks carry `exact` / `lexical` / `semantic` / `fallback` fidelity markers reflecting the retrieval path
+- **Injection audit** — per-injection `reason`, `relevance_score`, and dedup signals recorded for auditability
 - **Viewer surfaces** — fact inventory, task board/timeline, tombstones, session browser, audit view, manifest/lint/gap panels, and conventions display
 
 ## Alpha coverage
@@ -458,6 +485,11 @@ gitmem is releasing as alpha to get the core idea — governed, cross-tool, git-
 - Remote cross-project proposal branch push via `gitmem propose --cross-project --proposal-key ... --push` (pushes only the `proposal/...` branch after confirming local `main` exactly matches `origin/main`)
 - Explicit cross-project PR open via `gitmem propose --cross-project --proposal-key ... --open-pr` (opens a PR only for an already-pushed proposal branch)
 - Native memory import adapters for Claude Code, Copilot instructions, and Aider
+- Continuity surfaces: append-only diary and structured session handovers (`gitmem diary` / `gitmem handover`) with Dream ingest at S:3
+- Content-addressed blob store (`gitmem blob store|get|list|purge`) with `doctor` stale-blob reporting
+- Reasoning artifacts (`memory/artifacts/`) and MEMORY CHRONICLES context layers (`context/layers/`)
+- IMX dream-trigger ingestion and entrenchment detection feeding the Dream Gather phase
+- `gitmem export --format memories` for a `/memories`-style projection
 - Eval/benchmark harnesses for `l2-review`, `inject`, `long-memory`, `longmemeval`, `locomo`, `convomem`, `longbench-v2`, `ruler`, `beir`, `retrieval`, `compare`, and `release-gate`
 - FTS5 search, budget-aware injection, richer viewer surfaces, shims, bridge files, MCP server, and `aip-mem`
 - Remote/hybrid bootstrap, PR scaffolding, provider-backed L2 review wiring, workflow templates, and session sync (experimental)
