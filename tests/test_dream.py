@@ -580,6 +580,39 @@ def test_dream_candidate_dicts_to_facts_converts_trigger_dicts(project_repo: Pat
     assert fact.encoding_context.get("task_class") == "ops"
 
 
+def test_dream_candidate_chain_depth_decays_confidence(project_repo: Path) -> None:
+    from umx.dream.decay import decay_confidence_by_chain_depth
+    from umx.dream.extract import dream_candidate_dicts_to_facts
+
+    facts = dream_candidate_dicts_to_facts(
+        project_repo,
+        [
+            {
+                "source": "imx:handoff",
+                "trigger_type": "large_task_completion",
+                "content": "Three-hop handoff concluded the cache layer should use redis.",
+                "metadata": {"imx_context": {"chain_depth": 3}},
+            },
+            {
+                "source": "imx:direct",
+                "trigger_type": "query_gap",
+                "content": "Direct observation: the build pins node 20.",
+            },
+        ],
+    )
+
+    by_text = {f.text[:20]: f for f in facts}
+    decayed = next(f for f in facts if "Three-hop" in f.text)
+    direct = next(f for f in facts if "Direct observation" in f.text)
+
+    # chain_depth=3 decays the base 0.5 confidence; direct (no chain) stays at 0.5.
+    assert decayed.confidence == round(decay_confidence_by_chain_depth(0.5, 3), 4)
+    assert decayed.confidence < 0.5
+    assert decayed.encoding_context.get("chain_depth") == 3
+    assert direct.confidence == 0.5
+    assert "chain_depth" not in direct.encoding_context
+
+
 def test_gather_ingests_imx_triggers_excluding_procedure_regression(
     monkeypatch,
     project_dir: Path,

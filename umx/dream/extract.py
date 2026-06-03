@@ -7,6 +7,7 @@ from pathlib import Path
 
 from umx.config import UMXConfig
 from umx.continuity import list_handover_paths
+from umx.dream.decay import chain_depth_from_provenance, decay_confidence_by_chain_depth
 from umx.dream.gates import read_dream_state
 from umx.dream.providers import ProviderExtractionResult, run_session_provider_extraction
 from umx.git_ops import git_blob_sha
@@ -669,6 +670,20 @@ def workspace_task_audit_to_facts(
     return facts
 
 
+def _candidate_chain_depth(record: dict) -> int:
+    """Find an IMX ``chain_depth`` on a candidate dict (top-level or nested).
+
+    IMX triggers carry their raw context under ``metadata.imx_context``; handoff
+    candidates may carry ``chain_depth`` at the top level or in ``metadata``.
+    """
+    metadata = record.get("metadata") if isinstance(record.get("metadata"), dict) else {}
+    imx_context = metadata.get("imx_context") if isinstance(metadata.get("imx_context"), dict) else {}
+    for source in (record, metadata, imx_context):
+        if isinstance(source, dict) and "chain_depth" in source:
+            return chain_depth_from_provenance(source)
+    return 0
+
+
 def dream_candidate_dicts_to_facts(
     repo_dir: Path,
     candidates: list[dict],
@@ -707,12 +722,14 @@ def dream_candidate_dicts_to_facts(
             or record.get("trigger_type")
             or "imx-dream-trigger"
         )
+        chain_depth = _candidate_chain_depth(record)
         encoding_context = {
             ctx_key: ctx_value
             for ctx_key, ctx_value in {
                 "metadata": record.get("metadata"),
                 "task_class": record.get("task_class"),
                 "trigger_type": record.get("trigger_type"),
+                "chain_depth": chain_depth or None,
             }.items()
             if ctx_value is not None
         }
@@ -725,6 +742,14 @@ def dream_candidate_dicts_to_facts(
             encoding_context=encoding_context,
         )
         if fact is not None:
+            if chain_depth > 0:
+                # Contamination-aware decay: each handoff hop compounds error/bias,
+                # so derived candidates start with lower confidence (§30a).
+                fact = fact.clone(
+                    confidence=round(
+                        decay_confidence_by_chain_depth(fact.confidence, chain_depth), 4
+                    )
+                )
             facts.append(fact)
     return facts
 
