@@ -26,6 +26,7 @@ from umx.dream.extract import (
     session_records_to_facts_with_report,
     source_files_to_facts,
     workspace_dream_candidates_to_facts,
+    workspace_task_audit_to_facts,
     workspace_transcript_records_to_facts_with_report,
 )
 from umx.dream.imx_triggers import KNOWN_TRIGGER_TYPES, ingest_imx_triggers
@@ -295,6 +296,13 @@ class DreamPipeline:
             )
         )
         candidates.extend(handover_records_to_facts(self.repo_dir, config=self.config))
+        candidates.extend(
+            workspace_task_audit_to_facts(
+                self.project_root,
+                self.repo_dir,
+                config=self.config,
+            )
+        )
         candidates.extend(self._imx_trigger_candidates())
         candidates.extend(self._entrenchment_candidates())
         provider_notices = list(

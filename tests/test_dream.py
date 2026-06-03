@@ -637,3 +637,36 @@ def test_gather_ingests_entrenchment_risk_from_local_procedures(
     assert "p-auto" in fact.text
     assert fact.source_tool == "imx:entrenchment-detector"
     assert fact.consolidation_status == ConsolidationStatus.FRAGILE
+
+
+def test_gather_ingests_completed_workspace_task_audit(
+    project_dir: Path,
+    project_repo: Path,
+) -> None:
+    done = project_dir / "workspace" / "tasks" / "task-done"
+    done.mkdir(parents=True, exist_ok=True)
+    (done / "plan.yaml").write_text("status: completed\n", encoding="utf-8")
+    (done / "audit.jsonl").write_text(
+        json.dumps({"summary": "The migration runner retries failed batches three times."}) + "\n",
+        encoding="utf-8",
+    )
+
+    # In-progress task: audit present but plan not complete -> skipped.
+    wip = project_dir / "workspace" / "tasks" / "task-wip"
+    wip.mkdir(parents=True, exist_ok=True)
+    (wip / "plan.yaml").write_text("status: in_progress\n", encoding="utf-8")
+    (wip / "audit.jsonl").write_text(
+        json.dumps({"summary": "Half-finished refactor that should not be ingested yet."}) + "\n",
+        encoding="utf-8",
+    )
+
+    candidates = DreamPipeline(project_dir).gather()
+    texts = " ".join(c.text for c in candidates)
+
+    assert "migration runner retries failed batches" in texts
+    assert "Half-finished refactor" not in texts
+
+    audit_fact = next(c for c in candidates if "migration runner" in c.text)
+    assert audit_fact.source_tool == "workspace-task-audit"
+    assert audit_fact.source_session == "task-done"
+    assert audit_fact.consolidation_status == ConsolidationStatus.FRAGILE

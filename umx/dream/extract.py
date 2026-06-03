@@ -594,6 +594,81 @@ def workspace_dream_candidates_to_facts(
     return facts
 
 
+_TASK_COMPLETE_RE = re.compile(
+    r"^\s*status\s*:\s*[\"']?(complete|completed|done|resolved|finished)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _workspace_task_is_complete(task_dir: Path) -> bool:
+    """A task's audit log is an ingest candidate once its plan signals completion.
+
+    Per §30: Dream Gather MAY read `workspace/tasks/{id}/audit.jsonl` when the
+    task's `plan.yaml` completion triggers a `large_task_completion` event. When
+    no plan file is present we treat the audit log as available.
+    """
+    for name in ("plan.yaml", "plan.yml"):
+        plan = task_dir / name
+        if plan.exists():
+            try:
+                return bool(_TASK_COMPLETE_RE.search(plan.read_text(encoding="utf-8")))
+            except OSError:
+                return False
+    return True
+
+
+def workspace_task_audit_to_facts(
+    project_root: Path,
+    repo_dir: Path,
+    config: UMXConfig | None = None,
+) -> list[Fact]:
+    """Ingest `workspace/tasks/{id}/audit.jsonl` records as secondary candidates (§30).
+
+    Each audit record's summary/content becomes a fragile S:1 `llm_inference`
+    candidate. Only tasks whose `plan.yaml` signals completion (or that have no
+    plan file) are ingested, so in-progress task noise is skipped.
+    """
+    tasks_dir = project_root / "workspace" / "tasks"
+    if not tasks_dir.exists():
+        return []
+
+    facts: list[Fact] = []
+    seen_texts: set[str] = set()
+    for task_dir in sorted(path for path in tasks_dir.iterdir() if path.is_dir()):
+        audit_path = task_dir / "audit.jsonl"
+        if not audit_path.exists() or not _workspace_task_is_complete(task_dir):
+            continue
+        for record in _workspace_candidate_records(audit_path):
+            content = (
+                record.get("summary")
+                or record.get("content")
+                or record.get("message")
+                or record.get("text")
+                or record.get("note")
+            )
+            if not isinstance(content, str) or not content.strip():
+                continue
+            key = content.strip().lower()
+            if key in seen_texts:
+                continue
+            seen_texts.add(key)
+            encoding_context = {
+                "task_id": task_dir.name,
+                "workspace_task_audit_path": f"workspace/tasks/{task_dir.name}/audit.jsonl",
+            }
+            fact = _workspace_candidate_fact(
+                repo_dir,
+                content,
+                source_session=task_dir.name,
+                source_tool="workspace-task-audit",
+                config=config,
+                encoding_context=encoding_context,
+            )
+            if fact is not None:
+                facts.append(fact)
+    return facts
+
+
 def dream_candidate_dicts_to_facts(
     repo_dir: Path,
     candidates: list[dict],
