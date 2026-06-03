@@ -25,7 +25,9 @@ def test_workflow_templates_cover_l1_l2_guard_and_approval_gate() -> None:
     assert "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683" in templates["l2-review.yml"]
     assert WORKFLOW_INSTALL_COMMAND in templates["l1-dream.yml"]
     assert WORKFLOW_INSTALL_COMMAND in templates["l2-review.yml"]
-    assert WORKFLOW_INSTALL_COMMAND == "python -m pip install ."
+    assert WORKFLOW_INSTALL_COMMAND == 'python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"'
+    # Must not try to install the memory repo itself (it is not a Python package).
+    assert "pip install ." not in templates["l1-dream.yml"]
     assert "state: extraction" in templates["l2-review.yml"]
     assert "type: extraction" in templates["l2-review.yml"]
     assert "type: consolidation" in templates["l2-review.yml"]

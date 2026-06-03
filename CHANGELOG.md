@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quarantine review queue in the viewer with masked previews, explicit release/discard actions, and local decision logging
 - PR-only supply-chain CI with `pip-audit` and CycloneDX SBOM artifact upload
 
+### Fixed
+- Generated L1/L2 dream workflows installed gitmem with `python -m pip install .`, which fails because the *memory* repo they run in is not a Python package — every scheduled L1 Dream run failed at the install step in ~6s. Workflows now install from the public git source (`git+https://github.com/dev-boz/gitmem.git@main`); `umx` is not on PyPI and the PyPI `gitmem` name is an unrelated package, so the git source is the only correct install path.
+
 ### Changed
 - Reasoning-artifact injection now routes through the SQLite FTS index (`query_reasoning_artifacts`) with a full active-artifact scan as fallback, so the maintained index is actually used for retrieval per spec §3b instead of a pure file scan.
 - README now documents live Claude hooks, manual collect, Amp/Gemini/OpenCode capture, cross-project governance commands, signed commits, richer viewer surfaces, `aip-mem`, and the current experimental status of remote/hybrid governance

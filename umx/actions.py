@@ -14,7 +14,11 @@ from umx.governance import (
 
 
 CHECKOUT_ACTION = "actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683"  # v4.2.2
-WORKFLOW_INSTALL_COMMAND = "python -m pip install ."
+# Generated workflows run inside the *memory* repo (markdown facts/sessions),
+# which is not a Python package — so `pip install .` fails. Install gitmem from
+# its public source repo instead. `umx` is not on PyPI and the PyPI `gitmem`
+# name is an unrelated package, so the git source is the correct install path.
+WORKFLOW_INSTALL_COMMAND = 'python -m pip install "git+https://github.com/dev-boz/gitmem.git@main"'
 L1_WORKFLOW_NAME = "l1-dream.yml"
 L2_WORKFLOW_NAME = "l2-review.yml"
 APPROVAL_GATE_WORKFLOW_NAME = "approval-gate.yml"
