@@ -7,6 +7,7 @@ from typing import Any
 
 from umx.blobs import stale_blob_summary
 from umx.calibration import build_calibration_advice
+from umx.codebase import check_onboarding_drift
 from umx.config import load_config
 from umx.conventions import validate_conventions_file
 from umx.dream.gates import DreamLock
@@ -162,6 +163,11 @@ def run_doctor(cwd: Path | None = None, *, fix: bool = False) -> dict[str, objec
         result["push_queue"] = push_queue_summary(repo_dir)
         result["index"] = index_staleness(repo_dir)
         result["blobs"] = stale_blob_summary(repo_dir)
+        drifted_units = check_onboarding_drift(repo_dir, project_root)
+        result["codebase_drift"] = {
+            "stale_count": len(drifted_units),
+            "stale_units": drifted_units,
+        }
         result["embeddings"] = {
             "backend": cfg.search.backend,
             "provider": cfg.search.embedding.provider,

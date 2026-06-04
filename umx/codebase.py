@@ -255,6 +255,68 @@ def write_onboarding_unit(
     return path
 
 
+def read_onboarding_unit(path: Path) -> dict[str, Any] | None:
+    """Parse the YAML frontmatter header of an onboarding unit.
+
+    Returns the header dict, or ``None`` if the file is unreadable or has no
+    well-formed ``---`` frontmatter block.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return None
+    try:
+        header = yaml.safe_load(parts[1])
+    except yaml.YAMLError:
+        return None
+    return header if isinstance(header, dict) else None
+
+
+def iter_onboarding_units(memory_repo_dir: Path) -> list[Path]:
+    """Return the onboarding unit markdown files for a memory repo, sorted."""
+    root = Path(memory_repo_dir) / "codebase" / "onboarding"
+    if not root.is_dir():
+        return []
+    return sorted(path for path in root.glob("*.md") if path.is_file())
+
+
+def check_onboarding_drift(memory_repo_dir: Path, project_root: Path) -> list[dict[str, Any]]:
+    """Detect onboarding units whose source files have drifted (spec §3b).
+
+    Each onboarding unit records a ``drift_hash`` over the source files it
+    describes. When the SHA of those files changes the unit is stale and needs
+    re-validation. This recomputes the hash for every stored unit and returns
+    one record per unit whose stored hash no longer matches the current source
+    state (including units that record no ``drift_hash`` at all).
+    """
+    drifted: list[dict[str, Any]] = []
+    project_root = Path(project_root)
+    for unit_path in iter_onboarding_units(memory_repo_dir):
+        header = read_onboarding_unit(unit_path)
+        if header is None:
+            continue
+        source_paths = header.get("source_paths") or []
+        if not isinstance(source_paths, list):
+            continue
+        stored = header.get("drift_hash")
+        current = compute_drift_hash(project_root, [str(item) for item in source_paths])
+        if stored != current:
+            drifted.append(
+                {
+                    "unit": unit_path.name,
+                    "described_path": header.get("described_path", ""),
+                    "stored_drift_hash": stored,
+                    "current_drift_hash": current,
+                }
+            )
+    return drifted
+
+
 def read_docs_registry(memory_repo_dir: Path) -> dict[str, Any]:
     root = Path(memory_repo_dir) / "codebase" / "docs"
     json_path = root / "registry.json"

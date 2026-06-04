@@ -5,6 +5,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from umx.codebase import write_onboarding_unit
 from umx.config import default_config, save_config
 from umx.doctor import run_doctor
 from umx.memory import add_fact
@@ -113,6 +114,27 @@ def test_doctor_surfaces_processing_quarantine_health_and_embeddings(
     assert "hot_tier_pct" in payload["health"]
     assert any(item["metric"] == "hot_tier_utilisation" for item in payload["health"]["guidance"])
     assert payload["advice"] == payload["health"]["guidance"]
+
+
+def test_doctor_reports_codebase_drift(project_dir: Path, project_repo: Path) -> None:
+    src = project_dir / "src" / "auth"
+    src.mkdir(parents=True)
+    (src / "session.py").write_text("TOKEN_TTL = 3600\n", encoding="utf-8")
+    write_onboarding_unit(
+        project_repo,
+        "src/auth",
+        project_root=project_dir,
+        purpose="Auth.",
+        source_paths=["src/auth/session.py"],
+    )
+
+    clean = run_doctor(project_dir)
+    assert clean["codebase_drift"] == {"stale_count": 0, "stale_units": []}
+
+    (src / "session.py").write_text("TOKEN_TTL = 60\n", encoding="utf-8")
+    drifted = run_doctor(project_dir)
+    assert drifted["codebase_drift"]["stale_count"] == 1
+    assert drifted["codebase_drift"]["stale_units"][0]["described_path"] == "src/auth"
 
 
 def test_doctor_surfaces_git_signing_readiness_issues(

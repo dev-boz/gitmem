@@ -1619,6 +1619,32 @@ def codemap_cmd(cwd: Path, project_root: Path | None) -> None:
     click.echo(str(path))
 
 
+@main.command("codebase-drift")
+@click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
+@click.option(
+    "--project-root",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Project repository to compare against (default: resolve from --cwd).",
+)
+def codebase_drift_cmd(cwd: Path, project_root: Path | None) -> None:
+    """Report onboarding units whose source files have drifted (spec §3b)."""
+    from umx.codebase import check_onboarding_drift
+
+    root = (project_root or find_project_root(cwd)).resolve()
+    # Resolve the memory repo from the project being analysed (root), so an
+    # explicit --project-root override compares that project's onboarding units
+    # against its own source rather than cwd's memory repo.
+    repo = project_memory_dir(root)
+    drifted = check_onboarding_drift(repo, root)
+    click.echo(
+        json.dumps(
+            {"stale_count": len(drifted), "stale_units": drifted},
+            sort_keys=True,
+        )
+    )
+
+
 @main.command("archive-sessions")
 @click.option("--cwd", type=click.Path(path_type=Path), default=Path.cwd)
 def archive_sessions_cmd(cwd: Path) -> None:
